@@ -2,119 +2,232 @@
 
 donation address - brt25.kas or kaspa:qqpzpn5e7enn2ylfdxvlwtm3829gn6j9z9dnnmcsw5arkgnurktty6ulgzkfk
 
-Experimental local development build for builders to inspect and modify.
+This guide runs KaChat locally on a Mac.
 
-**Use only a new disposable testing wallet. Do not use a wallet containing valuable KAS.** Recovery phrases and private keys are currently stored in the browser's local storage.
+IMPORTANT
 
-## macOS requirements
+This is an experimental developer build.
 
-You need:
+Use a new disposable testing wallet only. Do not use a wallet containing meaningful funds.
 
-- macOS Terminal
-- Homebrew
-- Node.js and npm
-- Rust and Cargo
-- LLVM, wasm-pack, and Binaryen
+SUPPORTED MACS
 
-### 1. Install Homebrew only if `brew` is not already available
+- Apple Silicon Macs
+- Intel Macs
+- macOS with an internet connection
 
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
+The first setup can take several minutes because Rusty Kaspa WebAssembly components must be compiled.
 
-After Homebrew finishes, follow any PATH command it prints, or close Terminal and open it again.
+==================================================
+1. INSTALL APPLE COMMAND LINE TOOLS
+==================================================
 
-Verify Homebrew:
+Open Terminal and paste:
 
-```bash
+xcode-select --install
+
+If Terminal says the command-line tools are already installed, continue.
+
+Wait for the installation to finish before continuing.
+
+==================================================
+2. INSTALL HOMEBREW
+==================================================
+
+Check whether Homebrew is installed:
+
 brew --version
-```
 
-### 2. Install the required tools
+If Terminal says brew is not found, install Homebrew:
 
-```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+When installation finishes, follow any PATH instructions Homebrew prints in Terminal.
+
+Then close Terminal and open it again.
+
+Confirm Homebrew works:
+
+brew --version
+
+==================================================
+3. INSTALL NODE AND WASM BUILD TOOLS
+==================================================
+
+Paste:
+
 brew install node llvm wasm-pack binaryen
-```
 
-Install Rust if it is not already installed:
+Confirm the tools are available:
 
-```bash
+node --version && npm --version && wasm-pack --version && wasm-opt --version
+
+Each tool should print a version number.
+
+==================================================
+4. INSTALL RUST WITH RUSTUP
+==================================================
+
+Check whether Rust and rustup are already installed:
+
+rustc --version && cargo --version && rustup --version
+
+If any of those commands are not found, install Rust with rustup:
+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+When prompted, choose the default installation.
+
+Then load Rust into the current Terminal session:
+
 source "$HOME/.cargo/env"
-```
 
-## Run the GitHub download locally
+Confirm all three tools work:
 
-GitHub downloads the project as `KaChat-Desktop-main`. Safari may automatically unzip it into a blue folder.
+rustc --version && cargo --version && rustup --version
 
-### When Downloads contains the blue `KaChat-Desktop-main` folder
+==================================================
+5. OPEN THE PROJECT FOLDER
+==================================================
 
-Paste this entire command into Terminal:
+Safari normally unzips a GitHub download automatically.
 
-```bash
-cd ~/Downloads/KaChat-Desktop-main && rm -rf node_modules package-lock.json && npm config set registry https://registry.npmjs.org/ && npm install && npm run setup:all && npm run dev
-```
+The blue project folder should normally be here:
 
-### When Downloads contains `KaChat-Desktop-main.zip`
+~/Downloads/KaChat-Desktop-main
 
-Paste this entire command into Terminal:
+Enter the folder:
 
-```bash
-cd ~/Downloads && rm -rf KaChat-Desktop-main && unzip -o 'KaChat-Desktop-main.zip' && cd KaChat-Desktop-main && rm -rf node_modules package-lock.json && npm config set registry https://registry.npmjs.org/ && npm install && npm run setup:all && npm run dev
-```
+cd ~/Downloads/KaChat-Desktop-main
 
-The first setup can take several minutes because it builds the Kaspa WebAssembly files.
+If the download is still a ZIP, paste:
 
-## Open KaChat Desktop
+cd ~/Downloads && unzip -o KaChat-Desktop-main.zip && cd KaChat-Desktop-main
 
-Leave Terminal running and open:
+==================================================
+6. INSTALL JAVASCRIPT DEPENDENCIES
+==================================================
 
-```text
+Paste:
+
+rm -rf node_modules package-lock.json && npm config set registry https://registry.npmjs.org/ && npm install
+
+==================================================
+7. APPLY THE MAC WASM BUILD FIX
+==================================================
+
+Paste this entire command into Terminal exactly as shown:
+
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("tools/setup-wasm-from-rusty-zip.sh")
+s = p.read_text()
+
+needle = 'cd "$RK/wasm"\necho "Building Rusty Kaspa browser WASM from included source..."\n./build-web --sdk\n'
+
+replacement = 'cd "$RK/wasm"\n\n# Keep WebAssembly CPU flags limited to the WebAssembly target.\nmkdir -p .cargo\ncat > .cargo/config.toml <<\'EOF\'\n[target.wasm32-unknown-unknown]\nrustflags = ["-Ctarget-cpu=mvp"]\nEOF\n\nsed -i.bak \'/export RUSTFLAGS=-Ctarget-cpu=mvp/d\' build-web\nrm -f build-web.bak\n\necho "Building Rusty Kaspa browser WASM from included source..."\n./build-web --sdk\n'
+
+if needle in s:
+    p.write_text(s.replace(needle, replacement))
+    print("Mac WASM build fix applied.")
+elif 'target.wasm32-unknown-unknown' in s:
+    print("Mac WASM build fix is already applied.")
+else:
+    raise SystemExit("The expected setup section was not found. Confirm that this is the correct KaChat release.")
+PY
+
+A successful patch prints:
+
+Mac WASM build fix applied.
+
+==================================================
+8. BUILD RUSTY KASPA WEBASSEMBLY
+==================================================
+
+Paste:
+
+rm -rf .rusty-build && npm run setup:all
+
+Let the process finish completely.
+
+The first build can take several minutes.
+
+==================================================
+9. START KACHAT
+==================================================
+
+Paste:
+
+npm run dev
+
+Wait for Terminal to display the Vite local address.
+
+==================================================
+10. OPEN KACHAT
+==================================================
+
+Open this address in a browser:
+
 https://localhost:5173/
-```
 
-Your browser may show a local certificate warning. Continue to `localhost` to open the local development page.
+The browser may warn that the local development certificate is not trusted.
 
-## Later launches
+Choose the option to continue to the local page.
 
-After the first setup succeeds:
-
-```bash
-cd ~/Downloads/KaChat-Desktop-main && npm run dev
-```
-
-Then open:
-
-```text
-https://localhost:5173/
-```
-
-## Stop the server
+==================================================
+STOP KACHAT
+==================================================
 
 Return to Terminal and press:
 
-```text
-Control + C
-```
+Control+C
 
-## Reset local KaChat data
+==================================================
+RUN KACHAT AGAIN LATER
+==================================================
 
-Wallets, recovery phrases, private keys, messages, and preferences created in this build may remain in that browser's local storage. Clear the site data for `localhost:5173` in the browser used for testing to remove them.
+After the first setup has completed, open Terminal and paste:
 
-## Troubleshooting
+cd ~/Downloads/KaChat-Desktop-main && npm run dev
 
-### `zsh: command not found: brew`
+Then open:
 
-Homebrew is not installed or is not yet in the Terminal PATH. Install Homebrew using the command above, follow the PATH instructions printed by the installer, and reopen Terminal.
+https://localhost:5173/
 
-### npm tries to access an internal OpenAI package address
+==================================================
+COMMON FOLDER ERROR
+==================================================
 
-Run this inside the project folder:
+If Terminal reports:
 
-```bash
-rm -rf node_modules package-lock.json && npm config set registry https://registry.npmjs.org/ && npm install
-```
+cd: no such file or directory
 
-This public release intentionally does not include the broken internal `package-lock.json`.
+Check the exact folder name:
 
-This build is experimental and is not intended for storing valuable funds.
+ls ~/Downloads
+
+Rename the downloaded project folder to:
+
+KaChat-Desktop-main
+
+Then run:
+
+cd ~/Downloads/KaChat-Desktop-main
+
+==================================================
+CLEAR LOCAL KACHAT DATA
+==================================================
+
+KaChat stores test accounts and settings in the browser.
+
+To remove them, clear browser site data for localhost.
+
+==================================================
+COPYING COMMANDS
+==================================================
+
+- Copy only the command text.
+- Do not copy Terminal prompt symbols such as %, $, or ~.
+- Do not add Markdown backticks.
+- Run each numbered section in order.
