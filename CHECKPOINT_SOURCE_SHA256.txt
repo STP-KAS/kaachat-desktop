@@ -1,0 +1,2 @@
+Source ZIP: KaspaEngine_KaChatShell_Step126_ProfileNameAndSearchScopeFix.zip
+SHA-256: 5cec5e1aa6157f25adc6021603f3dde9644d08606e3eafd718c9e379c86c021c

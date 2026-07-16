@@ -1,0 +1,2852 @@
+:root {
+  color-scheme: dark;
+  --bg: #070a0d;
+  --panel: #101419;
+  --panel-2: #151a21;
+  --panel-3: #1b2129;
+  --text: #f2f6f7;
+  --muted: #8d98a2;
+  --line: rgba(255,255,255,.08);
+  --kaspa: #62f4d0;
+  --kaspa-dim: rgba(98,244,208,.18);
+  --shadow: rgba(0,0,0,.42);
+}
+
+* { box-sizing: border-box; }
+
+html {
+  min-height: 100%;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 50% 15%, rgba(98,244,208,.08), transparent 30%),
+    linear-gradient(180deg, #0b0f13 0%, var(--bg) 100%);
+  color: var(--text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+button, input { font: inherit; }
+button { cursor: pointer; }
+
+.kachat-shell {
+  width: min(100%, 460px);
+}
+
+.phone-frame {
+  height: min(820px, calc(100vh - 56px));
+  min-height: 620px;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  overflow: hidden;
+  background: linear-gradient(180deg, #12171d, #0d1116);
+  border: 1px solid rgba(98,244,208,.16);
+  border-radius: 34px;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.03) inset,
+    0 24px 80px rgba(0,0,0,.46),
+    0 0 46px rgba(98,244,208,.08);
+}
+
+.chat-toolbar {
+  display: grid;
+  grid-template-columns: 76px 1fr 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px 14px;
+}
+
+
+.toolbar-health-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+}
+
+.service-health-button {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  justify-self: start;
+  border-radius: 999px;
+}
+
+.service-health-button:focus-visible {
+  outline: 2px solid rgba(98,244,208,.72);
+  outline-offset: 3px;
+}
+
+.service-health-led {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  display: block;
+  transition: background-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.service-health-led.ready {
+  background: #34c759;
+  box-shadow: 0 0 14px rgba(52,199,89,.7);
+}
+
+.service-health-led.busy {
+  background: #f4bd55;
+  box-shadow: 0 0 14px rgba(244,189,85,.58);
+  animation: service-health-pulse 1.35s ease-in-out infinite;
+}
+
+.service-health-led.error {
+  background: #ff646f;
+  box-shadow: 0 0 14px rgba(255,100,111,.62);
+}
+
+@keyframes service-health-pulse {
+  0%, 100% { transform: scale(.9); opacity: .74; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+.icon-button {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 8px 18px rgba(0,0,0,.16);
+}
+
+.icon-button.accent {
+  color: #06110f;
+  background: var(--kaspa);
+  border-color: rgba(98,244,208,.8);
+}
+
+.sf { font-size: 21px; line-height: 1; }
+
+.toolbar-balance {
+  justify-self: center;
+  min-width: 116px;
+  padding: 8px 14px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.search-wrap {
+  margin: 0 18px 12px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: rgba(255,255,255,.055);
+}
+
+.search-icon { color: var(--muted); font-size: 18px; }
+
+.search-input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  min-width: 0;
+}
+
+.search-input::placeholder { color: #737f89; }
+
+.chat-content {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(98,244,208,.06), transparent 35%),
+    linear-gradient(180deg, rgba(255,255,255,.015), transparent 38%);
+}
+
+.empty-state-card {
+  width: 100%;
+  padding: 36px 22px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
+  box-shadow: 0 18px 50px rgba(0,0,0,.22);
+}
+
+.empty-icon {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 18px;
+  display: grid;
+  place-items: center;
+  color: rgb(156, 160, 170);
+  background: none;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.empty-icon svg {
+  width: 58px;
+  height: 58px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.empty-state-card h1 {
+  margin: 0 0 8px;
+  font-size: 23px;
+  letter-spacing: -.02em;
+}
+
+.empty-state-card p {
+  margin: 0 auto 22px;
+  max-width: 260px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.add-contact-button {
+  border: 0;
+  border-radius: 15px;
+  padding: 12px 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #06110f;
+  background: var(--kaspa);
+  font-weight: 700;
+  box-shadow: 0 12px 30px rgba(98,244,208,.16);
+}
+
+.add-contact-icon {
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+}
+
+.tab-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 10px 14px 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(9,12,16,.82);
+  backdrop-filter: blur(22px);
+}
+
+.tab-item {
+  border: 0;
+  border-radius: 16px;
+  padding: 8px 6px;
+  color: var(--muted);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.tab-icon { font-size: 20px; line-height: 1; }
+.tab-item.active {
+  color: var(--kaspa);
+  background: rgba(98,244,208,.09);
+}
+
+@media (min-width: 860px) {
+  .kachat-shell { width: min(100%, 520px); }
+}
+
+.chat-list {
+  width: 100%;
+  align-self: stretch;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.chat-row {
+  width: 100%;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.025));
+  box-shadow: 0 12px 28px rgba(0,0,0,.14);
+}
+
+.chat-row:hover {
+  border-color: rgba(98,244,208,.24);
+  background: linear-gradient(180deg, rgba(98,244,208,.075), rgba(255,255,255,.025));
+}
+
+.chat-avatar,
+.conversation-avatar {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 17px;
+  color: var(--kaspa);
+  background: rgba(98,244,208,.08);
+  border: 1px solid var(--kaspa-dim);
+  font-weight: 800;
+  letter-spacing: -.02em;
+}
+
+.chat-meta {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.chat-meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+}
+
+.chat-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.chat-side {
+  position: relative;
+  width: 52px;
+  height: 48px;
+  color: var(--muted);
+}
+
+.chat-side small {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-height: 14px;
+  white-space: nowrap;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-side .unread-badge {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  transform: none;
+}
+
+.no-results-card {
+  width: 100%;
+  padding: 26px 18px;
+  display: grid;
+  gap: 6px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  color: var(--muted);
+  background: rgba(255,255,255,.035);
+}
+
+.no-results-card strong { color: var(--text); }
+
+.conversation-view {
+  width: 100%;
+  align-self: stretch;
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  text-align: center;
+  padding: 2px 0 0;
+}
+
+.back-button {
+  justify-self: start;
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: var(--kaspa);
+  background: rgba(98,244,208,.08);
+  font-weight: 700;
+}
+
+.conversation-avatar {
+  width: 76px;
+  height: 76px;
+  margin: 54px 0 16px;
+  border-radius: 26px;
+  font-size: 22px;
+  box-shadow: 0 0 34px rgba(98,244,208,.12);
+}
+
+.conversation-view h1 {
+  max-width: 100%;
+  margin: 0 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 25px;
+  letter-spacing: -.03em;
+}
+
+.conversation-view p {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.conversation-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.mini-action {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 11px;
+  color: var(--kaspa);
+  background: rgba(98,244,208,.075);
+  font-weight: 750;
+  font-size: 12px;
+}
+
+.mini-action.danger {
+  color: #ffb3b9;
+  background: rgba(143,39,50,.18);
+  border-color: rgba(255,115,130,.16);
+}
+
+
+.sync-status {
+  justify-self: center;
+  margin: 2px 0 8px;
+  padding: 7px 11px;
+  border: 1px solid rgba(98,244,208,.13);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(98,244,208,.045);
+  font-size: 11px;
+  font-weight: 700;
+  max-width: 88%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-empty {
+  margin-top: 28px;
+  padding: 18px;
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--muted);
+  background: rgba(255,255,255,.035);
+}
+
+.conversation-empty strong { color: var(--text); }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(0,0,0,.52);
+  backdrop-filter: blur(18px);
+}
+
+.contact-modal {
+  width: min(100%, 420px);
+  padding: 20px;
+  border: 1px solid rgba(98,244,208,.18);
+  border-radius: 28px;
+  background: linear-gradient(180deg, #171c23, #10151b);
+  box-shadow:
+    0 30px 90px rgba(0,0,0,.58),
+    0 0 42px rgba(98,244,208,.08);
+}
+
+.modal-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.modal-kicker {
+  margin: 0 0 4px;
+  color: var(--kaspa);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: -.03em;
+}
+
+.modal-close {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--text);
+  background: rgba(255,255,255,.05);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.field-label {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 13px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.field-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  outline: 0;
+  padding: 12px 13px;
+  color: var(--text);
+  background: rgba(255,255,255,.045);
+}
+
+.field-input:focus {
+  border-color: rgba(98,244,208,.36);
+  box-shadow: 0 0 0 3px rgba(98,244,208,.08);
+}
+
+.field-hint {
+  margin: 2px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: end;
+  gap: 10px;
+}
+
+.primary-button,
+.secondary-button {
+  border: 0;
+  border-radius: 14px;
+  padding: 11px 14px;
+  font-weight: 800;
+}
+
+.primary-button {
+  color: #06110f;
+  background: var(--kaspa);
+  box-shadow: 0 12px 30px rgba(98,244,208,.14);
+}
+
+.secondary-button {
+  color: var(--text);
+  background: rgba(255,255,255,.08);
+}
+
+/* Step 3: local composer shell */
+.conversation-view {
+  min-height: 0;
+  grid-template-rows: auto auto auto auto 1fr auto;
+}
+
+.message-area {
+  width: 100%;
+  min-height: 0;
+  max-height: 260px;
+  display: grid;
+  align-content: end;
+  justify-items: stretch;
+  gap: 10px;
+  margin-top: 22px;
+  overflow: auto;
+  padding: 0 2px 4px;
+}
+
+.message-bubble {
+  width: fit-content;
+  max-width: 78%;
+  padding: 11px 13px 8px;
+  border-radius: 18px;
+  line-height: 1.35;
+  text-align: left;
+  overflow-wrap: anywhere;
+  box-shadow: 0 10px 28px rgba(0,0,0,.18);
+  display: grid;
+  gap: 4px;
+}
+
+.message-bubble small {
+  justify-self: end;
+  opacity: .62;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.message-bubble.local {
+  justify-self: end;
+  color: #06110f;
+  background: var(--kaspa);
+  border-bottom-right-radius: 7px;
+}
+
+.message-bubble.incoming {
+  justify-self: start;
+  color: var(--text);
+  background: rgba(255,255,255,.075);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 7px;
+}
+
+.composer {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255,255,255,.045);
+  box-shadow: 0 14px 34px rgba(0,0,0,.18);
+}
+
+.composer-input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  padding: 0 4px;
+}
+
+.composer-input::placeholder { color: #737f89; }
+
+.composer-send {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 15px;
+  display: grid;
+  place-items: center;
+  color: #06110f;
+  background: var(--kaspa);
+  font-weight: 900;
+  box-shadow: 0 10px 24px rgba(98,244,208,.16);
+}
+
+
+/* Step 4: tab screens + wallet/profile shell */
+.chat-content {
+  display: block;
+  overflow: auto;
+}
+
+.app-screen {
+  width: 100%;
+  min-height: 100%;
+}
+
+.screen-chats {
+  display: grid;
+  place-items: center;
+}
+
+.screen-chats:has(.conversation-view:not([hidden])) {
+  place-items: stretch;
+}
+
+.utility-screen {
+  align-content: start;
+  padding: 8px 0 20px;
+}
+
+.screen-kicker {
+  margin: 0 0 4px;
+  color: var(--kaspa);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.utility-screen h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  letter-spacing: -.04em;
+}
+
+.screen-copy {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 13px;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.full { width: 100%; }
+
+.field-label.compact { margin-bottom: 0; }
+
+.danger-button {
+  border: 0;
+  border-radius: 14px;
+  padding: 11px 14px;
+  font-weight: 800;
+  color: #fff;
+  background: rgba(145, 45, 55, .76);
+}
+
+.engine-log {
+  min-height: 104px;
+  max-height: 160px;
+  margin-top: 14px;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--muted);
+  background: rgba(255,255,255,.035);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.profile-card,
+.profile-qr-card {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.025));
+  box-shadow: 0 18px 50px rgba(0,0,0,.20);
+}
+
+.profile-avatar {
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  border-radius: 26px;
+  color: var(--kaspa);
+  background: rgba(98,244,208,.08);
+  border: 1px solid var(--kaspa-dim);
+  font-size: 24px;
+  font-weight: 900;
+  box-shadow: 0 0 34px rgba(98,244,208,.12);
+}
+
+.profile-address {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
+  color: var(--muted);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.profile-balance {
+  color: var(--kaspa);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-qr-card {
+  margin-top: 12px;
+  padding: 14px;
+  border-color: rgba(98,244,208,.22);
+  box-shadow:
+    0 18px 50px rgba(0,0,0,.24),
+    0 0 28px rgba(98,244,208,.08);
+}
+
+.profile-qr-card canvas {
+  width: min(100%, 260px);
+  height: auto;
+  border-radius: 18px;
+}
+
+
+/* Step 6: keep Settings/Profile inside the KaChat-sized mobile shell */
+.utility-screen {
+  min-height: 0;
+  padding: 6px 0 14px;
+}
+
+.utility-screen h1 {
+  font-size: 25px;
+  margin-bottom: 6px;
+}
+
+.screen-copy {
+  margin-bottom: 12px;
+}
+
+.settings-grid {
+  gap: 8px;
+}
+
+.primary-button.full,
+.secondary-button.full,
+.danger-button.full {
+  min-height: 44px;
+  padding: 10px 12px;
+}
+
+.engine-log {
+  max-height: 118px;
+  margin-top: 10px;
+}
+
+.profile-card {
+  padding: 16px;
+  border-radius: 24px;
+  gap: 8px;
+}
+
+.profile-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 22px;
+  font-size: 22px;
+}
+
+.profile-card strong {
+  font-size: 16px;
+}
+
+.profile-qr-card {
+  width: min(100%, 300px);
+  margin: 12px auto 0;
+  padding: 16px;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(98,244,208,.08), transparent 65%),
+    #071415;
+  border-color: rgba(98,244,208,.32);
+  box-shadow:
+    0 18px 50px rgba(0,0,0,.24),
+    0 0 26px rgba(98,244,208,.12);
+}
+
+.profile-qr-card canvas {
+  display: block;
+  width: 224px !important;
+  height: 224px !important;
+  max-width: 100%;
+  border-radius: 16px;
+}
+
+@media (max-height: 760px) {
+  .profile-qr-card canvas {
+    width: 190px !important;
+    height: 190px !important;
+  }
+
+  .profile-card {
+    padding: 14px;
+  }
+
+  .engine-log {
+    max-height: 92px;
+  }
+}
+
+/* Step 9: future-ready message state indicators */
+.message-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.16);
+}
+
+.message-state-dot.local-draft {
+  background: var(--kaspa);
+  box-shadow: 0 0 12px rgba(98,244,208,.35);
+}
+
+.unread-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #06110f;
+  background: var(--kaspa);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.message-status {
+  justify-self: end;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #06110f;
+  background: rgba(255,255,255,.55);
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.message-status.local-draft {
+  background: rgba(6,17,15,.14);
+  color: #06110f;
+}
+
+/* Step 10: local send pipeline state colors */
+.message-state-dot.draft,
+.message-state-dot.local-draft {
+  background: rgba(255,255,255,.22);
+}
+
+.message-state-dot.pending {
+  background: #ffd166;
+  box-shadow: 0 0 12px rgba(255,209,102,.35);
+}
+
+.message-state-dot.broadcast {
+  background: #8fb9ff;
+  box-shadow: 0 0 12px rgba(143,185,255,.35);
+}
+
+.message-state-dot.confirmed {
+  background: var(--kaspa);
+  box-shadow: 0 0 12px rgba(98,244,208,.42);
+}
+
+.message-state-dot.failed {
+  background: #ff7382;
+  box-shadow: 0 0 12px rgba(255,115,130,.35);
+}
+
+.message-status.draft,
+.message-status.local-draft {
+  background: rgba(6,17,15,.14);
+  color: #06110f;
+}
+
+.message-status.pending {
+  background: rgba(255,209,102,.72);
+  color: #231a05;
+}
+
+.message-status.broadcast {
+  background: rgba(143,185,255,.72);
+  color: #061022;
+}
+
+.message-status.confirmed {
+  background: rgba(6,17,15,.18);
+  color: #06110f;
+}
+
+.message-status.failed {
+  background: rgba(143,39,50,.72);
+  color: #fff;
+}
+
+
+/* Step 14: inspectable Kasia preview message details */
+.message-bubble {
+  cursor: pointer;
+}
+
+.message-bubble:focus-visible {
+  outline: 2px solid rgba(112, 245, 215, 0.75);
+  outline-offset: 3px;
+}
+
+.message-details-modal {
+  max-width: 390px;
+}
+
+.message-details-body {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.detail-row span {
+  color: rgba(235, 255, 250, 0.56);
+  font-size: 12px;
+}
+
+.detail-row strong {
+  color: rgba(241, 255, 252, 0.92);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.detail-section-title {
+  margin-top: 4px;
+  color: rgba(112, 245, 215, 0.88);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.payload-box {
+  max-height: 128px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(112, 245, 215, 0.22);
+  background: rgba(8, 16, 20, 0.76);
+  color: rgba(236, 255, 251, 0.86);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.payload-box:not(.muted) {
+  cursor: copy;
+}
+
+.payload-box.muted {
+  color: rgba(235, 255, 250, 0.52);
+}
+
+
+/* Step 15 transport readiness */
+.transport-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(112, 238, 215, 0.18);
+  border-radius: 22px;
+  background: rgba(8, 18, 22, 0.66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.transport-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transport-header h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.transport-pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(112, 238, 215, 0.35);
+  color: #8ff7e5;
+  background: rgba(112, 238, 215, 0.08);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.compact-copy {
+  margin: 8px 0 12px;
+  font-size: 12px;
+}
+
+.readiness-list {
+  display: grid;
+  gap: 8px;
+}
+
+.readiness-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(237, 255, 252, 0.72);
+}
+
+.readiness-row.ready {
+  color: #d8fff8;
+  background: rgba(112, 238, 215, 0.08);
+}
+
+.readiness-row span {
+  color: #7debd8;
+  font-weight: 900;
+}
+
+.readiness-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.readiness-row em {
+  font-style: normal;
+  font-size: 10px;
+  opacity: 0.68;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.transport-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+
+.transport-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  margin: 14px 0 10px;
+  border: 1px solid rgba(93, 240, 208, 0.22);
+  border-radius: 18px;
+  background: rgba(93, 240, 208, 0.07);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.transport-toggle input {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--mint);
+}
+
+
+/* Step 17: explicit real on-chain send confirmation */
+.transport-amount-field {
+  margin-top: 10px;
+}
+
+.onchain-confirm-modal {
+  max-width: 460px;
+}
+
+.onchain-summary {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 14px;
+}
+
+.confirm-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.confirm-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.confirm-row strong, .confirm-row code {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirm-preview {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(93, 240, 208, 0.09);
+  border: 1px solid rgba(93, 240, 208, 0.18);
+  color: var(--text);
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+
+/* Step 18: incoming preview button fits the conversation action row */
+.conversation-actions { flex-wrap: wrap; }
+
+/* Step 19: extended conversation-engine statuses */
+.message-state-dot.building,
+.message-state-dot.signing,
+.message-state-dot.broadcasting {
+  background: #ffd166;
+  box-shadow: 0 0 12px rgba(255,209,102,.35);
+}
+
+.message-status.building,
+.message-status.signing,
+.message-status.broadcasting {
+  background: rgba(255,209,102,.72);
+  color: #231a05;
+}
+
+.payload-textarea {
+  min-height: 150px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.45;
+}
+
+.import-payload-modal {
+  max-width: 620px;
+}
+
+/* Step 30: automatic startup + calmer KaChat settings */
+.settings-screen { padding-top: 4px; }
+.service-card,
+.wallet-setup-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.025));
+}
+.service-row {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+}
+.service-row + .service-row { border-top: 1px solid rgba(255,255,255,.055); padding-top: 9px; }
+.service-row div { display: grid; gap: 2px; }
+.service-row strong { font-size: 14px; }
+.service-row small { color: var(--muted); font-size: 12px; }
+.service-indicator {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #6d7375;
+  box-shadow: 0 0 0 4px rgba(109,115,117,.10);
+}
+.service-indicator.ready { background: #34c759; box-shadow: 0 0 0 4px rgba(52,199,89,.11); }
+.service-indicator.busy { background: #f2bd5c; box-shadow: 0 0 0 4px rgba(242,189,92,.10); }
+.service-indicator.error { background: #ef6b75; box-shadow: 0 0 0 4px rgba(239,107,117,.10); }
+.settings-section-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.settings-section-header h2, .transport-card h2 { margin: 0; font-size: 17px; }
+.compact-details,
+.diagnostics-panel {
+  border: 1px solid rgba(255,255,255,.075);
+  border-radius: 16px;
+  background: rgba(0,0,0,.12);
+}
+.compact-details summary,
+.diagnostics-panel > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+.compact-details summary::-webkit-details-marker,
+.diagnostics-panel > summary::-webkit-details-marker { display:none; }
+.compact-details[open] { padding: 0 12px 12px; }
+.compact-details[open] summary { padding-left:2px; }
+.diagnostics-panel { margin-top: 12px; }
+.diagnostics-panel[open] { padding: 0 12px 12px; }
+.diagnostics-panel[open] > summary { padding-left: 2px; }
+.diagnostics-actions { margin-top: 10px; }
+.danger-button.subtle { background: transparent; border: 1px solid rgba(239,107,117,.24); color: #e99aa1; }
+
+
+/* Step 32 — exact modified KaChat composer + native-style bottom tab icons */
+.chat-content { padding: 18px 18px 10px; }
+.chat-row { min-height: 76px; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 13px; padding: 11px 12px; border-radius: 18px; }
+.chat-avatar, .conversation-avatar { width: 52px; height: 52px; border-radius: 18px; }
+.chat-meta strong { font-size: 16px; letter-spacing: -.012em; }
+.conversation-view { min-height: calc(100vh - 178px); }
+.message-area { padding-bottom: 8px; }
+.message-bubble { max-width: min(76%, 520px); border-radius: 20px; }
+
+.kachat-composer {
+  position: relative;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px;
+  border: 0;
+  border-radius: 22px;
+  background: rgba(18, 24, 29, .96);
+  box-shadow: 0 14px 36px rgba(0,0,0,.32), inset 0 0 0 1px rgba(255,255,255,.07);
+}
+
+.composer-field-wrap {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 0;
+  border-radius: 16px;
+  background: rgba(255,255,255,.055);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+}
+
+.kachat-composer .composer-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 13px;
+  font-size: 15px;
+}
+
+.composer-tool, .kachat-composer .composer-send {
+  border: 0;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  cursor: pointer;
+  transition: transform .14s ease, background .14s ease, opacity .14s ease;
+}
+.composer-tool:hover, .kachat-composer .composer-send:hover { transform: translateY(-1px); }
+.composer-plus {
+  width: 44px;
+  height: 44px;
+  border-radius: 15px;
+  color: var(--text);
+  background: rgba(255,255,255,.07);
+  font-size: 26px;
+  font-weight: 400;
+}
+.kachat-composer .composer-send {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  color: #06110f;
+  background: var(--kaspa);
+  box-shadow: 0 7px 18px rgba(98,244,208,.16);
+}
+.kachat-composer .composer-send svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.kachat-composer .composer-send:disabled { opacity: .34; cursor: default; transform: none; }
+
+.composer-plus-menu {
+  width: min(360px, calc(100% - 30px));
+  display: grid;
+  gap: 5px;
+  margin: 0 0 2px 3px;
+  padding: 9px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 18px;
+  background: rgba(18,24,29,.98);
+  box-shadow: 0 20px 46px rgba(0,0,0,.4);
+}
+.composer-plus-menu[hidden] { display: none !important; }
+.composer-plus-menu button {
+  width: 100%; display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 8px;
+  padding: 10px 11px; border: 0; border-radius: 12px; text-align: left; color: var(--text); background: transparent; cursor: pointer;
+}
+.composer-plus-menu button:hover { background: rgba(255,255,255,.06); }
+.composer-plus-menu span { color: var(--kaspa); text-align: center; font-size: 18px; }
+.composer-plus-menu strong { font-size: 14px; }
+
+.tab-icon { width: 25px; height: 25px; display: grid; place-items: center; }
+.tab-icon svg {
+  width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.tab-item.active .tab-icon svg { stroke-width: 1.9; }
+
+@media (max-width: 620px) {
+  .chat-content { padding: 10px 10px 6px; }
+  .kachat-composer { grid-template-columns: 42px minmax(0, 1fr); gap: 6px; padding: 6px; }
+  .composer-plus { width: 42px; height: 42px; }
+  .composer-field-wrap { min-height: 42px; grid-template-columns: minmax(0, 1fr) 36px; }
+  .kachat-composer .composer-send { width: 34px; height: 34px; }
+}
+
+/* Step 33 — anchor the modified KaChat mode menu to the composer plus button. */
+.composer-shell {
+  position: relative;
+  width: 100%;
+  margin-top: 10px;
+}
+.composer-shell .kachat-composer { margin-top: 0; }
+.composer-shell .composer-plus-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 30;
+  width: min(330px, calc(100vw - 56px));
+  margin: 0;
+  padding: 12px 10px;
+  border-radius: 19px;
+  background: rgba(25, 29, 31, .97);
+  border: 1px solid rgba(255,255,255,.10);
+  box-shadow: 0 18px 46px rgba(0,0,0,.48);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+.composer-shell .composer-plus-menu button {
+  grid-template-columns: 34px 1fr;
+  min-height: 48px;
+  gap: 10px;
+  padding: 9px 12px;
+}
+.composer-shell .composer-plus-menu strong {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+.composer-shell .mode-icon {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  color: var(--kaspa);
+}
+.composer-shell .mode-icon svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+
+/* Step 34 — KaChat conversation cleanup
+   Normal bubbles show message text only. Developer actions remain wired but are
+   intentionally hidden from the conversation surface. */
+.conversation-utility-controls { display: none !important; }
+
+.message-bubble {
+  display: block;
+  width: fit-content;
+  max-width: min(78%, 520px);
+  padding: 9px 13px 10px;
+  border-radius: 18px;
+  line-height: 1.32;
+  box-shadow: none;
+}
+
+.message-bubble.local {
+  border-bottom-right-radius: 18px;
+}
+
+.message-bubble.incoming {
+  border-bottom-left-radius: 18px;
+}
+
+.message-text {
+  display: block;
+  font-size: 16px;
+  font-weight: 450;
+  letter-spacing: -.01em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-bubble small,
+.message-bubble .message-status {
+  display: none !important;
+}
+
+
+/* Step 35 — compact KaChat-style conversation layout.
+   Keeps the working message engine untouched while removing the oversized
+   identity area so messages start directly below a compact header. */
+.conversation-view {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-content: stretch;
+  justify-items: stretch;
+  text-align: left;
+  padding: 0;
+}
+
+.conversation-header {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 38px 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px 12px;
+  border-bottom: 1px solid rgba(255,255,255,.055);
+}
+
+.conversation-header .back-button {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 14px;
+  font-size: 27px;
+  line-height: 1;
+}
+
+.conversation-header .conversation-avatar {
+  width: 42px;
+  height: 42px;
+  margin: 0;
+  border-radius: 14px;
+  font-size: 17px;
+  box-shadow: none;
+}
+
+.conversation-identity {
+  min-width: 0;
+}
+
+.conversation-identity h1 {
+  margin: 0 0 2px;
+  font-size: 18px;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.conversation-identity p {
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  text-align: left;
+}
+
+.message-area {
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 14px 2px 10px;
+  align-content: end;
+  overflow-y: auto;
+}
+
+.conversation-empty {
+  align-self: center;
+  justify-self: center;
+  margin: 0;
+}
+
+.composer-shell {
+  align-self: end;
+  margin-top: 0;
+  padding-top: 2px;
+}
+
+@media (max-width: 620px) {
+  .conversation-header {
+    grid-template-columns: 36px 40px minmax(0, 1fr);
+    gap: 8px;
+    padding-bottom: 10px;
+  }
+  .conversation-header .back-button { width: 36px; height: 36px; }
+  .conversation-header .conversation-avatar { width: 40px; height: 40px; }
+}
+
+
+/* Step 36 — match KaChat V2's compact chat navigation bar.
+   The alias is centered, the raw address stays available to the engine but is
+   visually hidden, and the address-copy action is exposed on the right. */
+.conversation-header {
+  position: relative;
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
+  gap: 8px;
+  min-height: 50px;
+  padding: 3px 0 10px;
+}
+.conversation-header .conversation-avatar { display: none; }
+.conversation-header .conversation-identity {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+.conversation-header .conversation-identity h1 {
+  width: 100%;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -.015em;
+}
+.conversation-header .conversation-identity p {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.header-copy-button {
+  width: 38px;
+  height: 38px;
+  justify-self: end;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  color: var(--kaspa);
+  background: transparent;
+}
+.header-copy-button:hover { background: rgba(98,244,208,.08); }
+.header-copy-button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+@media (max-width: 620px) {
+  .conversation-header {
+    grid-template-columns: 38px minmax(0, 1fr) 38px;
+    gap: 6px;
+  }
+  .header-copy-button { width: 36px; height: 36px; }
+}
+
+
+/* Step 37 — exact centered alias, no empty-message card, no visible address. */
+.conversation-header {
+  position: relative !important;
+  display: block !important;
+  min-height: 48px;
+  padding: 2px 0 10px !important;
+}
+.conversation-header .back-button {
+  position: absolute;
+  left: 0;
+  top: 2px;
+}
+.conversation-header .header-copy-button {
+  position: absolute;
+  right: 0;
+  top: 2px;
+}
+.conversation-header .conversation-identity {
+  min-width: 0;
+  height: 38px;
+  margin: 0 48px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+.conversation-header .conversation-identity h1 {
+  width: 100%;
+  margin: 0 !important;
+  text-align: center !important;
+  font-size: 17px;
+  line-height: 1.2;
+}
+.conversation-header [data-conversation-address],
+.conversation-empty,
+[data-message-empty] { display: none !important; }
+.message-area:empty { align-content: end; }
+
+
+/* Step 40 — persistent chat state and compact manual refresh control. */
+.toolbar-balance {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 116px;
+  padding: 5px 8px 5px 12px;
+}
+
+/* Step 41 — compact message actions and iMessage-style local selection. */
+.message-action-backdrop {
+  place-items: center;
+  padding: 20px;
+}
+
+.message-action-sheet {
+  width: min(100%, 430px);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(112, 245, 215, 0.22);
+  border-radius: 24px;
+  background: rgba(13, 20, 26, 0.98);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.message-action-sheet > button {
+  min-height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(242, 255, 252, 0.95);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.message-action-sheet > button:hover {
+  border-color: rgba(112, 245, 215, 0.35);
+  background: rgba(112, 245, 215, 0.08);
+}
+
+.message-action-preview,
+.message-action-title {
+  padding: 14px 12px 8px;
+  color: rgba(241, 255, 252, 0.94);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.message-action-preview {
+  max-height: 90px;
+  overflow: auto;
+  color: rgba(235, 255, 250, 0.7);
+  font-weight: 600;
+}
+
+.message-action-note {
+  margin: -2px 12px 8px;
+  color: rgba(235, 255, 250, 0.55);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.message-action-sheet .message-action-cancel {
+  margin-top: 6px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.message-selection-toolbar {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(8, 13, 18, 0.97);
+}
+
+.message-selection-toolbar[hidden] { display: none !important; }
+.message-selection-toolbar button {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+.selection-cancel { justify-self: start; color: var(--kaspa); }
+.selection-delete { justify-self: end; color: #ff7d86; }
+.message-selection-toolbar strong { color: rgba(242,255,252,.92); font-size: 14px; }
+
+.message-area.selection-mode .message-bubble {
+  position: relative;
+  padding-left: 42px;
+}
+
+.message-area.selection-mode .message-bubble::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  transform: translateY(-50%);
+  border: 2px solid rgba(235, 255, 250, 0.42);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.message-area.selection-mode .message-bubble.selected::before {
+  border-color: var(--kaspa);
+  background: var(--kaspa);
+  box-shadow: inset 0 0 0 4px rgba(8, 18, 20, 0.9);
+}
+
+.conversation-view {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+
+
+/* Step 44 — centered message actions and KaChat-style copy confirmation. */
+.copy-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  padding: 10px 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 999px;
+  background: rgba(31, 38, 45, .88);
+  color: rgba(246,255,252,.96);
+  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  opacity: 0;
+  transform: translate(-50%, 14px);
+  transition: opacity .18s ease, transform .18s ease;
+  pointer-events: none;
+  font-size: 14px;
+  font-weight: 650;
+}
+.copy-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.copy-toast-icon {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--kaspa);
+  color: #07110f;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+
+/* Step 45 — conversation-only search hiding, fixed top selection controls, iMessage-style selectors. */
+.message-selection-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 18;
+  min-height: 54px;
+  border-top: 0;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 10px 24px rgba(0,0,0,.26);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.message-area.selection-mode {
+  padding-left: 0;
+}
+
+.message-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 0 minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0;
+  transition: grid-template-columns .18s ease, column-gap .18s ease;
+}
+
+.message-row .message-bubble {
+  margin-top: 0;
+}
+
+.message-row.local .message-bubble { justify-self: end; }
+.message-row.incoming .message-bubble { justify-self: start; }
+
+.message-area.selection-mode .message-row {
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.message-selector {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  justify-self: start;
+  border: 1.5px solid rgba(210,220,230,.42);
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(.82);
+  transition: opacity .16s ease, transform .16s ease, background .16s ease, border-color .16s ease;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.message-selector svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: #071310;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+}
+
+.message-area.selection-mode .message-selector {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.message-area.selection-mode .message-row.selected .message-selector {
+  background: var(--kaspa);
+  border-color: var(--kaspa);
+}
+
+.message-area.selection-mode .message-row.selected .message-selector svg { opacity: 1; }
+
+.message-area.selection-mode .message-bubble {
+  padding-left: 18px;
+}
+
+.message-area.selection-mode .message-bubble::before,
+.message-area.selection-mode .message-bubble.selected::before {
+  content: none !important;
+  display: none !important;
+}
+
+.delete-confirm-modal {
+  width: min(100%, 430px);
+}
+
+.delete-confirm-modal .modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.delete-confirm-modal .modal-actions button { min-height: 48px; }
+
+/* Step 46 — pin shell children to fixed grid rows.
+   Hiding the conversation search bar must not cause chat content and the
+   bottom tab bar to auto-shift into the wrong rows. */
+.phone-frame > .chat-toolbar { grid-row: 1; }
+.phone-frame > .search-wrap { grid-row: 2; }
+.phone-frame > .chat-content { grid-row: 3; min-height: 0; }
+.phone-frame > .tab-bar { grid-row: 4; }
+
+/* Step 48 — fixed selection bar and native KaChat delivery states. */
+.conversation-view {
+  grid-template-rows: auto auto minmax(0, 1fr) auto !important;
+}
+
+.conversation-view > .conversation-header { grid-row: 1; }
+.conversation-view > .message-selection-toolbar { grid-row: 2; }
+.conversation-view > .message-area { grid-row: 3; }
+.conversation-view > .composer-shell { grid-row: 4; }
+
+.message-selection-toolbar {
+  position: relative;
+  top: auto;
+  z-index: 18;
+  width: 100%;
+  height: 56px;
+  min-height: 56px;
+  max-height: 56px;
+  padding: 0 14px;
+  margin: 0;
+  align-self: start;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex: none;
+}
+
+.message-row {
+  position: relative;
+  grid-template-columns: 0 minmax(0, 1fr) 24px;
+  column-gap: 8px;
+}
+
+.message-area.selection-mode .message-row {
+  grid-template-columns: 28px minmax(0, 1fr) 0;
+  column-gap: 10px;
+}
+
+.message-delivery-icon {
+  width: 16.5px;
+  height: 16.5px;
+  display: grid;
+  place-items: center;
+  align-self: end;
+  justify-self: end;
+  margin-bottom: 2px;
+  opacity: .95;
+}
+
+.message-delivery-icon svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.message-delivery-icon .status-dot-mark {
+  fill: currentColor;
+  stroke: none;
+}
+
+.message-delivery-icon.pending { color: rgba(174, 184, 197, .7); }
+.message-delivery-icon.failed { color: #ff3b30; }
+.message-delivery-icon.confirmed { color: #30d158; }
+
+.message-area.selection-mode .message-delivery-icon {
+  display: none;
+}
+
+.message-delivery-icon.confirmed svg {
+  fill: none;
+  stroke: none;
+}
+
+.message-delivery-icon.confirmed .status-fill {
+  fill: #30d158;
+}
+
+.message-delivery-icon.confirmed .status-check {
+  fill: none;
+  stroke: #08120d;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Step 50 — KaChat architecture settings cards */
+.settings-architecture-stack {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 12px;
+}
+.settings-status-card {
+  display: grid;
+  gap: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.025));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
+}
+.settings-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 9px;
+}
+.settings-card-title h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -.015em;
+}
+.architecture-badge {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border: 1px solid rgba(98,244,208,.28);
+  border-radius: 999px;
+  color: var(--kaspa);
+  background: rgba(98,244,208,.055);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.architecture-badge.busy { color: #f2bd5c; border-color: rgba(242,189,92,.28); background: rgba(242,189,92,.055); }
+.architecture-badge.error { color: #ef7a83; border-color: rgba(239,107,117,.28); background: rgba(239,107,117,.055); }
+.architecture-badge.ready { color: var(--kaspa); }
+.architecture-detail-row { grid-template-columns: 18px 1fr; }
+.architecture-icon {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 900;
+}
+.settings-architecture-stack + .wallet-setup-card { margin-top: 0; }
+
+/* Step 63: incoming communication request */
+.handshake-request-card {
+  position: sticky;
+  top: 8px;
+  z-index: 6;
+  display: grid;
+  gap: 8px;
+  width: min(92%, 520px);
+  margin: 8px auto 14px;
+  padding: 14px;
+  border: 1px solid rgba(100, 244, 177, 0.28);
+  border-radius: 18px;
+  background: rgba(18, 25, 24, 0.94);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.26);
+  backdrop-filter: blur(18px);
+}
+.handshake-request-card strong { font-size: 15px; }
+.handshake-request-card > span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.handshake-request-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 2px; }
+.handshake-request-actions button { min-height: 38px; border-radius: 12px; }
+
+
+/* Step 66: account/session architecture frame */
+.settings-group { margin-top: 14px; }
+.settings-group-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.settings-group-heading h2 { margin:0; font-size:18px; }
+.settings-group-label { margin:0 0 8px; padding-left:4px; color:var(--muted); font-size:12px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+.settings-list-card, .account-session-card { border:1px solid var(--line); border-radius:22px; overflow:hidden; background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.025)); }
+.account-session-card { padding:16px; }
+.account-session-card > .settings-list-row, .account-session-card > .settings-toggle-row { margin-left:-16px; margin-right:-16px; padding-left:16px; padding-right:16px; }
+.account-session-card > .primary-button { margin:12px 0; }
+.settings-list-row, .settings-toggle-row { width:100%; min-height:60px; padding:13px 15px; border:0; border-bottom:1px solid var(--line); background:transparent; color:var(--text); display:flex; align-items:center; gap:12px; text-align:left; }
+.settings-list-card > :last-child, .account-session-card > :last-child { border-bottom:0; }
+.settings-list-row:hover { background:rgba(255,255,255,.025); }
+.settings-row-icon { width:28px; flex:0 0 28px; color:var(--kaspa); font-size:21px; text-align:center; }
+.settings-row-copy { min-width:0; flex:1; display:grid; gap:3px; }
+.settings-row-copy strong, .settings-toggle-row strong { font-size:15px; }
+.settings-row-copy small, .settings-toggle-row small { display:block; color:var(--muted); font-size:12px; line-height:1.35; }
+.settings-row-chevron { color:var(--muted); font-size:25px; }
+.settings-toggle-row > span:first-child { flex:1; min-width:0; }
+.switch-control { flex:0 0 auto; }
+.switch-control input { position:absolute; opacity:0; pointer-events:none; }
+.switch-control span { width:46px; height:28px; border-radius:999px; display:block; position:relative; background:#343a43; border:1px solid rgba(255,255,255,.08); transition:.2s; }
+.switch-control span::after { content:""; position:absolute; width:22px; height:22px; left:2px; top:2px; border-radius:50%; background:#f5f6f7; transition:.2s; box-shadow:0 2px 7px rgba(0,0,0,.3); }
+.switch-control input:checked + span { background:rgba(98,244,208,.72); }
+.switch-control input:checked + span::after { transform:translateX(18px); }
+.danger-zone-group { padding-bottom:8px; }
+.danger-row, .danger-row .settings-row-icon { color:#ff6672; }
+.danger-row .settings-row-copy small { color:#b6878c; }
+
+.profile-screen { align-content:start !important; overflow-y:auto; }
+.profile-title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.profile-title-row h1 { margin:0; }
+.profile-account-add { width:42px; height:42px; border-radius:14px; border:1px solid rgba(98,244,208,.45); background:rgba(98,244,208,.08); color:var(--kaspa); font-size:25px; }
+.profile-identity-card { margin-top:16px; padding:16px; display:flex; align-items:center; gap:13px; border:1px solid var(--line); border-radius:22px; background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.025)); }
+.profile-avatar.small { width:44px; height:44px; border-radius:15px; font-size:19px; }
+.profile-identity-copy { flex:1; min-width:0; display:grid; gap:3px; }
+.profile-identity-copy strong { font-size:17px; }
+.profile-identity-copy span { color:var(--muted); font-size:12px; }
+.secondary-button.compact { padding:8px 11px; font-size:12px; }
+.profile-section { margin-top:18px; }
+.profile-address-card { padding:17px; border:1px solid var(--line); border-radius:22px; background:rgba(255,255,255,.04); }
+.profile-address-card p { color:var(--muted); font-size:12px; line-height:1.4; }
+.profile-address-button { width:100%; padding:0; border:0; background:transparent; color:var(--text); text-align:left; }
+.profile-address { display:block; overflow-wrap:anywhere; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; line-height:1.45; }
+.profile-qr-card { width:156px; height:156px; margin:0 auto 14px; padding:10px; border-radius:20px; background:#fff; }
+.profile-qr-card canvas { width:100%; height:100%; display:block; }
+.profile-value-row { width:100%; min-height:62px; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid var(--line); border-radius:18px; background:rgba(255,255,255,.045); color:var(--text); }
+.profile-value-row strong { font-size:19px; }
+.profile-value-row.static { border:0; border-radius:0; }
+.profile-value-row span { color:var(--muted); text-align:right; }
+
+.account-manager-current { display:flex; align-items:center; gap:12px; padding:14px; border:1px solid var(--line); border-radius:18px; background:rgba(255,255,255,.035); }
+.account-manager-current > div { min-width:0; display:grid; gap:4px; }
+.account-manager-current small { color:var(--muted); overflow-wrap:anywhere; }
+.account-manager-actions { display:grid; gap:10px; margin-top:14px; }
+
+
+/* Step 67 — KaChat-style logout confirmation */
+.logout-backdrop { align-items: flex-end; padding: 20px; }
+.logout-sheet { width: min(100%, 520px); margin: 0 auto 18px; border-radius: 24px; border: 1px solid rgba(255,255,255,.11); background: rgba(25,29,34,.98); box-shadow: 0 24px 80px rgba(0,0,0,.55); overflow: hidden; text-align: center; }
+.logout-sheet h2 { margin: 0; padding: 22px 22px 6px; font-size: 22px; }
+.logout-sheet p { margin: 0; padding: 0 24px 20px; color: var(--muted); line-height: 1.45; }
+.logout-sheet-actions { display: grid; border-top: 1px solid rgba(255,255,255,.09); }
+.logout-sheet-actions button { min-height: 56px; border: 0; border-radius: 0; background: transparent; font: inherit; font-weight: 750; }
+.logout-destructive { color: #ff6672; }
+.logout-cancel { color: var(--accent); border-top: 1px solid rgba(255,255,255,.09) !important; }
+
+
+/* Step 68 — centered logout confirmation and saved-account landing screen */
+.logout-backdrop { align-items:center; justify-content:center; padding:24px; }
+.logout-sheet { margin:0 auto; }
+
+.logged-out-screen {
+  position:fixed; inset:0; z-index:2000; overflow-y:auto;
+  background:#000; color:#f7f8fa; padding:38px 22px 34px;
+}
+.logged-out-screen[hidden] { display:none !important; }
+.logged-out-content { width:min(100%, 690px); min-height:100%; margin:0 auto; display:flex; flex-direction:column; align-items:stretch; }
+.logged-out-brand { position:relative; width:220px; height:150px; margin:62px auto 18px; }
+.brand-bubble { position:absolute; display:block; width:118px; height:92px; border-radius:28px; background:#79cfc2; }
+.brand-bubble::after { content:""; position:absolute; bottom:-20px; width:34px; height:34px; background:inherit; clip-path:polygon(0 0,100% 0,50% 100%); }
+.brand-bubble-left { left:22px; top:8px; }
+.brand-bubble-left::after { left:28px; }
+.brand-bubble-right { right:18px; top:42px; }
+.brand-bubble-right::after { right:24px; }
+.logged-out-content > h1 { margin:0; text-align:center; font-size:clamp(42px,8vw,68px); line-height:1; letter-spacing:-.04em; }
+.logged-out-tagline { margin:34px 0 0; text-align:center; color:#96969c; font-size:clamp(18px,3.8vw,30px); font-weight:650; }
+.saved-accounts-section { margin-top:96px; }
+.saved-accounts-section h2 { margin:0 0 22px; font-size:clamp(25px,4.6vw,36px); }
+.saved-account-list { display:grid; gap:16px; }
+.saved-account-card { width:100%; min-height:106px; display:grid; grid-template-columns:minmax(0,1fr) 62px; align-items:stretch; border:0; border-radius:22px; background:#202023; color:#fff; overflow:hidden; }
+.saved-account-signin { min-width:0; display:grid; grid-template-columns:62px minmax(0,1fr) 34px; align-items:center; gap:14px; padding:17px 8px 17px 18px; border:0; background:transparent; color:#fff; text-align:left; }
+.saved-account-signin:hover { background:rgba(255,255,255,.025); }
+.saved-account-delete { width:62px; min-height:100%; display:grid; place-items:center; border:0; background:transparent; color:#ff453a; }
+.saved-account-delete:hover { background:rgba(255,69,58,.08); }
+.saved-account-delete svg { width:29px; height:29px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+.saved-account-icon { width:54px; height:54px; display:grid; place-items:center; border-radius:50%; border:4px solid #77cec1; color:#77cec1; font-size:25px; font-weight:800; }
+.saved-account-copy { min-width:0; display:grid; gap:6px; }
+.saved-account-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:clamp(20px,4vw,31px); }
+.saved-account-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#9c9ca4; font:600 clamp(13px,2.8vw,19px)/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.saved-account-chevron { color:#77cec1; font-size:30px; text-align:center; }
+.saved-account-empty { padding:24px; border-radius:20px; background:#1b1b1e; color:#96969c; text-align:center; }
+.logged-out-actions { display:grid; gap:24px; margin-top:34px; padding-bottom:34px; }
+.logged-out-actions button { min-height:92px; border-radius:22px; border:0; font:750 clamp(20px,4vw,31px)/1.1 inherit; display:flex; align-items:center; justify-content:center; gap:15px; }
+.logged-out-actions button span { font-size:34px; }
+.logged-out-primary { background:#79cfc2; color:#fff; }
+.logged-out-secondary { background:#29292c; color:#fff; }
+@media (max-height:760px) {
+  .logged-out-brand { margin-top:20px; transform:scale(.82); }
+  .saved-accounts-section { margin-top:42px; }
+  .logged-out-actions button { min-height:72px; }
+}
+
+
+/* Step 71 — KaChat V2 saved-account deletion */
+.account-delete-backdrop { align-items:center; justify-content:center; padding:24px; }
+.account-delete-sheet { width:min(100%,520px); border:1px solid rgba(255,255,255,.11); border-radius:24px; overflow:hidden; background:rgba(25,29,34,.99); box-shadow:0 24px 80px rgba(0,0,0,.6); text-align:center; }
+.account-delete-sheet h2 { margin:0; padding:22px 22px 7px; font-size:22px; }
+.account-delete-sheet p { margin:0; padding:0 24px 22px; color:var(--muted); line-height:1.5; }
+.account-delete-actions { display:grid; border-top:1px solid rgba(255,255,255,.09); }
+.account-delete-actions button { min-height:58px; border:0; border-radius:0; background:transparent; font:inherit; font-weight:780; }
+.account-delete-destructive { color:#ff5d68; }
+.account-delete-cancel { color:var(--text); border-top:1px solid rgba(255,255,255,.09) !important; }
+
+
+/* Step 72: KaChat-style account creation */
+.create-account-modal { width: min(460px, calc(100vw - 32px)); }
+.seed-length-fieldset { border: 0; padding: 0; margin: 4px 0 0; }
+.seed-length-fieldset legend { font-weight: 800; margin-bottom: 10px; }
+.seed-length-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.seed-length-options label { cursor: pointer; }
+.seed-length-options input { position: absolute; opacity: 0; pointer-events: none; }
+.seed-length-options span { display: flex; flex-direction: column; gap: 3px; min-height: 58px; justify-content: center; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--softBorder, rgba(255,255,255,.10)); background: var(--softButton, rgba(255,255,255,.05)); }
+.seed-length-options input:checked + span { border-color: rgba(83,127,255,.8); background: rgba(60,94,255,.17); box-shadow: 0 0 0 1px rgba(83,127,255,.25); }
+.seed-length-options small { opacity: .65; }
+.field-error { color: #ff6b7d; font-weight: 700; margin: 0; }
+.recovery-phrase-box { margin-top: 14px; padding: 16px; border-radius: 14px; background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.09); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.8; user-select: text; word-spacing: 5px; }
+
+.recovery-input { resize: vertical; min-height: 118px; line-height: 1.45; font-family: inherit; }
+
+/* Step 75 — signed-out account dialogs must render above the saved-account screen. */
+body.session-logged-out [data-create-account-modal],
+body.session-logged-out [data-import-account-modal],
+body.session-logged-out [data-account-delete-modal] {
+  z-index: 2100;
+}
+
+
+/* Step 79 — Profile QR card only: Kaspa frame and non-interactive canvas */
+.profile-address-card .profile-qr-card {
+  width: 156px;
+  height: 156px;
+  margin: 0 auto 14px;
+  padding: 9px;
+  border: 4px solid var(--kaspa);
+  border-radius: 22px;
+  background: #071415;
+  box-shadow:
+    0 0 0 1px rgba(98,244,208,.14) inset,
+    0 0 22px rgba(98,244,208,.16);
+  pointer-events: auto;
+  cursor: default;
+}
+
+.profile-address-card .profile-qr-card canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+  border-radius: 0;
+  background: #071415;
+  pointer-events: none;
+  cursor: default;
+}
+
+/* Step 80 — tap-to-enlarge profile QR without changing its generated contents. */
+.profile-qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(2, 7, 8, .82);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  cursor: zoom-out;
+}
+
+.profile-qr-overlay[hidden] { display: none; }
+
+.profile-qr-overlay-card {
+  width: min(72vw, 520px);
+  aspect-ratio: 1;
+  padding: 18px;
+  border: 6px solid var(--kaspa);
+  border-radius: 34px;
+  background: #071415;
+  box-shadow:
+    0 0 0 1px rgba(98,244,208,.18) inset,
+    0 0 46px rgba(98,244,208,.24),
+    0 30px 90px rgba(0,0,0,.5);
+  pointer-events: none;
+}
+
+.profile-qr-overlay-card canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #071415;
+}
+
+@media (max-width: 620px) {
+  .profile-qr-overlay-card {
+    width: min(84vw, 460px);
+    padding: 14px;
+    border-width: 5px;
+    border-radius: 28px;
+  }
+}
+
+/* Step 83 — single-line Seed Phrase and Log Out rows. */
+.settings-list-row-single {
+  min-height: 56px;
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+.settings-list-row-single .settings-row-copy {
+  display: flex;
+  align-items: center;
+}
+.settings-list-row-single .settings-row-copy strong {
+  font-size: 16px;
+  line-height: 1.2;
+}
+.settings-list-row-single .settings-row-icon svg {
+  display: block;
+  margin: 0 auto;
+}
+
+/* Step 85 — simplify the Profile account-name header only. */
+.profile-screen .profile-name-field {
+  min-height: 58px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255,255,255,.045);
+}
+.profile-screen .profile-name-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+.profile-screen .profile-name-input::selection {
+  background: rgba(91, 227, 202, .32);
+}
+.profile-screen .profile-name-input:focus {
+  outline: none;
+}
+.profile-screen .profile-name-field + .profile-section {
+  margin-top: 18px;
+}
+
+
+/* Step 90: KaChat-style Create Chat sheet. Scoped to the contact modal only. */
+.person-plus-icon,
+.add-contact-icon.person-plus-icon {
+  width: 28px;
+  height: 28px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.icon-button .person-plus-icon { width: 27px; height: 27px; }
+
+.create-chat-backdrop { z-index: 2100; }
+.create-chat-modal {
+  width: min(100%, 430px);
+  padding: 0 18px 24px;
+  overflow: hidden;
+}
+.create-chat-header {
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+}
+.create-chat-header h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 23px;
+  line-height: 1;
+  letter-spacing: -.025em;
+  text-align: center;
+}
+.create-chat-nav-button {
+  min-width: 0;
+  padding: 8px 0;
+  border: 0;
+  color: var(--kaspa);
+  background: transparent;
+  font-size: 16px;
+  font-weight: 750;
+}
+.create-chat-nav-button:first-child { justify-self: start; }
+.create-chat-nav-button:last-child { justify-self: end; }
+.create-chat-nav-button:disabled { color: rgba(155,160,172,.38); cursor: default; }
+.create-chat-section { margin-top: 24px; }
+.create-chat-section-title {
+  display: block;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.create-chat-address-card {
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 17px;
+  background: rgba(255,255,255,.065);
+}
+.create-chat-address-label {
+  display: block;
+  padding: 14px 16px 3px;
+  color: #a9aeb9;
+  font-size: 13px;
+  font-weight: 720;
+}
+.create-chat-address-input,
+.create-chat-name-input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+}
+.create-chat-address-input {
+  padding: 6px 16px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 18px;
+}
+.create-chat-address-input::placeholder,
+.create-chat-name-input::placeholder { color: rgba(155,160,172,.55); }
+.create-chat-tools {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid rgba(255,255,255,.08);
+}
+.create-chat-tool {
+  min-height: 82px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border: 0;
+  color: var(--kaspa);
+  background: transparent;
+  font-size: 14px;
+  font-weight: 760;
+}
+.create-chat-tool:hover { background: rgba(98,244,208,.055); }
+.create-chat-tool + .create-chat-tool { border-left: 1px solid rgba(255,255,255,.06); }
+.create-chat-tool-icon,
+.create-chat-tool-icon svg {
+  width: 30px;
+  height: 30px;
+  display: block;
+}
+.create-chat-tool-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.create-chat-help,
+.create-chat-error {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.42;
+}
+.create-chat-error { color: #ff6a75; }
+.create-chat-name-input {
+  min-height: 52px;
+  padding: 0 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 15px;
+  background: rgba(255,255,255,.065);
+  font-size: 17px;
+}
+.create-chat-address-card:focus-within,
+.create-chat-name-input:focus {
+  border-color: rgba(98,244,208,.42);
+  box-shadow: 0 0 0 3px rgba(98,244,208,.08);
+}
+@media (max-width: 520px) {
+  .create-chat-modal { width: min(100%, 390px); padding-inline: 14px; }
+  .create-chat-tool { min-height: 76px; font-size: 13px; }
+}
+
+
+/* Step 100 — independent scrolling for every app area.
+   The shared content viewport scrolls Settings/Profile. Only an open thread
+   becomes a fixed four-row layout: header, selection bar, message history,
+   and composer. */
+.chat-content {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.chat-content:has(> .screen-chats:not([hidden]) > .conversation-view:not([hidden])) {
+  overflow: hidden;
+}
+
+.chat-content:has(> .screen-chats:not([hidden]) > .conversation-view:not([hidden])) > .screen-chats {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  place-items: stretch;
+}
+
+.chat-content:has(> .screen-chats:not([hidden]) > .conversation-view:not([hidden])) .conversation-view {
+  width: 100%;
+  height: 100%;
+  min-height: 0 !important;
+  max-height: 100%;
+  overflow: hidden;
+  align-self: stretch;
+  align-content: stretch;
+  grid-template-rows: auto auto minmax(0, 1fr) auto !important;
+}
+
+.chat-content:has(> .screen-chats:not([hidden]) > .conversation-view:not([hidden])) .conversation-header {
+  min-height: 0;
+  align-self: start;
+}
+
+.chat-content:has(> .screen-chats:not([hidden]) > .conversation-view:not([hidden])) .message-area {
+  min-height: 0;
+  max-height: none;
+  margin-top: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(141, 152, 162, .34) transparent;
+}
+
+.chat-content:has(> .screen-chats:not([hidden]) > .conversation-view:not([hidden])) .composer-shell {
+  min-height: 0;
+  align-self: end;
+}
+
+.message-area::-webkit-scrollbar { width: 8px; }
+.message-area::-webkit-scrollbar-track { background: transparent; }
+.message-area::-webkit-scrollbar-thumb {
+  background: rgba(141, 152, 162, .34);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+.message-area::-webkit-scrollbar-thumb:hover {
+  background: rgba(141, 152, 162, .46);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+
+/* Step 101: Send KAS mode. Scoped to the existing thread composer only. */
+.available-balance-banner {
+  position: absolute;
+  right: 18px;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  padding: 6px 10px;
+  border: 1px solid rgba(92, 235, 205, 0.2);
+  border-radius: 14px;
+  background: rgba(20, 31, 34, 0.94);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: 0 8px 20px rgba(0,0,0,.22);
+}
+.composer.payment-mode .composer-field-wrap {
+  border-color: rgba(92, 235, 205, 0.34);
+}
+.composer.payment-mode .composer-input {
+  font-variant-numeric: tabular-nums;
+}
+.composer-send:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+
+
+/* Step 103: KaChat-style centered payment validation dialogs. */
+.kas-payment-alert-backdrop { z-index: 80; background: rgba(0,0,0,.66); backdrop-filter: blur(10px); }
+.kas-payment-alert { width:min(420px,calc(100vw - 34px)); overflow:hidden; border:1px solid rgba(255,255,255,.12); border-radius:24px; background:rgba(31,33,36,.98); box-shadow:0 28px 90px rgba(0,0,0,.68); text-align:center; }
+.kas-payment-alert h2 { margin:0; padding:24px 24px 8px; font-size:23px; letter-spacing:-.02em; }
+.kas-payment-alert p { margin:0; padding:0 28px 24px; color:var(--muted); font-size:16px; line-height:1.45; }
+.kas-payment-alert-actions { display:grid; border-top:1px solid rgba(255,255,255,.12); }
+.kas-payment-alert-actions button { min-height:58px; border:0; border-radius:0; background:transparent; color:var(--kaspa); font:inherit; font-size:17px; font-weight:800; }
+.kas-payment-alert-actions button + button { border-top:1px solid rgba(255,255,255,.10); }
+
+
+/* Step 110: top-right Create Chat control uses the exact Import-tool icon treatment. */
+.import-toolbar-button {
+  color: var(--kaspa);
+  background: rgba(255,255,255,.04);
+  border-color: rgba(98,244,208,.22);
+}
+.import-toolbar-button .create-chat-tool-icon,
+.import-toolbar-button .create-chat-tool-icon svg {
+  width: 28.5px;
+  height: 28.5px;
+}
+.import-toolbar-button .create-chat-tool-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Step 111: remove the visible card around the top-right Create Chat icon. */
+.import-toolbar-button {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+
+/* Step 115 — KaChat-style five-second seed phrase reveal. */
+.recovery-hold-modal {
+  position: relative;
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: 58px;
+}
+
+.recovery-close {
+  position: absolute;
+  top: 26px;
+  right: 26px;
+}
+
+.recovery-hold-target {
+  width: 100%;
+  min-height: 205px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted, #9296a3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 26px 24px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+.recovery-hold-target:hover,
+.recovery-hold-target:focus-visible,
+.recovery-hold-target.is-holding {
+  background: transparent;
+}
+
+.recovery-eye-icon {
+  width: 108px;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.recovery-hold-label {
+  max-width: 280px;
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 700;
+  text-align: center;
+}
+
+.recovery-progress-track {
+  width: min(210px, 72%);
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.recovery-progress-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent, #58efd0);
+  transition: width 60ms linear;
+}
+
+.recovery-phrase-box:not([hidden]) + .recovery-actions {
+  margin-top: 18px;
+}
+
+.recovery-actions {
+  margin-top: 18px;
+}
+
+@media (max-width: 620px) {
+  .recovery-hold-modal {
+    min-height: 330px;
+    padding-top: 54px;
+  }
+
+  .recovery-hold-target {
+    min-height: 190px;
+    padding: 24px 18px;
+  }
+
+  .recovery-eye-icon {
+    width: 96px;
+    height: auto;
+  }
+
+  .recovery-hold-label {
+    font-size: 17px;
+  }
+}
+
+.profile-name-section {
+  margin-top: 0;
+}
