@@ -357,8 +357,31 @@ export async function buildEncryptedCommMessage({
 }
 
 
+// Matches the real KaChat iOS/Android wire format exactly (verified against
+// KaChat/Services/KaChatTransactionBuilder.swift and
+// KaChatForAndroid .../util/MessageProtocol.kt + services/WalletService.kt):
+//
+//   bytes = ASCII("ciph_msg:1:handshake:") ++ <raw ECIES bytes>
+//
+// The encrypted body is RAW BINARY (nonce(12) + ephemeral pubkey(33) +
+// ciphertext) concatenated directly after the ASCII prefix bytes — NOT
+// hex-as-text and NOT base64 (unlike COMM, which embeds a base64 *string*
+// inside the ascii protocol string). The previous implementation here
+// interpolated the hex-encoded ciphertext as literal text into the protocol
+// string and then UTF-8 encoded that whole string again, which silently
+// doubled the ciphertext's byte length and made every handshake sent by this
+// app undecryptable by any real Kasia/KaChat client.
+//
+// The cleartext JSON mirrors iOS's `HandshakePayload` (Models.swift), which
+// emits both camelCase and legacy snake_case keys for backward compatibility;
+// Android's `HandshakePayload` (models/Models.kt) accepts the camelCase set.
+// `alias` is the deterministic alias derived via the same HKDF scheme as the
+// vendored Rust cipher's `derive_their_alias` (i.e. the alias this wallet
+// will tag its own outgoing COMM messages to this peer with), not a display
+// name — callers must resolve this via `engine.deriveConversationAliases()`
+// before calling this function.
 export async function buildEncryptedHandshake({
-  alias = DEFAULT_ALIAS,
+  alias = "",
   sender = null,
   receiver = null,
   conversationId = null,
@@ -369,21 +392,40 @@ export async function buildEncryptedHandshake({
   if (typeof encryptMessage !== "function") throw new Error("Kasia cipher encryptor is required.");
   const normalizedReceiver = normalizeAddress(receiver);
   if (!normalizedReceiver) throw new Error("A valid kaspa: receiver address is required for the handshake.");
-  const clearText = JSON.stringify({
+
+  const conversationIdValue = conversationId ? String(conversationId) : null;
+  const handshakePayload = {
     type: "handshake",
-    alias: normalizeAlias(alias),
-    conversationId: String(conversationId || ""),
-    sender: normalizeAddress(sender),
-    isResponse: Boolean(isResponse),
-    createdAt,
-  });
+    alias: String(alias || ""),
+    timestamp: createdAt,
+    conversationId: conversationIdValue,
+    conversation_id: conversationIdValue,
+    version: 1,
+    recipientAddress: normalizedReceiver,
+    recipient_address: normalizedReceiver,
+    sendToRecipient: true,
+    send_to_recipient: true,
+  };
+  if (isResponse) {
+    handshakePayload.isResponse = true;
+    handshakePayload.is_response = true;
+  }
+  const clearText = JSON.stringify(handshakePayload);
+
   const encrypted = await encryptMessage(normalizedReceiver, clearText);
   const encryptedHex = String(encrypted?.encryptedHex || "").replace(/^0x/i, "");
   if (!encryptedHex) throw new Error("Kasia cipher returned an empty handshake payload.");
-  const protocolString = `ciph_msg:${VERSION}:handshake:${encryptedHex}`;
-  const protocolBytes = new TextEncoder().encode(protocolString);
+
+  const prefixString = `ciph_msg:${VERSION}:handshake:`;
+  const prefixBytes = new TextEncoder().encode(prefixString);
+  const cipherBytes = hexToBytes(encryptedHex);
+  const protocolBytes = new Uint8Array(prefixBytes.length + cipherBytes.length);
+  protocolBytes.set(prefixBytes, 0);
+  protocolBytes.set(cipherBytes, prefixBytes.length);
+  const payloadHex = Array.from(protocolBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
   return {
-    id: checksumHex(`${createdAt}:${conversationId || ""}:${protocolString}`),
+    id: checksumHex(`${createdAt}:${conversationId || ""}:${payloadHex}`),
     protocol: KASIA_PROTOCOL.name,
     version: Number(VERSION),
     type: KASIA_PROTOCOL.headers.HANDSHAKE.type,
@@ -394,13 +436,124 @@ export async function buildEncryptedHandshake({
     conversationId,
     clearText,
     encryptedHex,
-    protocolString,
+    protocolString: `${prefixString}<${cipherBytes.length} encrypted bytes>`,
     protocolBytes,
-    payloadHex: toHex(protocolString),
+    payloadHex,
     payloadBytes: protocolBytes.length,
     encrypted: true,
     encryptionMode: "official-kasia-cipher-wasm",
     transport: "kasia-handshake-onchain",
-    wireShape: "ciph_msg:1:handshake:<encrypted_hex>",
+    wireShape: "ciph_msg:1:handshake:<raw_encrypted_bytes>",
   };
+}
+
+// Matches iOS's KaChatTransactionBuilder.buildHandshakeSelfStashTx exactly.
+// After a handshake succeeds, iOS sends a second, separate self-payment
+// transaction whose payload is the same handshake metadata encrypted to the
+// wallet's OWN address (not the peer's) — a private, on-chain-only backup of
+// "which contacts I have and which aliases we use" that lets the wallet
+// rebuild its contact/alias list purely from chain history plus the seed
+// phrase, with no local database at all (e.g. after a reinstall or moving to
+// a new device). Android has no equivalent of this feature.
+//
+//   bytes = ASCII("ciph_msg:1:self_stash:saved_handshake:") ++ <raw ECIES bytes, encrypted to self>
+export const SELF_STASH_SCOPE = "saved_handshake";
+
+export async function buildSelfStash({
+  ourAlias,
+  theirAlias = null,
+  partnerAddress,
+  isResponse = false,
+  createdAt = Date.now(),
+  encryptToSelf,
+} = {}) {
+  if (typeof encryptToSelf !== "function") throw new Error("Kasia cipher encryptor is required.");
+  const normalizedPartner = normalizeAddress(partnerAddress);
+  if (!normalizedPartner) throw new Error("A valid kaspa: partner address is required for the self-stash.");
+
+  const stashPayload = {
+    type: "handshake",
+    alias: String(ourAlias || ""),
+    timestamp: createdAt,
+    version: 1,
+    theirAlias: theirAlias || null,
+    partnerAddress: normalizedPartner,
+    recipientAddress: normalizedPartner,
+  };
+  if (isResponse) stashPayload.isResponse = true;
+  // Matches iOS's compactMapValues — nil/absent fields are dropped, not sent as null.
+  const sanitized = Object.fromEntries(Object.entries(stashPayload).filter(([, value]) => value !== null && value !== undefined));
+  const clearText = JSON.stringify(sanitized);
+
+  const encrypted = await encryptToSelf(clearText);
+  const encryptedHex = String(encrypted?.encryptedHex || "").replace(/^0x/i, "");
+  if (!encryptedHex) throw new Error("Kasia cipher returned an empty self-stash payload.");
+
+  const prefixString = `ciph_msg:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`;
+  const prefixBytes = new TextEncoder().encode(prefixString);
+  const cipherBytes = hexToBytes(encryptedHex);
+  const protocolBytes = new Uint8Array(prefixBytes.length + cipherBytes.length);
+  protocolBytes.set(prefixBytes, 0);
+  protocolBytes.set(cipherBytes, prefixBytes.length);
+  const payloadHex = Array.from(protocolBytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  return {
+    protocol: KASIA_PROTOCOL.name,
+    version: Number(VERSION),
+    type: KASIA_PROTOCOL.headers.SELF_STASH.type,
+    messageType: KASIA_PROTOCOL.headers.SELF_STASH.type,
+    scope: SELF_STASH_SCOPE,
+    partnerAddress: normalizedPartner,
+    createdAt,
+    clearText,
+    encryptedHex,
+    protocolString: `${prefixString}<${cipherBytes.length} encrypted bytes>`,
+    protocolBytes,
+    payloadHex,
+    payloadBytes: protocolBytes.length,
+    encrypted: true,
+    encryptionMode: "official-kasia-cipher-wasm",
+    transport: "kasia-self-stash-onchain",
+    wireShape: "ciph_msg:1:self_stash:saved_handshake:<raw_encrypted_bytes>",
+  };
+}
+
+// Extracts the encrypted body from a raw self-stash tx payload (hex), tolerant
+// of the same OP_RETURN/prefix variations handshake parsing tolerates.
+export function selfStashEncryptedCandidates(payloadHex) {
+  const clean = String(payloadHex || "").replace(/^0x/i, "").trim().toLowerCase();
+  if (!clean || clean.length % 2 !== 0 || !/^[0-9a-f]+$/.test(clean)) return [];
+  const candidates = [];
+  const add = (value) => {
+    const normalized = String(value || "").replace(/^0x/i, "").trim().toLowerCase();
+    if (normalized && normalized.length % 2 === 0 && /^[0-9a-f]+$/.test(normalized) && !candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
+  add(clean);
+  let body = clean;
+  if (body.startsWith("6a") && body.length >= 4) body = body.slice(4);
+  add(body);
+  const prefix = toHex(`ciph_msg:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`);
+  for (const value of [...candidates]) {
+    if (value.startsWith(prefix)) add(value.slice(prefix.length));
+  }
+  return candidates;
+}
+
+export function parseSelfStashPayload(clearText) {
+  const fallback = { alias: "", theirAlias: "", partnerAddress: "", isResponse: false };
+  try {
+    const parsed = JSON.parse(String(clearText || ""));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
+    return {
+      alias: String(parsed.alias || "").trim(),
+      theirAlias: String(parsed.theirAlias || "").trim(),
+      partnerAddress: String(parsed.partnerAddress || parsed.recipientAddress || "").trim(),
+      isResponse: Boolean(parsed.isResponse || false),
+      timestamp: Number(parsed.timestamp || 0),
+    };
+  } catch {
+    return fallback;
+  }
 }

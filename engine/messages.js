@@ -5,7 +5,7 @@
 //
 // The UI still defaults to preview mode. On-chain mode is intentionally explicit.
 
-import { buildCommMessage, buildEncryptedCommMessage, buildEncryptedHandshake, parseKasiaPayloadHex, KASIA_INTEGRATION_STATUS } from "./kasia-protocol.js";
+import { buildCommMessage, buildEncryptedCommMessage, buildEncryptedHandshake, buildSelfStash, parseKasiaPayloadHex, KASIA_INTEGRATION_STATUS } from "./kasia-protocol.js";
 import { encryptKasiaMessage } from "./kasia-cipher.js";
 import { sendPayloadTransaction } from "./transactions.js";
 
@@ -142,6 +142,14 @@ export async function sendMessageOnchain({ engine, envelope, amountKas = KASIA_I
     receiver: envelope.receiver || envelope.toAddress || null,
   });
 
+  // Matches iOS's buildContextualMessageTx exactly: a regular message (unlike
+  // a handshake) is a SELF-spend — the output pays back to the sender's own
+  // address, carrying the encrypted payload along for the ride. Nothing is
+  // actually paid to the recipient; the indexer finds it by scanning the
+  // sender's own address for a contextual-message payload tagged with the
+  // shared alias (see engine/sync.js's /contextual-messages/by-sender
+  // query), not by the recipient being a transaction output. The real cost
+  // is just the network fee, not the nominal output amount.
   await engine.connect();
   const sendResult = await sendPayloadTransaction({
     kaspa: engine.kaspa,
@@ -149,7 +157,7 @@ export async function sendMessageOnchain({ engine, envelope, amountKas = KASIA_I
     withRpc: engine.withRpc.bind(engine),
     privateKey: engine.privateKey,
     sourceAddress: engine.address,
-    destinationAddress: envelope.toAddress,
+    destinationAddress: engine.address,
     amountKas,
     feeKas,
     payload: envelope.protocolBytes || envelope.protocolString || envelope.payloadHex,
@@ -226,5 +234,37 @@ export async function sendHandshakeOnchain({ engine, envelope, amountKas = "0.2"
   });
   const txid = sendResult.txids?.[0] || "";
   onStatus({ status: "broadcast", txid, note: "Communication request submitted on-chain.", messageType: "handshake", transport: "onchain" });
+  return { status: "confirmed", txid, envelope, sendResult };
+}
+
+export async function createSelfStashEnvelope({
+  ourAlias,
+  theirAlias = null,
+  partnerAddress,
+  isResponse = false,
+  createdAt = Date.now(),
+  encryptToSelf,
+} = {}) {
+  return buildSelfStash({ ourAlias, theirAlias, partnerAddress, isResponse, createdAt, encryptToSelf });
+}
+
+export async function sendSelfStashOnchain({ engine, envelope, amountKas = "0.0001", feeKas = "0", onStatus = () => {} }) {
+  if (!engine?.kaspa || !engine?.privateKey || !engine?.address) throw new Error("Load a wallet before saving conversation recovery data.");
+  onStatus({ status: "pending", note: "Stashing encrypted conversation recovery data on-chain.", messageType: "self_stash", transport: "onchain" });
+  await engine.connect();
+  const sendResult = await sendPayloadTransaction({
+    kaspa: engine.kaspa,
+    rpc: engine.rpc,
+    withRpc: engine.withRpc.bind(engine),
+    privateKey: engine.privateKey,
+    sourceAddress: engine.address,
+    destinationAddress: engine.address,
+    amountKas,
+    feeKas,
+    payload: envelope.protocolBytes,
+    log: engine.log,
+  });
+  const txid = sendResult.txids?.[0] || "";
+  onStatus({ status: "broadcast", txid, note: "Conversation recovery data stashed on-chain.", messageType: "self_stash", transport: "onchain" });
   return { status: "confirmed", txid, envelope, sendResult };
 }

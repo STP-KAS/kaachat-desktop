@@ -1,13 +1,41 @@
 import { loadKaspaModule } from "./wasm-loader.js";
-import { connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
-import { generateWallet, generateMnemonicWallet, importMnemonic, importPrivateKey } from "./wallet.js";
-import { getBalance, sendKaspa } from "./transactions.js";
+import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
+import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importPrivateKey, deriveSpendingWallet, spendingDerivationPath } from "./wallet.js";
+import { getBalance, sendKaspa, estimateOnchainFee } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
-import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain } from "./messages.js";
-import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
+import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
+import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
 import { KASIA_PROTOCOL, KASIA_INTEGRATION_STATUS, buildCommMessage, buildEncryptedCommMessage, makeKasiaCommPayload, parseKasiaPayloadHex, decodePayload } from "./kasia-protocol.js";
 import { loadKasiaCipher, isKasiaCipherLoaded, decryptKasiaMessage, deriveKasiaAliases } from "./kasia-cipher.js";
 import { requireKaspa, NETWORK_ID } from "./utils.js";
+import { getEndpoint } from "./endpoints.js";
+import {
+  KNS_DEFAULT_MAINNET_URL,
+  normalizeDomainName as knsNormalizeDomainName,
+  looksLikeDomain as knsLooksLikeDomain,
+  resolveDomain as knsResolveDomain,
+  fetchAddressInfo as knsFetchAddressInfo,
+  getAddressInfo as knsGetAddressInfo,
+  fetchAddressProfile as knsFetchAddressProfile,
+  getAddressProfile as knsGetAddressProfile,
+  refreshIfNeeded as knsRefreshIfNeeded,
+  peekAddressInfo as knsPeekAddressInfo,
+  peekAddressProfile as knsPeekAddressProfile,
+  clearKnsCache,
+  clearAllKnsCache,
+  checkDomainAvailability as knsCheckDomainAvailability,
+  fetchInscribeFeeTiers as knsFetchInscribeFeeTiers,
+} from "./kns.js";
+import {
+  inscribeDomain as knsInscribeDomain,
+  submitProfileFields as knsSubmitProfileFields,
+  submitProfileField as knsSubmitProfileField,
+  validateProfileFields as knsValidateProfileFields,
+  uploadKnsProfileImage as knsUploadProfileImage,
+  peekPendingKnsCommit,
+  clearPendingKnsCommit,
+  KNS_ECONOMICS,
+} from "./kns-write.js";
 
 export class KaspaEngine {
   constructor({ log = () => {} } = {}) {
@@ -384,6 +412,10 @@ export class KaspaEngine {
     return getNodeRegistrySnapshot();
   }
 
+  clearNodeRegistry() {
+    return clearNodeRegistry();
+  }
+
   async disconnect() {
     this.stopRpcHeartbeat();
     await this.stopWalletSubscription();
@@ -399,14 +431,21 @@ export class KaspaEngine {
     return this.setWallet(generateWallet(this.kaspa));
   }
 
-  generateMnemonicWallet(wordCount = 24) {
+  generateMnemonicWallet(wordCount = 24, passphrase = "") {
     this.requireSdk();
-    return this.setWallet(generateMnemonicWallet(this.kaspa, wordCount));
+    return this.setWallet(generateMnemonicWallet(this.kaspa, wordCount, passphrase));
   }
 
-  importMnemonic(phrase) {
+  // Fresh phrase without deriving/setting a wallet — used by the creation flow to
+  // show the seed for backup before applying an (optional) passphrase.
+  generateMnemonicPhrase(wordCount = 24) {
     this.requireSdk();
-    return this.setWallet(importMnemonic(this.kaspa, phrase));
+    return generateMnemonicPhrase(this.kaspa, wordCount);
+  }
+
+  importMnemonic(phrase, passphrase = "") {
+    this.requireSdk();
+    return this.setWallet(importMnemonic(this.kaspa, phrase, passphrase));
   }
 
   importPrivateKey(hex) {
@@ -443,7 +482,7 @@ export class KaspaEngine {
     return balance;
   }
 
-  async send(destinationAddress, amountKas, feeKas = "0") {
+  async send(destinationAddress, amountKas, feeKas = "0", options = {}) {
     this.requireWallet();
     await this.connect();
     return sendKaspa({
@@ -455,8 +494,48 @@ export class KaspaEngine {
       destinationAddress,
       amountKas,
       feeKas,
+      selectedOutpoints: options.selectedOutpoints || null,
       log: this.log,
     });
+  }
+
+  // --- Spending-address chain (m/44'/111111'/1'/0/<index>) ---
+  // Derive a spending address/key from the account's recovery phrase. Does NOT
+  // change the active (chatting) wallet. `passphrase` must match what the seed
+  // was created with ("" for the common no-passphrase case).
+  deriveSpendingWallet(mnemonic, index, passphrase = "") {
+    this.requireSdk();
+    return deriveSpendingWallet(this.kaspa, mnemonic, index, passphrase);
+  }
+  spendingDerivationPath(index) { return spendingDerivationPath(index); }
+
+  async balanceForAddress(address) {
+    this.requireSdk();
+    await this.connect();
+    return this.withRpc((rpc) => getBalance(this.kaspa, rpc, address), { retries: 1, label: "Spending balance" });
+  }
+
+  // Send from a spending address, signing with its derived key.
+  async sendFromSpending({ mnemonic, index, passphrase = "", destinationAddress, amountKas, feeKas = "0", selectedOutpoints = null }) {
+    this.requireSdk();
+    await this.connect();
+    const spending = deriveSpendingWallet(this.kaspa, mnemonic, index, passphrase);
+    return sendKaspa({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      privateKey: spending.privateKey,
+      sourceAddress: spending.address,
+      destinationAddress,
+      amountKas,
+      feeKas,
+      selectedOutpoints,
+      log: this.log,
+    });
+  }
+
+  async drawQrFor(canvas, payload, colorOptions) {
+    return drawKaspaQr(canvas, payload, colorOptions);
   }
 
   createMessageEnvelope(details) {
@@ -532,15 +611,59 @@ export class KaspaEngine {
     return sendMessageOnchain({ engine: this, ...details });
   }
 
+  async estimateMessageFee(payloadBytes = 0) {
+    if (!this.kaspa || !this.address) return null;
+    await this.connect();
+    return estimateOnchainFee({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      sourceAddress: this.address,
+      amountKas: "0.2",
+      payloadBytes,
+    });
+  }
+
   async createEncryptedHandshakeEnvelope(details) {
-    return createEncryptedHandshakeEnvelope({ ...details, encryptMessage: async (address, text) => {
-      const result = await import("./kasia-cipher.js");
-      return result.encryptKasiaMessage(address, text);
-    } });
+    const peerAddress = details?.toAddress;
+    const aliases = await this.deriveConversationAliases(peerAddress);
+    return createEncryptedHandshakeEnvelope({
+      ...details,
+      alias: aliases.theirAlias,
+      encryptMessage: async (address, text) => {
+        const result = await import("./kasia-cipher.js");
+        return result.encryptKasiaMessage(address, text);
+      },
+    });
   }
 
   async sendHandshakeOnchain(details) {
     return sendHandshakeOnchain({ engine: this, ...details });
+  }
+
+  async createSelfStashEnvelope(details) {
+    return createSelfStashEnvelope({
+      ...details,
+      encryptToSelf: async (text) => {
+        const result = await import("./kasia-cipher.js");
+        return result.encryptKasiaMessage(this.address, text);
+      },
+    });
+  }
+
+  async sendSelfStashOnchain(details) {
+    return sendSelfStashOnchain({ engine: this, ...details });
+  }
+
+  async syncSelfStashFromChain(details = {}) {
+    this.requireWallet();
+    if (!this.isKasiaCipherLoaded()) await this.loadKasiaCipher();
+    return syncSelfStashFromChain({
+      ...details,
+      walletAddress: this.address,
+      privateKeyHex: this.privateKeyHex,
+      decryptMessage: async (encryptedHex) => this.decryptKasiaMessage(encryptedHex),
+    });
   }
 
   buildConversationSyncPlan(details) {
@@ -591,12 +714,108 @@ export class KaspaEngine {
     return makeQrPayload(this.address);
   }
 
-  async drawQr(canvas) {
-    return drawKaspaQr(canvas, this.qrPayload());
+  async drawQr(canvas, colorOptions) {
+    return drawKaspaQr(canvas, this.qrPayload(), colorOptions);
   }
 
   version() {
     return this.kaspa?.version ? this.kaspa.version() : "";
+  }
+
+  knsNormalizeDomainName(raw) {
+    return knsNormalizeDomainName(raw);
+  }
+
+  knsLooksLikeDomain(input) {
+    return knsLooksLikeDomain(input);
+  }
+
+  async resolveKnsDomain(domain, options = {}) {
+    return knsResolveDomain(domain, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  async fetchKnsAddressInfo(address, options = {}) {
+    return knsFetchAddressInfo(address, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  async getKnsAddressInfo(address, options = {}) {
+    return knsGetAddressInfo(address, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  async fetchKnsAddressProfile(address, options = {}) {
+    return knsFetchAddressProfile(address, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  async getKnsAddressProfile(address, options = {}) {
+    return knsGetAddressProfile(address, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  async refreshKnsIfNeeded(addresses, options = {}) {
+    return knsRefreshIfNeeded(addresses, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  peekKnsAddressInfo(address) {
+    return knsPeekAddressInfo(address);
+  }
+
+  peekKnsAddressProfile(address) {
+    return knsPeekAddressProfile(address);
+  }
+
+  clearKnsCache(address) {
+    return clearKnsCache(address);
+  }
+
+  clearAllKnsCache() {
+    return clearAllKnsCache();
+  }
+
+  async checkKnsDomainAvailability(domainInput, options = {}) {
+    this.requireWallet();
+    return knsCheckDomainAvailability(this.address, domainInput, { baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  async fetchKnsFeeTiers(options = {}) {
+    return knsFetchInscribeFeeTiers({ baseUrl: getEndpoint("knsApi"), ...options });
+  }
+
+  knsEconomics() {
+    return KNS_ECONOMICS;
+  }
+
+  validateKnsProfileFields(fields) {
+    return knsValidateProfileFields(fields);
+  }
+
+  peekPendingKnsCommit() {
+    return peekPendingKnsCommit();
+  }
+
+  clearPendingKnsCommit() {
+    return clearPendingKnsCommit();
+  }
+
+  async inscribeKnsDomain(label, { onStatus = () => {} } = {}) {
+    this.requireWallet();
+    await this.connect();
+    return knsInscribeDomain({ engine: this, label, onStatus, log: this.log });
+  }
+
+  async submitKnsProfileField(assetId, key, value, { onStatus = () => {} } = {}) {
+    this.requireWallet();
+    await this.connect();
+    return knsSubmitProfileField({ engine: this, assetId, key, value, onStatus, log: this.log });
+  }
+
+  async submitKnsProfileFields(assetId, fields, { onStatus = () => {} } = {}) {
+    this.requireWallet();
+    await this.connect();
+    return knsSubmitProfileFields({ engine: this, assetId, fields, onStatus, log: this.log });
+  }
+
+  async uploadKnsProfileImage(assetId, uploadType, blob) {
+    this.requireWallet();
+    return knsUploadProfileImage({ engine: this, assetId, uploadType, blob, baseUrl: getEndpoint("knsApi") });
   }
 }
 

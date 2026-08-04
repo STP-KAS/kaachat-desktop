@@ -3,23 +3,39 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KaChat Desktop — Step 77</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=103" />
+  <title>KaChat Desktop — Step 101</title>
+  <link rel="stylesheet" href="./ui/styles.css?v=181" />
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#070a0d" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="KaChat" />
 </head>
 <body>
   <section class="logged-out-screen" data-logged-out-screen hidden aria-label="KaChat saved accounts">
     <div class="logged-out-content">
-      <div class="logged-out-brand" aria-hidden="true">
-        <span class="brand-bubble brand-bubble-left"></span>
-        <span class="brand-bubble brand-bubble-right"></span>
-      </div>
+      <span class="logged-out-logo" aria-hidden="true"><img src="./ui/assets/kachat-logo.png" alt="" /></span>
       <h1>KaChat</h1>
       <p class="logged-out-tagline">Secure messaging on Kaspa BlockDAG</p>
 
       <section class="saved-accounts-section">
-        <h2>Saved Accounts</h2>
+        <p class="logged-out-section-label">Saved Accounts</p>
         <div class="saved-account-list" data-saved-account-list></div>
       </section>
+
+      <div class="account-action-menu" data-account-action-menu hidden role="menu">
+        <button class="account-action-menu-item" type="button" data-menu-action="rename" role="menuitem">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          Rename
+        </button>
+        <button class="account-action-menu-item account-action-menu-item-destructive" type="button" data-menu-action="delete" role="menuitem">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg>
+          Delete
+        </button>
+      </div>
 
       <div class="logged-out-actions">
         <button class="logged-out-primary" type="button" data-logged-out-create><span>＋</span>Create New Account</button>
@@ -29,32 +45,47 @@
   </section>
 
   <main id="app" class="kachat-shell" aria-label="KaChat web shell">
-    <section class="phone-frame">
-      <header class="chat-toolbar">
-        <div class="toolbar-health-cluster">
-          <button class="service-health-button" data-service-health-button data-open-tab="settings" type="button" aria-label="Service status. Open Settings" title="Open Settings">
-            <span class="service-health-led busy" data-service-health-led aria-hidden="true"></span>
-          </button>
-        </div>
-        <div class="toolbar-balance" data-toolbar-balance title="Current wallet balance">
-          <span data-toolbar-balance-value>-- KAS</span>
-        </div>
-        <button class="icon-button import-toolbar-button js-open-contact" aria-label="Create chat" title="Create chat">
-          <span class="create-chat-tool-icon" aria-hidden="true"><svg class="person-plus-icon" viewBox="0 0 32 32" focusable="false" aria-hidden="true">
-            <circle cx="12" cy="8.5" r="5.25"/>
-            <path d="M3.5 24.5c.7-5.4 4-8.7 8.5-8.7 2.3 0 4.3.8 5.8 2.3"/>
-            <circle cx="24.2" cy="21.8" r="5.3"/>
-            <path d="M24.2 18.9v5.8M21.3 21.8h5.8"/>
-          </svg></span>
+    <header class="app-topbar">
+      <div class="app-topbar-brand">
+        <img class="app-topbar-logo" src="./ui/assets/kachat-logo.png" alt="KaChat" width="36" height="36" />
+        <span class="app-topbar-title">KaChat</span>
+      </div>
+      <div class="toolbar-health-cluster">
+        <button class="service-health-button" data-service-health-button data-open-connection-status type="button" aria-label="Service status. Open Connection Status" title="Open Connection Status">
+          <span class="service-health-led busy" data-service-health-led aria-hidden="true"></span>
         </button>
-      </header>
+      </div>
+      <div class="toolbar-balance" data-toolbar-balance title="Current wallet balance">
+        <span data-toolbar-balance-value>-- KAS</span>
+      </div>
+    </header>
 
-      <section class="search-wrap" data-search-wrap aria-label="Search chats">
-        <input class="search-input" type="search" placeholder="Search chats" autocomplete="off" />
-      </section>
+    <div class="app-body" data-app-body>
+      <aside class="app-sidebar" data-app-sidebar>
+        <nav class="chats-tab-bar" data-chats-tab-bar aria-label="Chat list sections">
+          <button type="button" class="chats-tab-button active" data-chats-list-tab="chats">
+            <span class="chats-tab-label-row">
+              <span>Chats</span>
+              <span class="chats-tab-badge" data-chats-tab-badge hidden>0</span>
+            </span>
+          </button>
+          <button type="button" class="chats-tab-button" data-chats-list-tab="groups">
+            <span class="chats-tab-label-row">
+              <span>Group Chats</span>
+              <span class="chats-tab-badge" data-groups-tab-badge hidden>0</span>
+            </span>
+          </button>
+        </nav>
 
-      <section class="chat-content" aria-live="polite">
-        <div class="app-screen screen-chats" data-screen="chats">
+        <div class="chat-select-row">
+          <button type="button" class="chat-select-toggle" data-chat-select-toggle>Select</button>
+        </div>
+
+        <section class="search-wrap" data-search-wrap aria-label="Search chats">
+          <input class="search-input" type="search" placeholder="Search chats" autocomplete="off" />
+        </section>
+
+        <div class="sidebar-scroll">
           <div class="empty-state-card" data-empty-state>
             <div class="empty-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
@@ -75,16 +106,70 @@
             </button>
           </div>
 
-          <div class="chat-list" data-chat-list hidden></div>
+          <div class="group-chats-placeholder" data-group-chats-placeholder hidden>
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+                <path d="M2.5 19.5c.6-3.9 3-6.3 6.5-6.3s5.9 2.4 6.5 6.3"/>
+                <path d="M16.3 6.2a3.2 3.2 0 1 1 1.9 5.8"/>
+                <path d="M15.8 13.3c2.9.4 4.7 2.3 5.2 5.4"/>
+              </svg>
+            </div>
+            <h1>No Group Chats Yet</h1>
+            <span class="architecture-badge">Coming Soon</span>
+            <p>Group conversations are coming in a future release.</p>
+          </div>
 
-          <article class="conversation-view" data-conversation hidden>
+          <div class="chat-list" data-chat-list hidden></div>
+        </div>
+
+        <div class="chat-selection-bar" data-chat-selection-bar hidden>
+          <button type="button" class="chat-selection-action" data-chat-mark-read>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5h16v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-11Z"/><path d="m4.5 6.8 7.5 6 7.5-6"/></svg>
+            <span>Mark as Read</span>
+          </button>
+          <button type="button" class="chat-selection-action" data-chat-mark-unread>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5h16v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-11Z"/><path d="m4.5 6.8 7.5 6 7.5-6"/><circle cx="18.5" cy="5.5" r="3.4" fill="currentColor" stroke="none"/></svg>
+            <span>Mark as Unread</span>
+          </button>
+          <button type="button" class="chat-selection-action danger" data-chat-delete-selected>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 .8 12.1A2 2 0 0 0 8.8 21h6.4a2 2 0 0 0 2-1.9L18 7"/></svg>
+            <span>Delete</span>
+          </button>
+        </div>
+      </aside>
+
+      <button class="new-chat-fab js-open-contact" type="button" data-new-chat-fab aria-label="Create chat" title="Create chat">
+        <svg class="person-plus-icon" viewBox="0 0 32 32" focusable="false" aria-hidden="true">
+          <circle cx="12" cy="8.5" r="5.25"/>
+          <path d="M3.5 24.5c.7-5.4 4-8.7 8.5-8.7 2.3 0 4.3.8 5.8 2.3"/>
+          <circle cx="24.2" cy="21.8" r="5.3"/>
+          <path d="M24.2 18.9v5.8M21.3 21.8h5.8"/>
+        </svg>
+      </button>
+
+      <section class="app-detail" data-app-detail aria-live="polite">
+        <div class="detail-empty-state" data-detail-empty>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/>
+              <path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/>
+            </svg>
+          </div>
+          <h1>Select a conversation</h1>
+          <p>Choose a chat from the list, or start a new encrypted conversation.</p>
+        </div>
+
+        <article class="conversation-view" data-conversation hidden>
             <div class="conversation-header">
               <button class="back-button" data-back-to-chats type="button" aria-label="Back to chats">‹</button>
-              <div class="conversation-identity">
+              <button class="conversation-identity" type="button" data-open-chat-info aria-label="Open chat info">
+                <span class="conversation-avatar" data-conversation-avatar aria-hidden="true">
+                  <span data-conversation-avatar-initials></span>
+                  <img data-conversation-avatar-image alt="" hidden />
+                </span>
                 <h1 data-conversation-name>Contact</h1>
-              </div>
-              <button class="header-copy-button" data-copy-contact-address type="button" aria-label="Copy contact address" title="Copy contact address">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+                <p class="conversation-bio" data-conversation-bio hidden></p>
               </button>
             </div>
             <div class="conversation-utility-controls" hidden aria-hidden="true">
@@ -102,8 +187,14 @@
             </div>
             <div class="message-area" data-message-area><div data-message-empty hidden aria-hidden="true"></div></div>
 
+            <div class="handshake-warning-banner" data-handshake-warning-banner hidden role="status" aria-live="polite">
+              <span>The recipient won't see your messages until they message you or you ping them with a handshake. Handshakes cost 0.2 KAS and are returned to you if they accept.</span>
+              <button type="button" data-handshake-warning-send>Send Handshake</button>
+            </div>
+
             <div class="composer-shell">
               <div class="available-balance-banner" data-available-balance-banner hidden role="status" aria-live="polite"></div>
+              <div class="fee-estimate-banner" data-fee-estimate-banner hidden role="status" aria-live="polite"></div>
               <div class="composer-plus-menu" data-composer-plus-menu hidden>
                 <button type="button" data-composer-mode="message">
                   <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6.5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-7.2L7.5 21v-3.5H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z"/><path d="M7 10h10M7 13.5h7"/></svg></span>
@@ -121,6 +212,37 @@
                   <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6"/></svg></span>
                   <strong>Send Voice Recording</strong>
                 </button>
+                <button type="button" data-chess-open>
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg></span>
+                  <strong>Play Chess</strong>
+                </button>
+                <button type="button" data-composer-mode="handshake" data-composer-handshake>
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 11.5 3.5 15a2 2 0 0 0 2.83 2.83L9.5 14.7"/><path d="m9.5 14.7 1.5 1.5a2 2 0 0 0 2.83-2.83l-3.9-3.9a3 3 0 0 0-4.24 0L4.5 11.5"/><path d="M13.5 8.5 16 6a2 2 0 0 1 2.83 0l1.67 1.67a2 2 0 0 1 0 2.83L18 13"/><path d="M11 6.5 12.5 5a2 2 0 0 1 2.83 0"/></svg></span>
+                  <strong>Send Handshake</strong>
+                </button>
+              </div>
+
+              <input type="file" accept="image/*" hidden data-photo-file-input />
+              <div class="pending-photo-preview" data-pending-photo-preview hidden>
+                <img data-pending-photo-thumb alt="Pending photo attachment" />
+                <span class="pending-photo-meta" data-pending-photo-meta></span>
+                <button type="button" class="pending-photo-remove" data-pending-photo-remove aria-label="Remove photo">×</button>
+              </div>
+
+              <div class="voice-recording-panel" data-voice-recording-panel hidden>
+                <span class="voice-recording-dot" aria-hidden="true"></span>
+                <span data-voice-recording-time>0:00</span>
+                <span class="voice-recording-hint">Recording voice message…</span>
+                <button type="button" class="voice-recording-cancel" data-voice-recording-cancel aria-label="Cancel recording">Cancel</button>
+                <button type="button" class="voice-recording-stop" data-voice-recording-stop>Send</button>
+              </div>
+
+              <div class="reply-banner" data-reply-banner hidden>
+                <div class="reply-banner-body">
+                  <strong>Replying to</strong>
+                  <span data-reply-banner-preview></span>
+                </div>
+                <button type="button" data-cancel-reply aria-label="Cancel reply">×</button>
               </div>
 
               <form class="composer kachat-composer" data-composer>
@@ -134,180 +256,500 @@
               </form>
             </div>
           </article>
+
+        <div class="app-placeholder-screen" data-app-tab-screen="cold-storage" hidden>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2.4"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.6"/></svg>
+          </div>
+          <h1>Cold Storage</h1>
+          <span class="architecture-badge">Coming Soon</span>
+          <p>Watch-only accounts and air-gapped hardware signing are coming in a future release.</p>
         </div>
 
-        <section class="app-screen utility-screen settings-screen" data-screen="settings" hidden>
-          <p class="screen-kicker">KaChat</p>
-          <h1>Settings</h1>
-          <p class="screen-copy">Core services now start automatically. Create or import a session wallet to finish connecting.</p>
+        <div class="app-placeholder-screen" data-app-tab-screen="portfolio" hidden>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M21.18 15.9A10 10 0 1 1 8.1 2.82"/><path d="M22 12A10 10 0 0 0 12 2v10Z"/></svg>
+          </div>
+          <h1>Portfolio</h1>
+          <span class="architecture-badge">Coming Soon</span>
+          <p>KAS price history and a buy/sell transaction ledger are coming in a future release.</p>
+        </div>
 
-          <div class="settings-architecture-stack" aria-label="KaChat architecture status">
-            <section class="settings-status-card">
-              <div class="settings-card-title">
-                <div><p class="screen-kicker">Core</p><h2>Runtime &amp; Identity</h2></div>
-                <span class="architecture-badge">Phase 5A</span>
-              </div>
-              <div class="service-row">
-                <span class="service-indicator" data-runtime-indicator></span>
-                <div><strong>App Runtime</strong><small data-runtime-status>Starting Rusty Kaspa…</small></div>
-              </div>
-              <div class="service-row">
-                <span class="service-indicator" data-wallet-indicator></span>
-                <div><strong>Wallet Identity</strong><small data-wallet-status>Restoring browser wallet…</small></div>
-              </div>
-            </section>
+        <div class="app-placeholder-screen" data-app-tab-screen="swaps" hidden>
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+          </div>
+          <h1>Swaps</h1>
+          <span class="architecture-badge">Coming Soon</span>
+          <p>KAS token swaps are coming in a future release.</p>
+        </div>
 
-            <section class="settings-status-card">
-              <div class="settings-card-title">
-                <div><p class="screen-kicker">Connection</p><h2>Kaspa Network</h2></div>
-                <span class="architecture-badge" data-network-badge>Starting</span>
-              </div>
-              <div class="service-row">
-                <span class="service-indicator" data-network-indicator></span>
-                <div><strong>Primary RPC</strong><small data-network-status>Waiting for wallet</small></div>
-              </div>
-              <div class="service-row">
-                <span class="service-indicator" data-standby-indicator></span>
-                <div><strong>Warm Standby</strong><small data-standby-status>Waiting for primary RPC</small></div>
-              </div>
-              <div class="service-row architecture-detail-row">
-                <span class="architecture-icon">◎</span>
-                <div><strong>Node Pool</strong><small data-node-pool-status>Preparing persistent endpoint history</small></div>
-              </div>
-              <div class="service-row architecture-detail-row">
-                <span class="architecture-icon">↯</span>
-                <div><strong>Last Successful Node</strong><small data-last-good-node>None recorded yet</small></div>
-              </div>
-              <div class="service-row architecture-detail-row">
-                <span class="architecture-icon">◌</span>
-                <div><strong>Connection History</strong><small data-node-pool-history>No connection attempts recorded</small></div>
-              </div>
-            </section>
-
-            <section class="settings-status-card">
-              <div class="settings-card-title">
-                <div><p class="screen-kicker">Messaging</p><h2>Kasia Services</h2></div>
-                <span class="architecture-badge" data-messaging-badge>Starting</span>
-              </div>
-              <div class="service-row">
-                <span class="service-indicator" data-messaging-indicator></span>
-                <div><strong>Kasia Cipher</strong><small data-messaging-status>Loading encryption runtime…</small></div>
-              </div>
-              <div class="service-row architecture-detail-row">
-                <span class="service-indicator" data-subscription-indicator></span>
-                <div><strong>Sync &amp; Subscriptions</strong><small data-sync-service-status>Starting live wallet subscription…</small></div>
-              </div>
-            </section>
-
-            <section class="settings-status-card">
-              <div class="settings-card-title">
-                <div><p class="screen-kicker">Local Data</p><h2>Storage &amp; Recovery</h2></div>
-                <span class="architecture-badge ready">Active</span>
-              </div>
-              <div class="service-row architecture-detail-row">
-                <span class="architecture-icon">▣</span>
-                <div><strong>Browser Storage</strong><small data-storage-status>Wallet, contacts and messages persisted locally</small></div>
-              </div>
-              <div class="service-row architecture-detail-row">
-                <span class="architecture-icon">◇</span>
-                <div><strong>Recovery Layer</strong><small>Verified wallet record and message-history backup</small></div>
-              </div>
-            </section>
+        <div class="profile-screen" data-app-tab-screen="profile" hidden>
+          <div class="profile-screen-header">
+            <button class="profile-gear-button" type="button" data-open-account-view="settings" aria-label="Settings" title="Settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.369-.491l1.217.456c.355.133.75.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z"/>
+                <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+              </svg>
+            </button>
           </div>
 
-          <section class="settings-group account-session-card">
-            <div class="settings-group-heading">
-              <div><p class="screen-kicker">Account</p><h2>Account &amp; Session</h2></div>
-              <span class="transport-pill" data-account-session-badge>Active</span>
-            </div>
-            <button class="settings-list-row account-summary-row" type="button" data-open-profile-account>
-              <span class="settings-row-icon">◎</span>
-              <span class="settings-row-copy"><strong data-settings-account-name>Current Account</strong><small data-settings-account-address>No wallet loaded</small></span>
-              <span class="settings-row-chevron">›</span>
-            </button>
-            <button class="primary-button full" type="button" data-open-account-manager>Add Account</button>
-            <div class="settings-toggle-row">
-              <span><strong>Save account on this device</strong><small>Encrypted key storage arrives in the next security phase.</small></span>
-              <label class="switch-control"><input type="checkbox" data-pref-save-account checked><span></span></label>
-            </div>
-            <div class="settings-toggle-row">
-              <span><strong>Keep me signed in</strong><small>Restore the active account when KaChat opens.</small></span>
-              <label class="switch-control"><input type="checkbox" data-pref-keep-signed-in checked><span></span></label>
-            </div>
-            <button class="settings-list-row" type="button" data-shell-action="auto-lock">
-              <span class="settings-row-icon">◷</span><span class="settings-row-copy"><strong>Auto-lock</strong><small data-auto-lock-label>15 minutes</small></span><span class="settings-row-chevron">›</span>
-            </button>
-          </section>
-
-          <div class="transport-card" data-transport-card>
-            <div class="transport-header">
-              <div><p class="screen-kicker">Messaging</p><h2>On-chain Messages</h2></div>
-            </div>
-            <label class="transport-toggle">
-              <input type="checkbox" data-onchain-toggle />
-              <span>Use real on-chain message transactions</span>
-            </label>
-            <label class="field-label compact transport-amount-field">
-              Message amount KAS
-              <input class="field-input" data-onchain-amount type="text" value="0.2" inputmode="decimal" autocomplete="off" />
-            </label>
+          <div class="profile-card profile-account-card">
+            <p class="profile-card-label">Account</p>
+            <input class="profile-name-input" data-profile-account-name type="text" value="Current Account" maxlength="48" autocomplete="off" aria-label="Account name" />
           </div>
 
+          <button class="profile-card profile-recovery-row profile-guide-row" type="button" data-open-setup-guide data-setup-guide-row>
+            <span>Welcome Guide</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3z"/><path d="M18.5 13.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/></svg>
+          </button>
+
+          <p class="profile-section-label">KNS Profile</p>
+          <div class="profile-card profile-kns-card">
+            <button class="profile-kns-empty-cta" type="button" data-open-kns-register data-profile-kns-empty-cta>
+              <span class="profile-kns-empty-text">Create KNS Profile</span>
+            </button>
+            <div class="profile-kns-owned" data-profile-kns-owned hidden>
+              <div class="profile-kns-owned-header">
+                <strong data-profile-kns-domain></strong>
+                <span class="architecture-badge ready">Verified</span>
+              </div>
+              <p class="chat-info-bio" data-profile-kns-bio hidden></p>
+              <div class="chat-info-social-links" data-profile-kns-links></div>
+              <button class="secondary-button full" type="button" data-open-kns-editor>Edit Profile</button>
+            </div>
+          </div>
+
+          <div class="profile-qr-row">
+            <button class="profile-qr-button" type="button" data-profile-qr-trigger>
+              <span class="profile-qr-circle" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 18v3"/></svg></span>
+              <span>Receive Kaspa</span>
+            </button>
+            <button class="profile-qr-button" type="button" data-open-chatting-address>
+              <span class="profile-qr-circle" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 18v3"/></svg></span>
+              <span>Chatting Address</span>
+            </button>
+          </div>
+
+          <div class="profile-qr-card" data-profile-qr-card hidden>
+            <canvas width="512" height="512" data-profile-qr></canvas>
+            <button class="profile-address-button" type="button" data-copy-engine-address><span class="profile-address" data-profile-address>No wallet loaded</span></button>
+          </div>
+
+          <div class="profile-card profile-dropdown" data-profile-dropdown>
+            <button class="profile-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+              <span>Chatting Address</span>
+              <span class="profile-dropdown-balance" data-profile-balance>-- KAS</span>
+              <svg class="profile-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="profile-dropdown-body" hidden>
+              <button class="profile-dropdown-row" type="button" data-copy-engine-address>Copy Address</button>
+              <button class="profile-dropdown-row" type="button" data-open-send-kaspa>Send Kaspa</button>
+              <button class="profile-dropdown-row" type="button" data-open-manage-address>Manage Address</button>
+            </div>
+          </div>
+
+          <div class="profile-card profile-dropdown" data-profile-dropdown>
+            <button class="profile-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+              <span>Spending Address</span>
+              <span class="profile-dropdown-balance" data-spending-balance>-- KAS</span>
+              <svg class="profile-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="profile-dropdown-body" hidden>
+              <button class="profile-dropdown-row" type="button" data-copy-spending-address>Copy Address</button>
+              <button class="profile-dropdown-row" type="button" data-open-spending-receive>Receive</button>
+              <button class="profile-dropdown-row" type="button" data-open-spending-send>Send Kaspa</button>
+              <button class="profile-dropdown-row" type="button" data-open-spending-manage>Manage Addresses</button>
+            </div>
+          </div>
+
+          <p class="profile-section-label">About</p>
+          <div class="profile-card profile-about-card">
+            <div class="profile-about-row"><strong>Created</strong><span data-profile-created>—</span></div>
+          </div>
+
+          <button class="profile-card profile-gift-row" type="button" data-mockup-action="gift">
+            <span>Gift unavailable</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12v9H4v-9M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7ZM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7Z"/></svg>
+          </button>
+
+          <button class="profile-card profile-recovery-row" type="button" data-shell-action="view-recovery">
+            <span>View Seed Phrase</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12l9-9M17 6l3 3M14 9l3 3"/></svg>
+          </button>
+
+          <button class="profile-card profile-logout-row" type="button" data-shell-action="logout">
+            <span>Log Out</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5.75A1.75 1.75 0 0 0 4 5.75v12.5C4 19.22 4.78 20 5.75 20H10"/><path d="M14 8l4 4-4 4"/><path d="M18 12H9"/></svg>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <nav class="sidebar-tabbar" aria-label="Main sections">
+      <button class="sidebar-tab" type="button" data-app-tab="cold-storage">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2.4"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.6"/></svg></span>
+        <span>Storage</span>
+      </button>
+      <button class="sidebar-tab" type="button" data-app-tab="portfolio">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21.18 15.9A10 10 0 1 1 8.1 2.82"/><path d="M22 12A10 10 0 0 0 12 2v10Z"/></svg></span>
+        <span>Portfolio</span>
+      </button>
+      <button class="sidebar-tab active" type="button" data-app-tab="chats" aria-current="page">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg></span>
+        <span>Chats</span>
+      </button>
+      <button class="sidebar-tab" type="button" data-app-tab="swaps">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+        <span>Swaps</span>
+      </button>
+      <button class="sidebar-tab" type="button" data-app-tab="profile">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.25"/><circle cx="12" cy="8.35" r="3.35"/><path d="M5.8 18.75c1.2-3.15 3.35-4.7 6.2-4.7s5 1.55 6.2 4.7"/></svg></span>
+        <span>Profile</span>
+      </button>
+    </nav>
+  </main>
+
+  <div class="account-overlay" data-account-overlay hidden role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="account-overlay-card">
+      <header class="account-overlay-header">
+        <h2 class="account-overlay-title">Settings</h2>
+        <button class="modal-close" type="button" data-close-account-overlay aria-label="Close">×</button>
+      </header>
+      <div class="account-overlay-body">
+        <section class="app-screen utility-screen settings-screen" data-screen="settings">
           <section class="settings-group">
-            <p class="settings-group-label">Chats</p>
+            <p class="settings-group-label">Customization</p>
             <div class="settings-list-card">
-              <div class="settings-toggle-row"><span><strong>Estimate fees while composing</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
-              <div class="settings-toggle-row"><span><strong>Hide auto-created payment chats</strong><small>Keep payment-only conversations out of the main list.</small></span><label class="switch-control"><input type="checkbox" data-pref-hide-payment-chats><span></span></label></div>
-              <div class="settings-toggle-row"><span><strong>Show contact balance</strong><small>Display known contact balances where available.</small></span><label class="switch-control"><input type="checkbox" data-pref-show-contact-balance checked><span></span></label></div>
-              <button class="settings-list-row" type="button" data-shell-action="notifications"><span class="settings-row-icon">♧</span><span class="settings-row-copy"><strong>Notifications</strong><small>Browser notification architecture placeholder</small></span><span class="settings-row-chevron">›</span></button>
+              <div class="settings-toggle-row settings-segmented-row">
+                <span><strong data-i18n="appearance">Appearance</strong></span>
+                <div class="settings-segmented" role="group" aria-label="Appearance" data-theme-segmented>
+                  <button type="button" class="settings-segmented-option" data-theme-option="system" data-i18n="theme.system">System</button>
+                  <button type="button" class="settings-segmented-option" data-theme-option="light" data-i18n="theme.light">Light</button>
+                  <button type="button" class="settings-segmented-option" data-theme-option="dark" data-i18n="theme.dark">Dark</button>
+                </div>
+              </div>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong data-i18n="language">Language</strong><small>App display language.</small></span>
+                  <span class="settings-dropdown-value" data-language-current>System</span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="system">System</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="en">English</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="es">Español</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="de">Deutsch</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="fr">Français</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="it">Italiano</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="pt">Português</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="ru">Русский</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="tr">Türkçe</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="ar">العربية</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="ar-EG">العربية (مصر)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="fa">فارسی</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="he">עברית</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="hi">हिन्दी</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="bn">বাংলা</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="ja">日本語</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="ko">한국어</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="vi">Tiếng Việt</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="zh-Hans">简体中文</button>
+                </div>
+              </div>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong data-i18n="currency">Currency</strong><small>Fiat used for KAS value display.</small></span>
+                  <span class="settings-dropdown-value" data-currency-current>US Dollar (USD)</span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="usd">US Dollar (USD)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="eur">Euro (EUR)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="gbp">British Pound (GBP)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="jpy">Japanese Yen (JPY)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="cny">Chinese Yuan (CNY)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="aud">Australian Dollar (AUD)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="cad">Canadian Dollar (CAD)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="chf">Swiss Franc (CHF)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="hkd">Hong Kong Dollar (HKD)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="inr">Indian Rupee (INR)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="krw">South Korean Won (KRW)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="sgd">Singapore Dollar (SGD)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="nzd">New Zealand Dollar (NZD)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="mxn">Mexican Peso (MXN)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="brl">Brazilian Real (BRL)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="rub">Russian Ruble (RUB)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="try">Turkish Lira (TRY)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="zar">South African Rand (ZAR)</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="btc">Bitcoin (BTC)</button>
+                </div>
+              </div>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong>Menu</strong><small>Choose which tabs appear in your bottom menu.</small></span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg>Chats</span>
+                    <span class="menu-tab-locked">Always shown</span>
+                  </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><circle cx="12" cy="8.35" r="3.35"/><path d="M5.8 18.75c1.2-3.15 3.35-4.7 6.2-4.7s5 1.55 6.2 4.7"/></svg>Profile</span>
+                    <span class="menu-tab-locked">Always shown</span>
+                  </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.18 15.9A10 10 0 1 1 8.1 2.82"/><path d="M22 12A10 10 0 0 0 12 2v10Z"/></svg>Portfolio</span>
+                    <label class="switch-control"><input type="checkbox" data-menu-tab="portfolio" checked><span></span></label>
+                  </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2.4"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.6"/></svg>Cold Storage</span>
+                    <label class="switch-control"><input type="checkbox" data-menu-tab="cold-storage" checked><span></span></label>
+                  </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>Swap</span>
+                    <label class="switch-control"><input type="checkbox" data-menu-tab="swaps" checked><span></span></label>
+                  </div>
+                </div>
+              </div>
+              <div class="settings-toggle-row"><span><strong>Show Setup Guides</strong></span><label class="switch-control"><input type="checkbox" data-pref-show-setup-guides checked><span></span></label></div>
             </div>
           </section>
 
           <section class="settings-group">
-            <p class="settings-group-label">Storage</p>
+            <p class="settings-group-label">Security</p>
             <div class="settings-list-card">
-              <div class="settings-toggle-row"><span><strong>Store encrypted messages locally</strong><small>Required for browser history and future cross-device backup.</small></span><label class="switch-control"><input type="checkbox" data-pref-store-messages checked><span></span></label></div>
-              <button class="settings-list-row" type="button" data-shell-action="retention"><span class="settings-row-icon">◫</span><span class="settings-row-copy"><strong>Message retention</strong><small data-retention-label>30 days</small></span><span class="settings-row-chevron">›</span></button>
-              <button class="settings-list-row" type="button" data-shell-action="export-history"><span class="settings-row-icon">⇧</span><span class="settings-row-copy"><strong>Export Chat History</strong><small>Account-scoped export frame</small></span><span class="settings-row-chevron">›</span></button>
-              <button class="settings-list-row" type="button" data-shell-action="import-history"><span class="settings-row-icon">⇩</span><span class="settings-row-copy"><strong>Import Chat History</strong><small>Account-scoped import frame</small></span><span class="settings-row-chevron">›</span></button>
+              <div class="settings-toggle-row"><span><strong>Password for Seed Phrase</strong><small>Require your password to reveal the seed phrase or private key.</small></span><label class="switch-control"><input type="checkbox" data-pref-password-seed><span></span></label></div>
+              <div class="settings-toggle-row"><span><strong>Password for Account Login</strong><small>Require your password when signing in to a saved account.</small></span><label class="switch-control"><input type="checkbox" data-pref-password-login><span></span></label></div>
+              <button class="settings-list-row" type="button" data-change-password><span class="settings-row-copy"><strong>Change Password</strong><small data-password-status>No password set</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+              <button class="settings-list-row" type="button" data-shell-action="view-recovery"><span class="settings-row-copy"><strong>View Seed Phrase</strong><small>Reveal your account's recovery phrase.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+              <div class="settings-toggle-row"><span><strong>Save account on this device</strong><small>Encrypted key storage arrives in the next security phase.</small></span><label class="switch-control"><input type="checkbox" data-pref-save-account checked><span></span></label></div>
+              <div class="settings-toggle-row"><span><strong>Keep me signed in</strong><small>Restore the active account when KaChat opens.</small></span><label class="switch-control"><input type="checkbox" data-pref-keep-signed-in checked><span></span></label></div>
             </div>
           </section>
 
           <section class="settings-group">
             <p class="settings-group-label">Connection</p>
             <div class="settings-list-card">
-              <button class="settings-list-row" type="button" data-shell-action="connection"><span class="settings-row-icon">◎</span><span class="settings-row-copy"><strong>Connection Settings</strong><small>Mainnet · primary + warm standby</small></span><span class="settings-row-chevron">›</span></button>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong>Connection Settings</strong></span>
+                  <span class="settings-dropdown-caption">Mainnet</span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <div class="settings-toggle-row settings-segmented-row">
+                    <span><strong>Network</strong></span>
+                    <div class="settings-segmented">
+                      <button type="button" class="settings-segmented-option active" data-mockup-action="network-mainnet">Mainnet</button>
+                      <button type="button" class="settings-segmented-option" data-mockup-action="network-testnet">Testnet</button>
+                    </div>
+                  </div>
+                  <label class="field-label compact">Indexer URL
+                    <input class="field-input" data-indexer-url type="url" value="https://indexer.kasia.fyi" autocomplete="off" />
+                  </label>
+                  <label class="field-label compact">Push Indexer URL
+                    <input class="field-input" type="url" data-endpoint="pushIndexer" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="field-label compact">KNS API URL
+                    <input class="field-input" type="url" data-endpoint="knsApi" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="field-label compact">Kaspa REST API URL
+                    <input class="field-input" type="url" data-endpoint="kaspaApi" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="field-label compact">Trusted Node
+                    <input class="field-input" type="text" data-endpoint="trustedNode" placeholder="grpcs://host — leave empty to auto-search" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <p class="field-hint">Leave a field blank to use its default. Trusted Node empty = auto-search over wRPC.</p>
+                  <button class="danger-button subtle full" type="button" data-reset-connection-defaults>Reset to Defaults</button>
+                </div>
+              </div>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong>Kaspa Explorer</strong><small>Which explorer transaction and address links open in.</small></span>
+                  <span class="settings-dropdown-value" data-explorer-current>explorer.kaspa.org</span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-explorer-option="kaspaStream">kaspa.stream</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-explorer-option="kaspaOrg">explorer.kaspa.org</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-group">
+            <p class="settings-group-label">Chats</p>
+            <div class="settings-list-card">
+              <div class="settings-toggle-row"><span><strong>Show Fee Estimate</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
+              <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong>Notifications</strong></span>
+                  <span class="architecture-badge">Coming Soon</span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <div class="settings-toggle-row settings-segmented-row">
+                    <span><strong>Mode</strong></span>
+                    <div class="settings-segmented">
+                      <button type="button" class="settings-segmented-option active" data-mockup-action="notif-disabled">Disabled</button>
+                      <button type="button" class="settings-segmented-option" data-mockup-action="notif-push">Remote push</button>
+                    </div>
+                  </div>
+                  <div class="settings-toggle-row"><span><strong>Play sound</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Vibration</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
+                  <p class="field-hint">Per-contact notification overrides live in each chat's info screen.</p>
+                  <button class="settings-dropdown-row" type="button" data-open-photo-quality>Photo Quality</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-group">
+            <p class="settings-group-label">Contacts</p>
+            <div class="settings-list-card">
+              <div class="settings-toggle-row"><span><strong>Sync system contacts</strong></span><label class="switch-control"><input type="checkbox" data-contacts-sync-toggle><span></span></label></div>
+              <div class="settings-toggle-row"><span><strong>Autocreate system contacts</strong></span><label class="switch-control"><input type="checkbox" data-contacts-autocreate-toggle disabled><span></span></label></div>
+            </div>
+            <p class="settings-group-footer">Uses your device contacts to match and enrich Kaspa contacts.</p>
+          </section>
+
+          <section class="settings-group">
+            <p class="settings-group-label">Storage</p>
+            <div class="settings-list-card">
+              <div class="settings-toggle-row"><span><strong>Store encrypted messages locally</strong><small>Required for browser history and future cross-device backup.</small></span><label class="switch-control"><input type="checkbox" data-pref-store-messages checked><span></span></label></div>
+              <div class="settings-toggle-row"><span><strong>Store encrypted messages in iCloud</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle><span></span></label></div>
+              <div class="settings-dropdown" data-settings-dropdown>
+                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
+                  <span class="settings-row-copy"><strong>Message retention</strong></span>
+                  <span class="settings-dropdown-caption" data-retention-label>30 days</span>
+                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="settings-dropdown-body" hidden>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-forever">Keep forever</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-30">30 days</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-90">90 days</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-365">1 year</button>
+                </div>
+              </div>
+              <div class="settings-list-row settings-info-row"><span class="settings-row-copy"><strong>Local storage used</strong><small data-local-storage-used>Calculating…</small></span></div>
+              <div class="settings-list-row settings-info-row"><span class="settings-row-copy"><strong>iCloud storage</strong></span><span class="architecture-badge">Coming Soon</span></div>
+            </div>
+          </section>
+
+          <section class="settings-group">
+            <p class="settings-group-label">Chat History</p>
+            <div class="settings-list-card">
+              <button class="settings-list-row" type="button" data-shell-action="export-history"><span class="settings-row-icon">⇧</span><span class="settings-row-copy"><strong>Export Chat History</strong></span></button>
+              <button class="settings-list-row" type="button" data-shell-action="import-history"><span class="settings-row-icon">⇩</span><span class="settings-row-copy"><strong>Import Chat History</strong></span></button>
+              <button class="settings-list-row" type="button" data-recover-conversations>
+                <span class="settings-row-icon">◈</span>
+                <span class="settings-row-copy"><strong>Recover Conversations from Blockchain</strong><small>Rebuilds contacts from on-chain handshake data using this wallet's seed alone.</small></span>
+              </button>
             </div>
           </section>
 
           <section class="settings-group">
             <p class="settings-group-label">Diagnostics</p>
             <div class="settings-list-card">
-              <button class="settings-list-row" type="button" data-shell-action="diagnostics-export"><span class="settings-row-icon">◉</span><span class="settings-row-copy"><strong>Export Diagnostics Archive</strong><small>No private keys, recovery phrases, or decrypted messages.</small></span><span class="settings-row-chevron">›</span></button>
+              <button class="settings-list-row" type="button" data-shell-action="diagnostics-export"><span class="settings-row-icon">◉</span><span class="settings-row-copy"><strong>Export Diagnostics Archive</strong><small>No private keys, recovery phrases, or decrypted messages.</small></span></button>
             </div>
           </section>
 
           <section class="settings-group danger-zone-group">
             <p class="settings-group-label">Danger Zone</p>
             <div class="settings-list-card danger-list-card">
-              <button class="settings-list-row danger-row" type="button" data-shell-action="resync"><span class="settings-row-icon">↻</span><span class="settings-row-copy"><strong>Wipe and re-sync incoming messages</strong><small>Future account-scoped recovery action</small></span></button>
-              <button class="settings-list-row danger-row" type="button" data-shell-action="remove-account"><span class="settings-row-icon">⊗</span><span class="settings-row-copy"><strong>Remove current account &amp; messages</strong><small>Requires account isolation before activation</small></span></button>
-              <button class="settings-list-row danger-row" type="button" data-shell-action="wipe-all"><span class="settings-row-icon">⌫</span><span class="settings-row-copy"><strong>Wipe all saved accounts &amp; local data</strong><small>Disabled in the architecture-frame phase</small></span></button>
+              <button class="settings-list-row danger-row" type="button" data-shell-action="resync"><span class="settings-row-icon">↻</span><span class="settings-row-copy"><strong>Wipe and re-sync incoming messages</strong></span></button>
+              <button class="settings-list-row danger-row" type="button" data-shell-action="remove-account"><span class="settings-row-icon">⊗</span><span class="settings-row-copy"><strong>Wipe account &amp; messages</strong></span></button>
+              <button class="settings-list-row danger-row" type="button" data-shell-action="wipe-all"><span class="settings-row-icon">⌫</span><span class="settings-row-copy"><strong>Wipe all saved accounts &amp; local data</strong></span></button>
             </div>
           </section>
 
           <details class="diagnostics-panel">
-            <summary>Diagnostics &amp; recovery</summary>
+            <summary>Engineering diagnostics</summary>
             <p class="field-hint">Manual controls remain here for troubleshooting. Normal startup is automatic.</p>
+
+            <div class="settings-architecture-stack" aria-label="KaChat architecture status">
+              <section class="settings-status-card">
+                <div class="settings-card-title">
+                  <div><p class="screen-kicker">Core</p><h2>Runtime &amp; Identity</h2></div>
+                  <span class="architecture-badge">Phase 5A</span>
+                </div>
+                <div class="service-row">
+                  <span class="service-indicator" data-runtime-indicator></span>
+                  <div><strong>App Runtime</strong><small data-runtime-status>Starting Rusty Kaspa…</small></div>
+                </div>
+                <div class="service-row">
+                  <span class="service-indicator" data-wallet-indicator></span>
+                  <div><strong>Wallet Identity</strong><small data-wallet-status>Restoring browser wallet…</small></div>
+                </div>
+              </section>
+
+              <section class="settings-status-card">
+                <div class="settings-card-title">
+                  <div><p class="screen-kicker">Connection</p><h2>Kaspa Network</h2></div>
+                  <span class="architecture-badge" data-network-badge>Starting</span>
+                </div>
+                <div class="service-row">
+                  <span class="service-indicator" data-network-indicator></span>
+                  <div><strong>Primary RPC</strong><small data-network-status>Waiting for wallet</small></div>
+                </div>
+                <div class="service-row">
+                  <span class="service-indicator" data-standby-indicator></span>
+                  <div><strong>Warm Standby</strong><small data-standby-status>Waiting for primary RPC</small></div>
+                </div>
+                <div class="service-row architecture-detail-row">
+                  <span class="architecture-icon">◎</span>
+                  <div><strong>Node Pool</strong><small data-node-pool-status>Preparing persistent endpoint history</small></div>
+                </div>
+                <div class="service-row architecture-detail-row">
+                  <span class="architecture-icon">↯</span>
+                  <div><strong>Last Successful Node</strong><small data-last-good-node>None recorded yet</small></div>
+                </div>
+                <div class="service-row architecture-detail-row">
+                  <span class="architecture-icon">◌</span>
+                  <div><strong>Connection History</strong><small data-node-pool-history>No connection attempts recorded</small></div>
+                </div>
+              </section>
+
+              <section class="settings-status-card">
+                <div class="settings-card-title">
+                  <div><p class="screen-kicker">Messaging</p><h2>Kasia Services</h2></div>
+                  <span class="architecture-badge" data-messaging-badge>Starting</span>
+                </div>
+                <div class="service-row">
+                  <span class="service-indicator" data-messaging-indicator></span>
+                  <div><strong>Kasia Cipher</strong><small data-messaging-status>Loading encryption runtime…</small></div>
+                </div>
+                <div class="service-row architecture-detail-row">
+                  <span class="service-indicator" data-subscription-indicator></span>
+                  <div><strong>Sync &amp; Subscriptions</strong><small data-sync-service-status>Starting live wallet subscription…</small></div>
+                </div>
+              </section>
+
+              <section class="settings-status-card">
+                <div class="settings-card-title">
+                  <div><p class="screen-kicker">Local Data</p><h2>Storage &amp; Recovery</h2></div>
+                  <span class="architecture-badge ready">Active</span>
+                </div>
+                <div class="service-row architecture-detail-row">
+                  <span class="architecture-icon">▣</span>
+                  <div><strong>Browser Storage</strong><small data-storage-status>Wallet, contacts and messages persisted locally</small></div>
+                </div>
+                <div class="service-row architecture-detail-row">
+                  <span class="architecture-icon">◇</span>
+                  <div><strong>Recovery Layer</strong><small>Verified wallet record and message-history backup</small></div>
+                </div>
+              </section>
+            </div>
+
             <div class="settings-grid diagnostics-actions">
               <button class="secondary-button full" type="button" data-load-wasm>Reload Rusty Kaspa WASM</button>
               <button class="secondary-button full" type="button" data-load-kasia-cipher>Reload Kasia Cipher WASM</button>
               <button class="secondary-button full" type="button" data-connect-rpc>Reconnect Mainnet RPC</button>
               <button class="secondary-button full" type="button" data-refresh-balance>Refresh Balance</button>
-              <label class="field-label compact">
-                Kasia indexer URL
-                <input class="field-input" data-indexer-url type="url" value="https://indexer.kasia.fyi" autocomplete="off" />
-              </label>
               <button class="secondary-button full" type="button" data-test-indexer>Test Kasia Indexer</button>
               <div class="readiness-list" data-readiness-list></div>
               <div class="transport-actions">
@@ -318,59 +760,87 @@
             <div class="engine-log" data-engine-log>Starting KaChat services…</div>
           </details>
         </section>
+      </div>
+    </div>
+  </div>
 
-        <section class="app-screen utility-screen profile-screen" data-screen="profile" hidden>
-          <section class="profile-section profile-name-section">
-            <p class="settings-group-label">Name</p>
-            <div class="profile-name-field">
-              <input class="profile-name-input" data-profile-account-name type="text" value="Current Account" maxlength="48" autocomplete="off" aria-label="Account name" />
+  <div class="account-overlay" data-connection-overlay hidden role="dialog" aria-modal="true" aria-label="Connection Status">
+    <div class="account-overlay-card">
+      <header class="account-overlay-header">
+        <h2 class="account-overlay-title">Connection Status</h2>
+        <button class="modal-close" type="button" data-close-connection-overlay aria-label="Close">×</button>
+      </header>
+      <div class="account-overlay-body">
+        <section class="settings-group">
+          <p class="settings-group-label">Connection Status</p>
+          <div class="settings-list-card">
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Status</strong></span>
+              <span class="connection-status-value"><span class="connection-status-dot" data-connection-status-dot aria-hidden="true"></span><span data-connection-status-text>Starting…</span></span>
             </div>
-          </section>
-
-          <section class="profile-section">
-            <p class="settings-group-label">Address</p>
-            <div class="profile-address-card">
-              <div class="profile-qr-card" data-profile-qr-card hidden><canvas width="512" height="512" data-profile-qr></canvas></div>
-              <button class="profile-address-button" type="button" data-copy-engine-address><span class="profile-address" data-profile-address>No wallet loaded</span></button>
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Primary RPC</strong><small data-connection-primary-endpoint>Not connected</small></span>
             </div>
-          </section>
-
-          <section class="profile-section">
-            <p class="settings-group-label">Balance</p>
-            <button class="profile-value-row" type="button" data-copy-balance aria-label="Copy balance"><strong data-profile-balance>-- KAS</strong><span aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="10" height="11" rx="1.8"></rect><path d="M16 8V6.8A1.8 1.8 0 0 0 14.2 5H6.8A1.8 1.8 0 0 0 5 6.8v8.4A1.8 1.8 0 0 0 6.8 17H8"></path></svg></span></button>
-          </section>
-
-          <section class="profile-section">
-            <p class="settings-group-label">Info</p>
-            <div class="settings-list-card"><div class="profile-value-row static"><strong>Created</strong><span data-profile-created>—</span></div></div>
-          </section>
-
-          <section class="profile-section">
-            <p class="settings-group-label">Actions</p>
-            <div class="settings-list-card">
-              <button class="settings-list-row settings-list-row-single" type="button" data-shell-action="view-recovery"><span class="settings-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"></circle><path d="M11 12l9-9"></path><path d="M17 6l3 3"></path><path d="M14 9l3 3"></path></svg></span><span class="settings-row-copy"><strong>View Seed Phrase</strong></span><span class="settings-row-chevron">›</span></button>
-              <button class="settings-list-row settings-list-row-single danger-row" type="button" data-shell-action="logout"><span class="settings-row-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4H5.75A1.75 1.75 0 0 0 4 5.75v12.5C4 19.22 4.78 20 5.75 20H10"></path><path d="M14 8l4 4-4 4"></path><path d="M18 12H9"></path></svg></span><span class="settings-row-copy"><strong>Log Out</strong></span></button>
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Warm Standby</strong><small data-connection-standby-endpoint>Not connected</small></span>
             </div>
-          </section>
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Latency</strong></span>
+              <span data-connection-latency>--</span>
+            </div>
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Indexer</strong><small data-connection-indexer>--</small></span>
+            </div>
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Last Sync</strong></span>
+              <span data-connection-last-sync>--</span>
+            </div>
+          </div>
         </section>
-      </section>
 
-      <nav class="tab-bar" aria-label="Main tabs">
-        <button class="tab-item" data-tab="settings" type="button">
-          <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.15"/><path d="M12 2.75v2.1M12 19.15v2.1M21.25 12h-2.1M4.85 12h-2.1M18.54 5.46l-1.49 1.49M6.95 17.05l-1.49 1.49M18.54 18.54l-1.49-1.49M6.95 6.95L5.46 5.46"/><path d="M15.42 4.2l.72 1.74a7.18 7.18 0 0 1 1.92 1.92l1.74.72-.82 1.98a7.24 7.24 0 0 1 0 2.88l.82 1.98-1.74.72a7.18 7.18 0 0 1-1.92 1.92l-.72 1.74-1.98-.82a7.24 7.24 0 0 1-2.88 0l-1.98.82-.72-1.74a7.18 7.18 0 0 1-1.92-1.92l-1.74-.72.82-1.98a7.24 7.24 0 0 1 0-2.88L4.2 8.58l1.74-.72a7.18 7.18 0 0 1 1.92-1.92l.72-1.74 1.98.82a7.24 7.24 0 0 1 2.88 0l1.98-.82Z"/></svg></span>
-          <span>Settings</span>
-        </button>
-        <button class="tab-item active" data-tab="chats" type="button" aria-current="page">
-          <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg></span>
-          <span>Chats</span>
-        </button>
-        <button class="tab-item" data-tab="profile" type="button">
-          <span class="tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.25"/><circle cx="12" cy="8.35" r="3.35"/><path d="M5.8 18.75c1.2-3.15 3.35-4.7 6.2-4.7s5 1.55 6.2 4.7"/></svg></span>
-          <span>Profile</span>
-        </button>
-      </nav>
-    </section>
-  </main>
+        <section class="settings-group">
+          <p class="settings-group-label">Pool Status</p>
+          <div class="settings-list-card">
+            <div class="connection-pool-stats">
+              <div class="connection-pool-stat"><span class="connection-pool-dot active" aria-hidden="true"></span><strong data-connection-pool-active>0</strong><small>Active</small></div>
+              <div class="connection-pool-stat"><span class="connection-pool-dot known" aria-hidden="true"></span><strong data-connection-pool-known>0</strong><small>Known</small></div>
+              <div class="connection-pool-stat"><span class="connection-pool-dot failovers" aria-hidden="true"></span><strong data-connection-pool-failovers>0</strong><small>Failovers</small></div>
+            </div>
+            <div class="settings-list-row settings-info-row">
+              <span class="settings-row-copy"><strong>Pool Health</strong></span>
+              <span data-connection-pool-health>--</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <p class="settings-group-label">Actions</p>
+          <div class="settings-list-card">
+            <button class="settings-list-row" type="button" data-connection-reconnect><span class="settings-row-copy"><strong>Reconnect</strong></span></button>
+            <button class="settings-list-row" type="button" data-connection-refresh-standby><span class="settings-row-copy"><strong>Refresh Standby</strong></span></button>
+            <button class="settings-list-row danger-row" type="button" data-connection-clear-pool><span class="settings-row-copy"><strong>Clear Connection Pool</strong></span></button>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="settings-group-heading">
+            <p class="settings-group-label" style="margin:0;">Known Endpoints</p>
+            <span class="architecture-badge" data-connection-endpoints-count>0</span>
+          </div>
+          <div class="settings-list-card" data-connection-endpoints-list></div>
+          <p class="settings-group-footer">Tap an endpoint to copy host:port.</p>
+        </section>
+
+        <section class="settings-group">
+          <div class="settings-group-heading">
+            <p class="settings-group-label" style="margin:0;">Failover History</p>
+            <span class="architecture-badge" data-connection-failovers-count>0</span>
+          </div>
+          <div class="settings-list-card" data-connection-failovers-list></div>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <div class="modal-backdrop create-chat-backdrop" data-contact-modal hidden>
     <form class="contact-modal create-chat-modal" data-contact-form novalidate>
@@ -419,61 +889,156 @@
 
 
   <div class="modal-backdrop" data-create-account-modal hidden>
-    <form class="contact-modal create-account-modal" data-create-account-form>
+    <div class="contact-modal create-account-modal create-account-flow" role="dialog" aria-modal="true" aria-label="Create Account">
       <div class="modal-header">
-        <div><p class="modal-kicker">New account</p><h2>Create Account</h2></div>
+        <div><p class="modal-kicker">New account</p><h2 data-create-title>Create Account</h2></div>
         <button class="modal-close" type="button" data-close-create-account aria-label="Close">×</button>
       </div>
-      <label class="field-label">
-        Account Name
-        <input class="field-input" name="accountName" type="text" value="My Account" maxlength="48" autocomplete="off" required />
-      </label>
-      <fieldset class="seed-length-fieldset">
-        <legend>Seed Phrase Length</legend>
-        <div class="seed-length-options">
-          <label><input type="radio" name="wordCount" value="24" checked /><span><strong>24 words</strong><small>Recommended</small></span></label>
-          <label><input type="radio" name="wordCount" value="12" /><span><strong>12 words</strong><small>Standard</small></span></label>
+
+      <div data-create-step="setup">
+        <div class="create-warning">
+          <strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 20h20L12 3zM12 9v5M12 17.5v.5"/></svg> Important</strong>
+          <p>You will be shown a seed phrase. This is the only way to recover your account. Write it down and store it securely.</p>
         </div>
-      </fieldset>
-      <p class="field-hint">Your recovery phrase will be generated and stored with this local account. You can reveal it later from Settings.</p>
-      <p class="field-error" data-create-account-error hidden></p>
-      <div class="modal-actions">
-        <button class="secondary-button" type="button" data-close-create-account>Cancel</button>
-        <button class="primary-button" type="submit" data-submit-create-account>Create Account</button>
+        <fieldset class="seed-length-fieldset">
+          <legend>Seed Phrase Length</legend>
+          <div class="seed-length-options">
+            <label><input type="radio" name="wordCount" value="24" checked /><span><strong>24 words</strong><small>Recommended</small></span></label>
+            <label><input type="radio" name="wordCount" value="12" /><span><strong>12 words</strong><small>Standard</small></span></label>
+          </div>
+        </fieldset>
+        <label class="field-label">Account Name
+          <input class="field-input" data-create-name type="text" value="My Account" maxlength="48" placeholder="Enter account name" autocomplete="off" />
+        </label>
+        <p class="field-error" data-create-account-error hidden></p>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-create-account>Cancel</button>
+          <button class="primary-button" type="button" data-generate-account>Generate Account</button>
+        </div>
       </div>
-    </form>
+
+      <div data-create-step="seed" hidden>
+        <div class="create-warning create-warning-orange">
+          <strong><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg> Write Down Your Seed Phrase</strong>
+          <p>Store this in a safe place. Anyone with these words can access your account.</p>
+        </div>
+        <button type="button" class="seed-reveal-cover" data-seed-reveal>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><path d="M4 4l16 16"/></svg>
+          <span>Tap to reveal seed phrase</span>
+        </button>
+        <div class="seed-grid" data-seed-grid hidden></div>
+        <label class="seed-confirm">
+          <input type="checkbox" data-seed-confirm />
+          <span>I have written down my seed phrase and stored it securely</span>
+        </label>
+        <p class="field-error" data-create-account-error-seed hidden></p>
+        <div class="modal-actions">
+          <button class="primary-button full" type="button" data-continue-to-passphrase disabled>Continue</button>
+        </div>
+      </div>
+
+      <div data-create-step="passphrase" hidden>
+        <div class="create-warning">
+          <strong><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Add a Passphrase</strong>
+          <p>A passphrase is an optional extra secret only you know. It's combined with your seed phrase to unlock a completely separate, hidden account.</p>
+        </div>
+        <ul class="passphrase-bullets">
+          <li>Even if someone finds your written seed phrase, they can't reach this account without the passphrase.</li>
+        </ul>
+        <label class="field-label">Passphrase
+          <span class="passphrase-field">
+            <input class="field-input" type="password" data-create-passphrase placeholder="Enter passphrase" autocomplete="off" />
+            <button type="button" class="passphrase-eye" data-passphrase-toggle aria-label="Show passphrase">Show</button>
+          </span>
+        </label>
+        <label class="field-label">Confirm Passphrase
+          <input class="field-input" type="password" data-create-passphrase-confirm placeholder="Re-enter passphrase" autocomplete="off" />
+        </label>
+        <ul class="passphrase-bullets passphrase-bullets-warn">
+          <li>If you forget your passphrase, this account is permanently lost. Your seed phrase alone will NOT recover it.</li>
+          <li>There is no way to reset or recover a passphrase. Store it as carefully as your seed phrase.</li>
+        </ul>
+        <p class="field-error" data-create-passphrase-error hidden></p>
+        <div class="modal-actions passphrase-actions">
+          <button class="primary-button full" type="button" data-continue-with-passphrase>Continue with Passphrase</button>
+          <button class="secondary-button full" type="button" data-skip-passphrase>Skip — no passphrase</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" data-setup-guide-modal hidden>
+    <div class="contact-modal setup-guide-modal" role="dialog" aria-modal="true" aria-label="Setup Guide">
+      <div class="setup-guide-top">
+        <span class="setup-guide-progress" data-setup-progress></span>
+        <button type="button" class="setup-guide-skip" data-setup-skip>Skip</button>
+      </div>
+      <div class="setup-guide-icon" data-setup-icon aria-hidden="true"></div>
+      <h2 class="setup-guide-title" data-setup-title></h2>
+      <p class="setup-guide-body" data-setup-body></p>
+      <div class="setup-guide-extra" data-setup-extra></div>
+      <button type="button" class="primary-button full setup-guide-next" data-setup-next>Next</button>
+    </div>
   </div>
 
   <div class="modal-backdrop" data-import-account-modal hidden>
-    <form class="contact-modal create-account-modal" data-import-account-form>
+    <div class="contact-modal create-account-modal import-account-flow" role="dialog" aria-modal="true" aria-label="Import Account">
       <div class="modal-header">
         <div><p class="modal-kicker">Existing account</p><h2>Import Account</h2></div>
         <button class="modal-close" type="button" data-close-import-account aria-label="Close">×</button>
       </div>
-      <label class="field-label">
-        Account Name
-        <input class="field-input" name="accountName" type="text" value="Imported Account" maxlength="48" autocomplete="off" required />
-      </label>
-      <label class="field-label">
-        Recovery Phrase
-        <textarea class="field-input recovery-input" name="recoveryPhrase" rows="5" spellcheck="false" autocomplete="off" placeholder="Enter all 12 or 24 words in order" required></textarea>
-      </label>
-      <p class="field-hint">The phrase must be a valid 12- or 24-word Kaspa recovery phrase. Invalid words, checksum, or length will be rejected.</p>
-      <p class="field-error" data-import-account-error hidden></p>
-      <div class="modal-actions">
-        <button class="secondary-button" type="button" data-close-import-account>Cancel</button>
-        <button class="primary-button" type="submit" data-submit-import-account>Import Account</button>
+
+      <div data-import-step="form">
+        <label class="field-label">Account Name
+          <input class="field-input" data-import-name type="text" value="Imported Account" maxlength="48" autocomplete="off" />
+        </label>
+        <label class="field-label">Recovery Phrase
+          <textarea class="field-input recovery-input" data-import-phrase rows="5" spellcheck="false" autocomplete="off" placeholder="Enter all 12 or 24 words in order"></textarea>
+        </label>
+        <p class="field-hint">The phrase must be a valid 12- or 24-word Kaspa recovery phrase. Invalid words, checksum, or length will be rejected.</p>
+        <p class="field-error" data-import-account-error hidden></p>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-import-account>Cancel</button>
+          <button class="primary-button" type="button" data-import-continue>Continue</button>
+        </div>
       </div>
-    </form>
+
+      <div data-import-step="passphrase" hidden>
+        <div class="create-warning">
+          <strong><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg> Add a Passphrase</strong>
+          <p>A passphrase is an optional extra secret only you know. It's combined with your seed phrase to unlock a completely separate, hidden account.</p>
+        </div>
+        <ul class="passphrase-bullets">
+          <li>Even if someone finds your written seed phrase, they can't reach this account without the passphrase.</li>
+        </ul>
+        <label class="field-label">Passphrase
+          <span class="passphrase-field">
+            <input class="field-input" type="password" data-import-passphrase placeholder="Enter passphrase" autocomplete="off" />
+            <button type="button" class="passphrase-eye" data-import-passphrase-toggle aria-label="Show passphrase">Show</button>
+          </span>
+        </label>
+        <p class="field-hint">Enter the exact passphrase you used when this account was created.</p>
+        <ul class="passphrase-bullets passphrase-bullets-warn">
+          <li>If you forget your passphrase, this account is permanently lost. Your seed phrase alone will NOT recover it.</li>
+          <li>There is no way to reset or recover a passphrase. Store it as carefully as your seed phrase.</li>
+          <li>A different passphrase silently opens a different, empty account — it won't show an error.</li>
+        </ul>
+        <p class="field-error" data-import-passphrase-error hidden></p>
+        <div class="modal-actions passphrase-actions">
+          <button class="primary-button full" type="button" data-import-with-passphrase>Import with Passphrase</button>
+          <button class="secondary-button full" type="button" data-import-skip-passphrase>Skip — no passphrase</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="modal-backdrop" data-recovery-modal hidden>
     <section class="contact-modal recovery-modal recovery-hold-modal" role="dialog" aria-modal="true" aria-label="Seed phrase">
       <button class="modal-close recovery-close" type="button" data-close-recovery aria-label="Close">×</button>
 
-      <button class="recovery-hold-target" type="button" data-reveal-recovery aria-label="Hold for five seconds to reveal seed phrase">
+      <button class="recovery-hold-target" type="button" data-reveal-recovery aria-label="Tap to reveal seed phrase">
         <img class="recovery-eye-icon" src="./ui/assets/seed-eye-hidden.png" alt="" aria-hidden="true">
-        <span class="recovery-hold-label">Hold to reveal Seed Phrase</span>
+        <span class="recovery-hold-label">Tap to reveal Seed Phrase</span>
         <span class="recovery-progress-track" aria-hidden="true">
           <span class="recovery-progress-fill" data-recovery-progress></span>
         </span>
@@ -482,7 +1047,6 @@
       <div class="recovery-phrase-box" data-recovery-phrase hidden></div>
 
       <div class="modal-actions recovery-actions">
-        <button class="secondary-button" type="button" data-copy-recovery hidden>Copy</button>
         <button class="primary-button" type="button" data-close-recovery>Done</button>
       </div>
     </section>
@@ -516,8 +1080,8 @@
     <section class="message-action-sheet" role="dialog" aria-modal="true" aria-label="Message options">
       <div class="message-action-preview" data-message-details-body>Message</div>
       <button type="button" data-message-action="copy-message">Copy Message</button>
-      <button type="button" data-message-action="copy-raw">Copy Raw Data</button>
-      <button type="button" data-message-action="export">Export Raw Data</button>
+      <button type="button" data-message-action="reply">Reply</button>
+      <button type="button" data-message-action="view-explorer" data-message-explorer-row hidden>View in Explorer</button>
       <button type="button" data-message-action="select">Select Messages</button>
       <button class="message-action-cancel" type="button" data-close-message-details>Cancel</button>
     </section>
@@ -546,6 +1110,116 @@
       <div class="modal-actions">
         <button class="secondary-button" type="button" data-cancel-delete-selected>Cancel</button>
         <button class="danger-button" type="button" data-confirm-delete-selected>Delete</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-photo-quality-modal hidden>
+    <section class="contact-modal photo-quality-modal" role="dialog" aria-modal="true" aria-label="Photo quality">
+      <div class="modal-header">
+        <div>
+          <p class="screen-kicker">Chats</p>
+          <h2>Photo Quality</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-photo-quality aria-label="Close">×</button>
+      </div>
+      <div class="settings-segmented full" role="group" aria-label="Photo quality">
+        <button type="button" class="settings-segmented-option" data-photo-quality-option="standard">Standard</button>
+        <button type="button" class="settings-segmented-option active" data-photo-quality-option="high">High</button>
+      </div>
+      <p class="field-hint">Higher quality photos use more data and storage.</p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-photo-quality>Cancel</button>
+        <button class="primary-button" type="button" data-save-photo-quality>Save</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-kns-register-modal hidden>
+    <section class="contact-modal kns-register-modal" role="dialog" aria-modal="true" aria-label="Create KNS Profile">
+      <div class="modal-header">
+        <div>
+          <p class="modal-kicker">Real Kaspa transaction</p>
+          <h2>Create KNS Profile</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-kns-register aria-label="Close">×</button>
+      </div>
+
+      <div data-kns-step="funding">
+        <p class="field-hint">Registering a KNS domain spends real KAS (typically 2–50+ KAS depending on name length, plus a small profile-editing reserve). We recommend at least <strong data-kns-min-balance>50</strong> KAS before starting.</p>
+        <div class="settings-list-row settings-info-row"><span class="settings-row-copy"><strong>Current balance</strong><small data-kns-current-balance>Checking…</small></span></div>
+        <p class="field-error" data-kns-funding-error hidden></p>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-kns-register>Cancel</button>
+          <button class="primary-button" type="button" data-kns-funding-continue>Continue</button>
+        </div>
+      </div>
+
+      <div data-kns-step="domain" hidden>
+        <label class="field-label">Domain name
+          <div class="kns-domain-input-row">
+            <input class="field-input" type="text" data-kns-domain-label placeholder="alice" autocomplete="off" maxlength="63" />
+            <span class="kns-domain-suffix">.kas</span>
+          </div>
+        </label>
+        <button class="secondary-button full" type="button" data-kns-check-availability>Check Availability &amp; Fee</button>
+        <div class="kns-domain-quote" data-kns-domain-quote hidden></div>
+        <p class="field-error" data-kns-domain-error hidden></p>
+        <div class="kns-progress" data-kns-register-progress hidden></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-kns-register>Cancel</button>
+          <button class="primary-button" type="button" data-kns-register-submit disabled>Register Domain</button>
+        </div>
+      </div>
+
+      <div data-kns-step="details" hidden>
+        <p class="field-hint"><strong data-kns-registered-domain></strong> is yours. Add optional profile details now, or skip and add them later from your Profile screen.</p>
+        <label class="field-label compact">Bio<textarea class="field-input" data-kns-field="bio" maxlength="300" rows="2"></textarea></label>
+        <label class="field-label compact">Website<input class="field-input" type="text" data-kns-field="website" maxlength="2048" /></label>
+        <label class="field-label compact">X (Twitter)<input class="field-input" type="text" data-kns-field="x" maxlength="64" /></label>
+        <label class="field-label compact">Telegram<input class="field-input" type="text" data-kns-field="telegram" maxlength="64" /></label>
+        <label class="field-label compact">Discord<input class="field-input" type="text" data-kns-field="discord" maxlength="128" /></label>
+        <label class="field-label compact">Email<input class="field-input" type="text" data-kns-field="contactEmail" maxlength="254" /></label>
+        <label class="field-label compact">GitHub<input class="field-input" type="text" data-kns-field="github" maxlength="64" /></label>
+        <p class="field-error" data-kns-details-error hidden></p>
+        <div class="kns-progress" data-kns-details-progress hidden></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-kns-details-skip>Skip</button>
+          <button class="primary-button" type="button" data-kns-details-save>Save Profile</button>
+        </div>
+      </div>
+
+      <div data-kns-step="done" hidden>
+        <p class="field-hint">Your KNS profile is set up. It may take a few minutes to appear everywhere.</p>
+        <div class="modal-actions">
+          <button class="primary-button full" type="button" data-close-kns-register>Done</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-kns-editor-modal hidden>
+    <section class="contact-modal kns-register-modal" role="dialog" aria-modal="true" aria-label="Edit KNS Profile">
+      <div class="modal-header">
+        <div>
+          <p class="modal-kicker">Real Kaspa transaction</p>
+          <h2>Edit KNS Profile</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-kns-editor aria-label="Close">×</button>
+      </div>
+      <p class="field-hint">Each changed field is a separate on-chain write (~2 KAS commit + ~1 KAS reveal, offset by network fees).</p>
+      <label class="field-label compact">Bio<textarea class="field-input" data-kns-editor-field="bio" maxlength="300" rows="2"></textarea></label>
+      <label class="field-label compact">Website<input class="field-input" type="text" data-kns-editor-field="website" maxlength="2048" /></label>
+      <label class="field-label compact">X (Twitter)<input class="field-input" type="text" data-kns-editor-field="x" maxlength="64" /></label>
+      <label class="field-label compact">Telegram<input class="field-input" type="text" data-kns-editor-field="telegram" maxlength="64" /></label>
+      <label class="field-label compact">Discord<input class="field-input" type="text" data-kns-editor-field="discord" maxlength="128" /></label>
+      <label class="field-label compact">Email<input class="field-input" type="text" data-kns-editor-field="contactEmail" maxlength="254" /></label>
+      <label class="field-label compact">GitHub<input class="field-input" type="text" data-kns-editor-field="github" maxlength="64" /></label>
+      <p class="field-error" data-kns-editor-error hidden></p>
+      <div class="kns-progress" data-kns-editor-progress hidden></div>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-kns-editor>Cancel</button>
+        <button class="primary-button" type="button" data-kns-editor-save>Save Changes</button>
       </div>
     </section>
   </div>
@@ -592,9 +1266,477 @@
     </section>
   </div>
 
+  <div class="modal-backdrop" data-account-rename-modal hidden>
+    <form class="contact-modal create-account-modal" data-account-rename-form>
+      <div class="modal-header">
+        <div><p class="modal-kicker">Saved account</p><h2>Rename Account</h2></div>
+        <button class="modal-close" type="button" data-close-account-rename aria-label="Close">×</button>
+      </div>
+      <label class="field-label">
+        Account Name
+        <input class="field-input" name="accountName" type="text" maxlength="48" autocomplete="off" required />
+      </label>
+      <p class="field-error" data-account-rename-error hidden></p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-account-rename>Cancel</button>
+        <button class="primary-button" type="submit" data-submit-account-rename>Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="modal-backdrop" data-utxo-rename-modal hidden>
+    <form class="contact-modal create-account-modal" data-utxo-rename-form>
+      <div class="modal-header">
+        <div><p class="modal-kicker">UTXO</p><h2>Rename UTXO</h2></div>
+        <button class="modal-close" type="button" data-close-utxo-rename aria-label="Close">×</button>
+      </div>
+      <label class="field-label">
+        Name
+        <input class="field-input" name="utxoName" type="text" maxlength="48" autocomplete="off" placeholder="e.g. Savings, Cold storage" />
+      </label>
+      <p class="field-hint" data-utxo-rename-outpoint></p>
+      <p class="field-hint">Leave blank to remove the name. Labels are stored on this device only.</p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-utxo-rename>Cancel</button>
+        <button class="primary-button" type="submit" data-submit-utxo-rename>Save</button>
+      </div>
+    </form>
+  </div>
+
   <div class="profile-qr-overlay" data-profile-qr-overlay hidden role="dialog" aria-modal="true" aria-label="Enlarged Kaspa address QR code">
     <div class="profile-qr-overlay-card" aria-hidden="true">
       <canvas width="512" height="512" data-profile-qr-overlay-canvas></canvas>
+    </div>
+  </div>
+
+  <div class="photo-preview-overlay" data-photo-preview-overlay hidden role="dialog" aria-modal="true" aria-label="Photo preview">
+    <img data-photo-preview-image alt="Photo" />
+  </div>
+
+  <div class="chatting-address-screen" data-chatting-address-screen hidden role="dialog" aria-modal="true" aria-label="Chatting Address">
+    <div class="chatting-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-chatting-address aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance" data-chatting-address-balance>-- KAS</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <div class="chatting-address-body">
+        <div class="chatting-address-qr-frame">
+          <canvas width="512" height="512" data-chatting-address-qr></canvas>
+        </div>
+        <p class="chatting-address-value" data-chatting-address-value>No wallet loaded</p>
+        <p class="chatting-address-subtitle" data-chatting-address-subtitle>Just send 5-10 KAS at a time, that's plenty to cover chat fees for a while (about 500 messages per KAS).</p>
+        <button class="chatting-address-copy" type="button" data-copy-engine-address>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+          <span data-i18n="action.copyAddress">Copy Address</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="chatting-address-screen manage-address-screen" data-manage-address-screen hidden role="dialog" aria-modal="true" aria-label="Manage Address">
+    <div class="manage-address-card">
+      <div class="manage-address-view" data-manage-view="list">
+        <header class="chatting-address-header">
+          <button class="chatting-address-back" type="button" data-close-manage-address aria-label="Back">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+          </button>
+          <span class="chatting-address-balance" data-manage-address-balance>-- KAS</span>
+          <div class="manage-address-toolbar">
+            <button type="button" class="manage-address-icon-button" data-open-privatekey aria-label="Export private key">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+            </button>
+            <a class="manage-address-icon-button" data-manage-address-explorer-link href="#" target="_blank" rel="noopener noreferrer" aria-label="View address in explorer">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+            </a>
+          </div>
+        </header>
+
+        <div class="settings-segmented full manage-address-tabs" role="group" aria-label="Manage address view">
+          <button type="button" class="settings-segmented-option active" data-manage-address-tab="transactions">Transaction History</button>
+          <button type="button" class="settings-segmented-option" data-manage-address-tab="utxos">UTXOs</button>
+        </div>
+
+        <div class="manage-address-body">
+          <div data-manage-address-panel="transactions">
+            <div class="manage-address-list" data-manage-address-transactions></div>
+          </div>
+          <div data-manage-address-panel="utxos" hidden>
+            <div class="manage-address-list" data-manage-address-utxos></div>
+          </div>
+        </div>
+
+        <div class="manage-address-actions">
+          <button type="button" class="chatting-address-copy" data-manage-address-receive>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 18v3"/></svg>
+            <span data-i18n="action.receive">Receive</span>
+          </button>
+          <button type="button" class="chatting-address-copy manage-address-send-button" data-manage-address-send>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16V8M8 12l4-4 4 4"/></svg>
+            <span data-i18n="action.send">Send</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="manage-address-view manage-address-send-view" data-manage-view="send" hidden>
+        <header class="chatting-address-header">
+          <button class="chatting-address-back" type="button" data-manage-send-back aria-label="Back">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+          </button>
+          <span class="chatting-address-balance" data-i18n="send.title">Send Kaspa</span>
+          <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+        </header>
+
+        <div class="manage-address-send-body">
+          <label class="field-label"><span data-i18n="send.recipient">Recipient</span>
+            <input class="field-input" type="text" data-manage-send-recipient placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" />
+          </label>
+          <p class="field-hint" data-manage-send-resolved hidden></p>
+          <span class="field-label" data-manage-send-amount-label>Amount (KAS)</span>
+          <div class="send-amount-field">
+            <button type="button" class="send-amount-unit" data-manage-send-unit title="Tap to switch between KAS and fiat">
+              <img src="./ui/assets/kaspa-logo.png" alt="" class="send-amount-logo" data-manage-send-logo />
+              <span class="send-amount-fiat-symbol" data-manage-send-fiat-symbol hidden></span>
+              <span class="send-amount-unit-code" data-manage-send-unit-code>KAS</span>
+            </button>
+            <input class="field-input send-amount-input" type="text" inputmode="decimal" data-manage-send-amount placeholder="0.00000000" autocomplete="off" />
+            <button type="button" class="send-amount-max" data-manage-send-max>Max</button>
+          </div>
+          <p class="field-hint" data-manage-send-fiat hidden></p>
+          <p class="field-hint" data-manage-send-balance></p>
+
+          <div class="send-fee-section">
+            <div class="send-fee-header">
+              <span data-i18n="send.networkFee">Network Fee</span>
+              <span class="send-fee-summary" data-manage-send-fee-summary>Normal</span>
+            </div>
+            <div class="settings-segmented full" role="group" aria-label="Network fee">
+              <button type="button" class="settings-segmented-option active" data-manage-send-fee="0" data-i18n="fee.normal">Normal</button>
+              <button type="button" class="settings-segmented-option" data-manage-send-fee="0.00002" data-i18n="fee.priority">Priority</button>
+              <button type="button" class="settings-segmented-option" data-manage-send-fee="custom" data-i18n="fee.custom">Custom</button>
+            </div>
+            <input class="field-input send-fee-custom" type="text" inputmode="decimal" data-manage-send-fee-custom placeholder="Priority fee (KAS)" autocomplete="off" readonly />
+          </div>
+
+          <div class="manage-send-coin-control">
+            <button type="button" class="manage-send-coin-toggle" data-manage-send-coin-toggle aria-expanded="false">
+              <span class="manage-send-coin-title" data-i18n="send.coinControl">Coin Control</span>
+              <span class="manage-send-coin-summary" data-manage-send-coin-summary>Automatic</span>
+              <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="manage-send-coin-list" data-manage-send-coin-list hidden></div>
+          </div>
+
+          <p class="field-error" data-manage-send-error hidden></p>
+          <div class="kns-progress" data-manage-send-progress hidden></div>
+        </div>
+
+        <div class="manage-address-actions">
+          <button type="button" class="chatting-address-copy manage-address-send-button" data-manage-send-submit disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16V8M8 12l4-4 4 4"/></svg>
+            <span data-i18n="action.send">Send</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chatting-address-screen spending-manage-screen" data-spending-manage-screen hidden role="dialog" aria-modal="true" aria-label="Spending Addresses">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-spending-manage aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Spending Addresses</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <p class="spending-manage-subtitle">These addresses are derived from your recovery phrase. The same phrase restores them identically on any device. Move funds here to keep chat and spending separate. Tap an address to view its transactions.</p>
+      <div class="manage-address-body">
+        <div class="manage-address-list spending-address-list" data-spending-address-list></div>
+      </div>
+      <div class="manage-address-actions spending-manage-actions">
+        <div class="spending-actions-wrap">
+          <button type="button" class="chatting-address-copy manage-address-send-button" data-spending-actions-toggle aria-haspopup="true" aria-expanded="false">
+            <span>Address Actions</span>
+          </button>
+          <div class="spending-actions-menu" data-spending-actions-menu role="menu" hidden>
+            <button type="button" role="menuitem" class="spending-row-menu-item" data-spending-generate>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+              <span>Generate New Spending Address</span>
+            </button>
+            <button type="button" role="menuitem" class="spending-row-menu-item" data-spending-scan>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <span>Discover Addresses</span>
+            </button>
+            <button type="button" role="menuitem" class="spending-row-menu-item" data-spending-consolidate>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V6M6 12l6-6 6 6M5 4h14"/></svg>
+              <span>Send All Kaspa to Primary Spend Address</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chatting-address-screen spending-detail-screen" data-spending-detail-screen hidden role="dialog" aria-modal="true" aria-label="Spending Address">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-spending-detail aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance" data-spending-detail-title>Spending</span>
+        <div class="manage-address-toolbar">
+          <a class="manage-address-icon-button" data-spending-detail-explorer href="#" target="_blank" rel="noopener noreferrer" aria-label="View address in explorer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+          </a>
+        </div>
+      </header>
+
+      <div class="spending-detail-balance">
+        <span class="spending-detail-balance-label">Balance</span>
+        <span class="spending-detail-balance-value" data-spending-detail-balance>-- KAS</span>
+        <span class="spending-detail-balance-address" data-spending-detail-address></span>
+      </div>
+
+      <div class="settings-segmented full manage-address-tabs" role="group" aria-label="Spending address view">
+        <button type="button" class="settings-segmented-option active" data-spending-detail-tab="transactions">Transaction History</button>
+        <button type="button" class="settings-segmented-option" data-spending-detail-tab="utxos">UTXOs</button>
+      </div>
+
+      <div class="manage-address-body">
+        <div data-spending-detail-panel="transactions">
+          <div class="manage-address-list" data-spending-detail-transactions></div>
+        </div>
+        <div data-spending-detail-panel="utxos" hidden>
+          <div class="manage-address-list" data-spending-detail-utxos></div>
+        </div>
+      </div>
+
+      <div class="manage-address-actions">
+        <button type="button" class="chatting-address-copy" data-spending-detail-receive>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 18v3"/></svg>
+          <span data-i18n="action.receive">Receive</span>
+        </button>
+        <button type="button" class="chatting-address-copy manage-address-send-button" data-spending-detail-send>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16V8M8 12l4-4 4 4"/></svg>
+          <span data-i18n="action.send">Send</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" data-send-kaspa-modal hidden>
+    <section class="contact-modal send-kaspa-modal" role="dialog" aria-modal="true" aria-label="Send Kaspa">
+      <div class="modal-header">
+        <div>
+          <p class="modal-kicker">Real Kaspa transaction</p>
+          <h2>Send Kaspa</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-send-kaspa aria-label="Close">×</button>
+      </div>
+      <label class="field-label">Recipient
+        <input class="field-input" type="text" data-send-kaspa-recipient placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" />
+      </label>
+      <p class="field-hint" data-send-kaspa-resolved hidden></p>
+      <label class="field-label">Amount (KAS)
+        <input class="field-input" type="text" inputmode="decimal" data-send-kaspa-amount placeholder="0.00000000" autocomplete="off" />
+      </label>
+      <p class="field-hint" data-send-kaspa-balance></p>
+      <p class="field-error" data-send-kaspa-error hidden></p>
+      <div class="kns-progress" data-send-kaspa-progress hidden></div>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-send-kaspa>Cancel</button>
+        <button class="primary-button" type="button" data-send-kaspa-submit disabled>Send</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-spending-send-modal hidden>
+    <section class="contact-modal send-kaspa-modal" role="dialog" aria-modal="true" aria-label="Send from spending address">
+      <div class="modal-header">
+        <div>
+          <p class="modal-kicker">Spending address</p>
+          <h2>Send Kaspa</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-spending-send aria-label="Close">×</button>
+      </div>
+      <p class="field-hint spending-send-source" data-spending-send-source></p>
+      <label class="field-label">Recipient
+        <input class="field-input" type="text" data-spending-send-recipient placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" />
+      </label>
+      <p class="field-hint" data-spending-send-resolved hidden></p>
+      <label class="field-label">Amount (KAS)
+        <input class="field-input" type="text" inputmode="decimal" data-spending-send-amount placeholder="0.00000000" autocomplete="off" />
+      </label>
+      <p class="field-hint" data-spending-send-balance></p>
+      <div class="send-fee-section">
+        <div class="send-fee-header">
+          <span data-i18n="send.networkFee">Network Fee</span>
+          <span class="send-fee-summary" data-spending-send-fee-summary>Normal</span>
+        </div>
+        <div class="settings-segmented full" role="group" aria-label="Network fee">
+          <button type="button" class="settings-segmented-option active" data-spending-send-fee="0" data-i18n="fee.normal">Normal</button>
+          <button type="button" class="settings-segmented-option" data-spending-send-fee="0.00002" data-i18n="fee.priority">Priority</button>
+          <button type="button" class="settings-segmented-option" data-spending-send-fee="custom" data-i18n="fee.custom">Custom</button>
+        </div>
+        <input class="field-input send-fee-custom" type="text" inputmode="decimal" data-spending-send-fee-custom placeholder="Priority fee (KAS)" autocomplete="off" readonly />
+      </div>
+      <p class="field-error" data-spending-send-error hidden></p>
+      <div class="kns-progress" data-spending-send-progress hidden></div>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-spending-send>Cancel</button>
+        <button class="primary-button" type="button" data-spending-send-submit disabled>Send</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-privatekey-modal hidden>
+    <section class="contact-modal recovery-modal recovery-hold-modal" role="dialog" aria-modal="true" aria-label="Private key">
+      <button class="modal-close recovery-close" type="button" data-close-privatekey aria-label="Close">×</button>
+      <p class="field-hint">This is the private key for your chatting address. Anyone with it can spend from this address — never share it.</p>
+
+      <button class="recovery-hold-target" type="button" data-reveal-privatekey aria-label="Tap to reveal private key">
+        <img class="recovery-eye-icon" src="./ui/assets/seed-eye-hidden.png" alt="" aria-hidden="true">
+        <span class="recovery-hold-label">Tap to reveal Private Key</span>
+        <span class="recovery-progress-track" aria-hidden="true">
+          <span class="recovery-progress-fill" data-privatekey-progress></span>
+        </span>
+      </button>
+
+      <div class="recovery-phrase-box" data-privatekey-value hidden></div>
+
+      <div class="modal-actions recovery-actions">
+        <button class="secondary-button" type="button" data-copy-privatekey hidden>Copy</button>
+        <button class="primary-button" type="button" data-close-privatekey>Done</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-password-modal hidden>
+    <form class="contact-modal password-modal" data-password-form role="dialog" aria-modal="true" aria-label="Password">
+      <div class="modal-header">
+        <div><p class="modal-kicker">Security</p><h2 data-password-title>Enter Password</h2></div>
+        <button class="modal-close" type="button" data-password-cancel aria-label="Close">×</button>
+      </div>
+      <p class="field-hint" data-password-message hidden></p>
+      <label class="field-label">Password
+        <input class="field-input" type="password" data-password-input autocomplete="off" />
+      </label>
+      <label class="field-label" data-password-confirm-label hidden>Confirm Password
+        <input class="field-input" type="password" data-password-confirm autocomplete="off" />
+      </label>
+      <p class="field-error" data-password-error hidden></p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-password-cancel>Cancel</button>
+        <button class="primary-button" type="submit" data-password-submit>Confirm</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="modal-backdrop chess-overlay" data-chess-overlay hidden>
+    <section class="chess-panel" role="dialog" aria-modal="true" aria-label="Chess">
+      <header class="chess-header">
+        <button class="chess-close" type="button" data-chess-close aria-label="Close">×</button>
+        <div class="chess-title-wrap">
+          <h2>Chess</h2>
+          <p class="chess-status" data-chess-status></p>
+          <p class="chess-record" data-chess-record hidden></p>
+        </div>
+        <button class="chess-resign" type="button" data-chess-resign>Resign</button>
+      </header>
+      <div class="chess-actions" data-chess-actions hidden>
+        <button type="button" class="secondary-button" data-chess-decline>Decline</button>
+        <button type="button" class="primary-button" data-chess-accept>Accept</button>
+      </div>
+      <div class="chess-captured" data-chess-captured-top></div>
+      <div class="chess-board-wrap">
+        <div class="chess-board-frame">
+          <div class="chess-files" data-chess-files-top></div>
+          <div class="chess-mid">
+            <div class="chess-ranks" data-chess-ranks-left></div>
+            <div class="chess-board" data-chess-board></div>
+            <div class="chess-ranks" data-chess-ranks-right></div>
+          </div>
+          <div class="chess-files" data-chess-files-bottom></div>
+        </div>
+        <div class="chess-waiting" data-chess-waiting hidden><span data-chess-waiting-text>Waiting on opponent…</span></div>
+      </div>
+      <div class="chess-captured" data-chess-captured-bottom></div>
+      <div class="chess-chat" data-chess-chat></div>
+      <form class="chess-composer" data-chess-composer>
+        <input class="field-input" type="text" data-chess-chat-input placeholder="Message" autocomplete="off" />
+        <button type="submit" class="chess-chat-send" aria-label="Send message">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
+        </button>
+      </form>
+      <div class="chess-promo" data-chess-promo hidden>
+        <div class="chess-promo-card">
+          <p>Promote pawn to:</p>
+          <div class="chess-promo-options" data-chess-promo-options></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="account-overlay" data-chat-info-overlay hidden role="dialog" aria-modal="true" aria-label="Chat Info">
+    <div class="account-overlay-card">
+      <header class="account-overlay-header">
+        <button class="chat-info-header-button" type="button" data-chat-info-cancel>Cancel</button>
+        <h2 class="account-overlay-title">Chat Info</h2>
+        <button class="chat-info-header-button accent" type="button" data-chat-info-save>Save</button>
+      </header>
+      <div class="account-overlay-body">
+        <div class="profile-card chat-info-header-card">
+          <span class="chat-info-avatar" data-chat-info-avatar aria-hidden="true">
+            <span data-chat-info-avatar-initials></span>
+            <img class="chat-info-avatar-image" data-chat-info-avatar-image alt="" hidden />
+          </span>
+          <input class="chat-info-name-input" data-chat-info-name-input type="text" placeholder="Name" maxlength="48" autocomplete="off" aria-label="Contact name" />
+          <span class="chat-info-address-caption" data-chat-info-address-caption></span>
+          <div class="chat-info-profile-extra" data-chat-info-profile-section hidden>
+            <p class="chat-info-bio" data-chat-info-bio hidden></p>
+            <div class="chat-info-social-links" data-chat-info-social-links></div>
+          </div>
+        </div>
+
+        <p class="profile-section-label">Address</p>
+        <button class="profile-card chat-info-qr-card" type="button" data-chat-info-copy-address>
+          <canvas width="512" height="512" data-chat-info-qr></canvas>
+          <span class="chat-info-address-mono" data-chat-info-address-mono></span>
+        </button>
+
+        <p class="profile-section-label">Notifications</p>
+        <div class="settings-list-card">
+          <div class="settings-toggle-row">
+            <span><strong>Incoming Notifications</strong><small>On: get a desktop notification when this contact messages you. Off: mute all notifications from this contact.</small></span>
+            <label class="switch-control"><input type="checkbox" data-chat-info-notify><span></span></label>
+          </div>
+        </div>
+
+        <p class="profile-section-label">Photos</p>
+        <div class="settings-list-card">
+          <div class="settings-toggle-row">
+            <span><strong>Photo Display</strong><small>On: photos from this contact appear automatically. Off: photos stay hidden until you tap to view each one.</small></span>
+            <label class="switch-control"><input type="checkbox" data-chat-info-photos><span></span></label>
+          </div>
+        </div>
+
+        <p class="profile-section-label">Info</p>
+        <div class="profile-card chat-info-stats-card">
+          <div class="profile-about-row"><strong>Added</strong><span data-chat-info-added>—</span></div>
+          <div class="profile-about-row"><strong>Last Message</strong><span data-chat-info-last-message>—</span></div>
+          <div class="profile-about-row" data-chat-info-chess-row hidden><strong>Chess</strong><span data-chat-info-chess>—</span></div>
+          <div class="chat-info-stats-row">
+            <div class="chat-info-stat"><strong data-chat-info-sent>0</strong><small>Sent</small></div>
+            <div class="chat-info-stat-divider" aria-hidden="true"></div>
+            <div class="chat-info-stat"><strong data-chat-info-received>0</strong><small>Received</small></div>
+            <div class="chat-info-stat-divider" aria-hidden="true"></div>
+            <div class="chat-info-stat"><strong data-chat-info-total>0</strong><small>Total</small></div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -603,7 +1745,8 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=103"></script>
+  <script type="module" src="./ui/app.js?v=178"></script>
+  <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>
     <section class="logout-sheet" role="dialog" aria-modal="true" aria-labelledby="logout-title">

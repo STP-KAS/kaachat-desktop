@@ -8,9 +8,14 @@ import {
   fromHex,
   makeKasiaCommPayload,
   parseKasiaPayloadHex,
+  selfStashEncryptedCandidates,
+  parseSelfStashPayload,
 } from "./kasia-protocol.js";
+import { getEndpoint, ENDPOINT_DEFAULTS } from "./endpoints.js";
 
-export const DEFAULT_KASIA_INDEXER_URL = "https://indexer.kasia.fyi";
+// Kept as a named export for callers, but the effective default now comes from
+// the configurable endpoint registry (Settings > Connectivity).
+export const DEFAULT_KASIA_INDEXER_URL = ENDPOINT_DEFAULTS.kasiaIndexer;
 export const DEFAULT_KASIA_ALIAS = "KaChat";
 
 function shortHash(input) {
@@ -210,7 +215,7 @@ export async function syncConversationFromIndexer({
 async function resolveHandshakeSenderFromTransaction(txid, receiver) {
   if (!txid) return "";
   try {
-    const url = new URL(`https://api.kaspa.org/transactions/${encodeURIComponent(txid)}`);
+    const url = new URL(`${getEndpoint("kaspaApi")}/transactions/${encodeURIComponent(txid)}`);
     url.searchParams.set("resolve_previous_outpoints", "light");
     const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
     if (!response.ok) return "";
@@ -303,7 +308,7 @@ function transactionPaysAddress(transaction, receiver) {
 
 async function fetchHandshakeTransactionsFromKaspaRest({ walletAddress, cursor = 0, knownTxids = [], limit = 100 } = {}) {
   const known = new Set((knownTxids || []).map(String));
-  const url = new URL(`https://api.kaspa.org/addresses/${encodeURIComponent(walletAddress)}/full-transactions`);
+  const url = new URL(`${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(walletAddress)}/full-transactions`);
   url.searchParams.set("limit", String(Math.max(1, Math.min(100, Number(limit) || 100))));
   url.searchParams.set("offset", "0");
   url.searchParams.set("resolve_previous_outpoints", "light");
@@ -462,6 +467,95 @@ export async function syncIncomingHandshakesFromIndexer({
   };
 }
 
+function isSelfStashPayloadHex(payloadHex) {
+  const clean = String(payloadHex || "").replace(/^0x/i, "").trim().toLowerCase();
+  if (!clean || clean.length % 2 !== 0 || !/^[0-9a-f]+$/.test(clean)) return false;
+  let body = clean;
+  if (body.startsWith("6a") && body.length >= 4) body = body.slice(4);
+  return body.startsWith(textToHex("ciph_msg:1:self_stash:saved_handshake:"));
+}
+
+// A self-stash transaction pays back to the wallet's own address, so unlike
+// handshake scanning there's no "sender differs from receiver" filter — the
+// wallet is both sender and receiver. We just filter this wallet's own
+// transaction history down to self_stash-shaped payloads.
+async function fetchSelfStashTransactionsFromChain({ walletAddress, cursor = 0, knownTxids = [], limit = 100 } = {}) {
+  const known = new Set((knownTxids || []).map(String));
+  const url = new URL(`${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(walletAddress)}/full-transactions`);
+  url.searchParams.set("limit", String(Math.max(1, Math.min(100, Number(limit) || 100))));
+  url.searchParams.set("offset", "0");
+  url.searchParams.set("resolve_previous_outpoints", "light");
+  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  if (!response.ok) throw new Error(`Kaspa REST self-stash scan failed (${response.status}).`);
+  const transactions = await response.json();
+  if (!Array.isArray(transactions)) throw new Error("Kaspa REST returned an unexpected transaction response.");
+  const rows = [];
+  for (const transaction of transactions) {
+    const txid = String(transaction?.transaction_id || transaction?.transactionId || transaction?.hash || "").trim();
+    const blockTime = Number(transaction?.block_time || transaction?.blockTime || transaction?.accepting_block_time || 0);
+    const payload = String(transaction?.payload || "").trim();
+    if (!txid || known.has(txid) || (cursor > 0 && blockTime > 0 && blockTime <= cursor)) continue;
+    if (!isSelfStashPayloadHex(payload)) continue;
+    rows.push({ tx_id: txid, block_time: blockTime, message_payload: payload });
+  }
+  return rows;
+}
+
+/**
+ * Recovers conversation/alias metadata purely from on-chain self-stash
+ * transactions plus the active private key — no local database required.
+ * Matches iOS's historical-loader recovery flow (see buildSelfStash in
+ * kasia-protocol.js for the wire format this decodes).
+ */
+export async function syncSelfStashFromChain({
+  walletAddress,
+  privateKeyHex,
+  decryptMessage,
+  knownTxids = [],
+  cursor = 0,
+  limit = 100,
+} = {}) {
+  if (!walletAddress?.startsWith("kaspa:")) throw new Error("Load a wallet before recovering conversations.");
+  if (!privateKeyHex) throw new Error("The active private key is required to decrypt stashed conversation data.");
+  if (typeof decryptMessage !== "function") throw new Error("Kasia cipher decryptor is unavailable.");
+
+  const known = new Set((knownTxids || []).map(String));
+  const errors = [];
+  let rows = [];
+  try {
+    rows = await fetchSelfStashTransactionsFromChain({ walletAddress, cursor, knownTxids: [...known], limit });
+  } catch (error) {
+    errors.push(`REST: ${error.message}`);
+    throw new Error(errors.join(" | "));
+  }
+
+  rows.sort((a, b) => Number(a.block_time || 0) - Number(b.block_time || 0));
+  const stashes = [];
+  let nextCursor = Number(cursor || 0);
+
+  for (const row of rows) {
+    const txid = String(row.tx_id || "").trim();
+    const blockTime = Number(row.block_time || 0);
+    if (blockTime > nextCursor) nextCursor = blockTime;
+    if (!txid || known.has(txid)) continue;
+    known.add(txid);
+
+    let decoded = null;
+    for (const candidate of selfStashEncryptedCandidates(row.message_payload || "")) {
+      try {
+        const clearText = await decryptMessage(candidate, privateKeyHex);
+        const parsed = parseSelfStashPayload(clearText);
+        if (parsed.partnerAddress) { decoded = parsed; break; }
+      } catch {}
+    }
+    if (!decoded) continue;
+
+    stashes.push({ txid, blockTime, ...decoded });
+  }
+
+  return { stashes, nextCursor, scannedCount: rows.length, errors };
+}
+
 // Existing local preview helper retained for offline UI testing.
 export async function syncConversationPreview({ conversationId, contact, walletAddress, knownTxids = [], cursor = 0 } = {}) {
   if (!conversationId) throw new Error("conversationId is required for sync.");
@@ -549,7 +643,7 @@ export async function syncIncomingPaymentsFromRest({ conversationId, contact, wa
     : body && typeof body === "object" ? [body] : [];
 
   const known = new Set((knownTxids || []).map(String));
-  const url = new URL(`https://api.kaspa.org/addresses/${encodeURIComponent(walletAddress)}/full-transactions`);
+  const url = new URL(`${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(walletAddress)}/full-transactions`);
   url.searchParams.set("limit", String(Math.max(1, Math.min(100, Number(limit) || 100))));
   url.searchParams.set("offset", "0");
   url.searchParams.set("resolve_previous_outpoints", "light");

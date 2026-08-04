@@ -5,14 +5,11 @@ export function makeQrPayload(address) {
   return address;
 }
 
-export async function drawKaspaQr(canvas, payload) {
+export async function drawKaspaQr(canvas, payload, { dark = "#effcf7", light = "#071415" } = {}) {
   await QRCode.toCanvas(canvas, payload, {
     errorCorrectionLevel: "M",
     margin: 3,
     width: 512,
-    color: {
-      dark: "#effcf7",
-      light: "#071415"
-    }
+    color: { dark, light }
   });
 }

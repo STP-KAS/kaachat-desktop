@@ -1,4 +1,5 @@
 import { NETWORK_ID } from "./utils.js";
+import { getEndpoint } from "./endpoints.js";
 
 const NODE_REGISTRY_KEY = "kachat.browser.node-registry.v1";
 const DIRECT_CONNECT_TIMEOUT_MS = 8000;
@@ -163,6 +164,11 @@ export function isRpcConnectionError(error) {
   return CONNECTION_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
+export function clearNodeRegistry() {
+  if (typeof localStorage === "undefined") return;
+  try { localStorage.removeItem(NODE_REGISTRY_KEY); } catch {}
+}
+
 export function getNodeRegistrySnapshot() {
   const registry = loadRegistry();
   const endpoints = Object.values(registry.endpoints || {}).sort((a, b) => {
@@ -181,6 +187,23 @@ export function getNodeRegistrySnapshot() {
 
 export async function createRpc(kaspa, log = () => {}) {
   const registry = loadRegistry();
+
+  // A user-configured trusted node (Settings > Connectivity) is tried first;
+  // failures fall through to the last-good endpoint and then the resolver.
+  const trustedNode = getEndpoint("trustedNode");
+  if (trustedNode) {
+    try {
+      return await connectCandidate(kaspa, {
+        endpoint: trustedNode,
+        timeoutMs: DIRECT_CONNECT_TIMEOUT_MS,
+        log,
+        role: "primary",
+      });
+    } catch (error) {
+      log(`Configured trusted node (${trustedNode}) failed: ${error?.message || error}`);
+    }
+  }
+
   const lastGoodEndpoint = registry.lastGoodEndpoint;
 
   if (lastGoodEndpoint) {
