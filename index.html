@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=181" />
+  <link rel="stylesheet" href="./ui/styles.css?v=199" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -257,31 +257,134 @@
             </div>
           </article>
 
-        <div class="app-placeholder-screen" data-app-tab-screen="cold-storage" hidden>
-          <div class="empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2.4"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.6"/></svg>
-          </div>
-          <h1>Cold Storage</h1>
-          <span class="architecture-badge">Coming Soon</span>
-          <p>Watch-only accounts and air-gapped hardware signing are coming in a future release.</p>
+        <div class="portfolio-screen profile-screen" data-app-tab-screen="cold-storage" hidden>
+          <div data-cold-root></div>
         </div>
 
-        <div class="app-placeholder-screen" data-app-tab-screen="portfolio" hidden>
-          <div class="empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M21.18 15.9A10 10 0 1 1 8.1 2.82"/><path d="M22 12A10 10 0 0 0 12 2v10Z"/></svg>
-          </div>
-          <h1>Portfolio</h1>
-          <span class="architecture-badge">Coming Soon</span>
-          <p>KAS price history and a buy/sell transaction ledger are coming in a future release.</p>
+        <div class="portfolio-screen profile-screen" data-app-tab-screen="swaps" hidden>
+          <div data-swaps-root></div>
         </div>
 
-        <div class="app-placeholder-screen" data-app-tab-screen="swaps" hidden>
-          <div class="empty-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        <div class="portfolio-screen profile-screen" data-app-tab-screen="portfolio" hidden>
+          <div data-portfolio-root></div>
+        </div>
+
+        <div class="broadcasts-screen" data-app-tab-screen="broadcasts" hidden>
+          <div class="broadcast-list-wrap" data-broadcast-list-wrap>
+            <div class="kaposts-header">
+              <h1 class="kaposts-title">Broadcasts</h1>
+            </div>
+            <p class="broadcast-intro">Public, unencrypted rooms on the Kaspa network. Anyone who joins the same channel sees the same messages.</p>
+            <div class="broadcast-join-row">
+              <input class="kaposts-reply-input" type="text" data-broadcast-join-input placeholder="Join or create a channel…" maxlength="36" />
+              <button class="primary-button" type="button" data-broadcast-join>Join</button>
+            </div>
+            <div class="broadcast-list" data-broadcast-list></div>
           </div>
-          <h1>Swaps</h1>
-          <span class="architecture-badge">Coming Soon</span>
-          <p>KAS token swaps are coming in a future release.</p>
+          <div class="broadcast-room" data-broadcast-room hidden>
+            <div class="kaposts-thread-header">
+              <button class="kaposts-icon-button" type="button" data-broadcast-back aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
+              </button>
+              <span class="broadcast-room-dot" data-broadcast-room-dot aria-hidden="true"></span>
+              <strong data-broadcast-room-title>#channel</strong>
+              <button class="kaposts-icon-button broadcast-hidden-btn" type="button" data-broadcast-hidden-users aria-label="Hidden users" title="Hidden users">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88"/></svg>
+              </button>
+            </div>
+            <div class="broadcast-room-banner" data-broadcast-room-banner hidden>All messages are public and are stored for 3 days only.</div>
+            <div class="broadcast-hidden-panel" data-broadcast-hidden-panel hidden></div>
+            <div class="broadcast-room-body" data-broadcast-room-body></div>
+            <div class="kaposts-reply-bar">
+              <textarea class="kaposts-reply-input" data-broadcast-input rows="1" placeholder="Message the room"></textarea>
+              <button class="primary-button" type="button" data-broadcast-send>Send</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="kaposts-screen" data-app-tab-screen="kaposts" hidden>
+          <nav class="kaposts-rail" aria-label="KaPosts sections">
+            <h1 class="kaposts-title">KaPosts</h1>
+            <button class="kaposts-rail-item active" type="button" data-kaposts-rail="feed">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.25 12 11.204 3.045c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75"/></svg>
+              <span>Feed</span>
+            </button>
+            <button class="kaposts-rail-item" type="button" data-kaposts-rail="notifications">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/></svg>
+              <span>Notifications</span>
+            </button>
+            <button class="kaposts-rail-item" type="button" data-kaposts-rail="profile">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.118a7.5 7.5 0 0 1 15 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.5-1.632Z"/></svg>
+              <span>Profile</span>
+            </button>
+            <button class="kaposts-rail-item" type="button" data-kaposts-rail="bookmarks">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z"/></svg>
+              <span>Bookmarks</span>
+            </button>
+            <button class="kaposts-rail-item" type="button" data-kaposts-rail="muted">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z"/></svg>
+              <span>Muted</span>
+            </button>
+            <button class="kaposts-rail-item" type="button" data-kaposts-rail="blocked">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.364 18.364A9 9 0 0 0 5.636 5.636m12.728 12.728A9 9 0 0 1 5.636 5.636m12.728 12.728L5.636 5.636"/></svg>
+              <span>Blocked</span>
+            </button>
+            <button class="primary-button kaposts-rail-post" type="button" data-kaposts-compose>Post</button>
+          </nav>
+          <div class="kaposts-content">
+          <div class="kaposts-feed-tabs" data-kaposts-feed-tabs>
+            <button class="kaposts-feed-tab" type="button" data-kaposts-feed-tab="following">Following</button>
+            <button class="kaposts-feed-tab active" type="button" data-kaposts-feed-tab="feed">Feed</button>
+            <button class="kaposts-feed-tab" type="button" data-kaposts-feed-tab="popular">Popular</button>
+          </div>
+          <div class="kaposts-feed-status" data-kaposts-status hidden></div>
+          <div class="kaposts-feed" data-kaposts-feed></div>
+          <div class="kaposts-thread" data-kaposts-thread hidden>
+            <div class="kaposts-thread-header">
+              <button class="kaposts-icon-button" type="button" data-kaposts-thread-back aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
+              </button>
+              <strong>Post</strong>
+            </div>
+            <div data-kaposts-thread-root></div>
+            <div class="kaposts-reply-context" data-kaposts-reply-context hidden>
+              <span data-kaposts-reply-context-label>Replying to</span>
+              <button type="button" data-kaposts-reply-context-clear aria-label="Reply to the post instead">✕</button>
+            </div>
+            <div class="kaposts-reply-bar kaposts-reply-inline">
+              <textarea class="kaposts-reply-input" data-kaposts-reply-input rows="1" placeholder="Post your reply"></textarea>
+              <span class="kaposts-meter" data-kaposts-reply-meter hidden></span>
+              <button class="primary-button kaposts-reply-send" type="button" data-kaposts-reply-send>Reply</button>
+            </div>
+            <div class="kaposts-thread-replies-host" data-kaposts-thread-replies></div>
+          </div>
+          <div class="kaposts-panel" data-kaposts-panel hidden>
+            <div class="kaposts-thread-header">
+              <button class="kaposts-icon-button" type="button" data-kaposts-panel-back aria-label="Back">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
+              </button>
+              <strong data-kaposts-panel-title>Panel</strong>
+            </div>
+            <div class="kaposts-panel-body" data-kaposts-panel-body></div>
+          </div>
+          <div class="kaposts-popover" data-kaposts-popover hidden></div>
+          <div class="kaposts-toasts" data-kaposts-toasts></div>
+          </div>
+        </div>
+
+        <div class="kaposts-composer-backdrop modal-backdrop" data-kaposts-composer hidden>
+          <div class="kaposts-composer">
+            <div class="kaposts-composer-header">
+              <button class="kaposts-icon-button" type="button" data-kaposts-composer-cancel aria-label="Cancel">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6l12 12"/></svg>
+              </button>
+              <strong data-kaposts-composer-title>New Post</strong>
+              <span class="kaposts-meter" data-kaposts-composer-meter hidden></span>
+              <button class="primary-button" type="button" data-kaposts-composer-submit disabled>Post</button>
+            </div>
+            <textarea class="kaposts-composer-input" data-kaposts-composer-input placeholder="What's happening on Kaspa?"></textarea>
+            <div class="kaposts-composer-quote" data-kaposts-composer-quote hidden></div>
+          </div>
         </div>
 
         <div class="profile-screen" data-app-tab-screen="profile" hidden>
@@ -292,6 +395,17 @@
                 <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
               </svg>
             </button>
+          </div>
+
+          <div class="profile-card profile-hero-card">
+            <div class="profile-hero-banner" data-profile-hero-banner></div>
+            <div class="profile-hero-row">
+              <span class="kaposts-avatar profile-hero-avatar" data-profile-hero-avatar aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.118a7.5 7.5 0 0 1 15 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.5-1.632Z"/></svg></span>
+              <div class="profile-hero-meta">
+                <strong data-profile-hero-name>Account</strong>
+                <span class="profile-hero-bio" data-profile-hero-bio hidden></span>
+              </div>
+            </div>
           </div>
 
           <div class="profile-card profile-account-card">
@@ -364,8 +478,19 @@
           </div>
 
           <p class="profile-section-label">About</p>
-          <div class="profile-card profile-about-card">
-            <div class="profile-about-row"><strong>Created</strong><span data-profile-created>—</span></div>
+          <div class="profile-card">
+            <p class="profile-card-label">Apps</p>
+            <div class="profile-apps-grid">
+              <a class="profile-app-bubble" href="https://kaspa.org" target="_blank" rel="noopener"><span>K</span>kaspa.org</a>
+              <a class="profile-app-bubble" href="https://kaspa.stream" target="_blank" rel="noopener"><span>▶</span>kaspa.stream</a>
+              <a class="profile-app-bubble" href="https://explorer.kaspa.org" target="_blank" rel="noopener"><span>⛓</span>Kaspa explorer</a>
+              <a class="profile-app-bubble" href="https://kasmap.org" target="_blank" rel="noopener"><span>🗺</span>kasmap.org</a>
+              <a class="profile-app-bubble" href="https://kasshi.io" target="_blank" rel="noopener"><span>▶</span>KasShi</a>
+              <a class="profile-app-bubble" href="https://kaspa.news" target="_blank" rel="noopener"><span>📰</span>kaspa.news</a>
+              <a class="profile-app-bubble" href="https://kasplay.fun" target="_blank" rel="noopener"><span>🎮</span>kasplay.fun</a>
+              <a class="profile-app-bubble" href="https://kasmart.org" target="_blank" rel="noopener"><span>🛒</span>kasmart.org</a>
+              <a class="profile-app-bubble" href="https://kasmedia.com" target="_blank" rel="noopener"><span>📺</span>kasmedia.com</a>
+            </div>
           </div>
 
           <button class="profile-card profile-gift-row" type="button" data-mockup-action="gift">
@@ -382,11 +507,27 @@
             <span>Log Out</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5.75A1.75 1.75 0 0 0 4 5.75v12.5C4 19.22 4.78 20 5.75 20H10"/><path d="M14 8l4 4-4 4"/><path d="M18 12H9"/></svg>
           </button>
+
+          <div class="profile-card profile-about-card">
+            <div class="profile-about-row"><strong>Created</strong><span data-profile-created>—</span></div>
+          </div>
         </div>
       </section>
     </div>
 
-    <nav class="sidebar-tabbar" aria-label="Main sections">
+    <div class="dock-slot-menu" data-dock-slot-menu hidden></div>
+  <div class="dock-wizard-backdrop modal-backdrop" data-dock-wizard hidden>
+    <div class="dock-wizard">
+      <h2>What's new in 4.0</h2>
+      <div class="dock-wizard-page" data-dock-wizard-page></div>
+      <div class="dock-wizard-dots" data-dock-wizard-dots></div>
+      <div class="dock-wizard-actions">
+        <button class="secondary-button" type="button" data-dock-wizard-skip>Skip</button>
+        <button class="primary-button" type="button" data-dock-wizard-next>Next</button>
+      </div>
+    </div>
+  </div>
+  <nav class="sidebar-tabbar" aria-label="Main sections">
       <button class="sidebar-tab" type="button" data-app-tab="cold-storage">
         <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2.4"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1.6"/></svg></span>
         <span>Storage</span>
@@ -399,8 +540,16 @@
         <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg></span>
         <span>Chats</span>
       </button>
+      <button class="sidebar-tab" type="button" data-app-tab="kaposts">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897l12.682-12.68Z"/><path d="M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"/></svg></span>
+        <span>KaPosts</span>
+      </button>
+      <button class="sidebar-tab" type="button" data-app-tab="broadcasts">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Z"/></svg></span>
+        <span>Broadcasts</span>
+      </button>
       <button class="sidebar-tab" type="button" data-app-tab="swaps">
-        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
         <span>Swaps</span>
       </button>
       <button class="sidebar-tab" type="button" data-app-tab="profile">
@@ -510,6 +659,16 @@
                   <div class="menu-tab-row">
                     <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>Swap</span>
                     <label class="switch-control"><input type="checkbox" data-menu-tab="swaps" checked><span></span></label>
+                  </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897l12.682-12.68Z"/></svg>KaPosts</span>
+                    <span class="menu-tab-hint" data-menu-tab-hint="kaposts" hidden>Rides the Chats tab</span>
+                    <label class="switch-control"><input type="checkbox" data-menu-tab="kaposts" checked><span></span></label>
+                  </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546"/></svg>Broadcasts</span>
+                    <span class="menu-tab-hint" data-menu-tab-hint="broadcasts" hidden>Rides the Chats tab</span>
+                    <label class="switch-control"><input type="checkbox" data-menu-tab="broadcasts" checked><span></span></label>
                   </div>
                 </div>
               </div>

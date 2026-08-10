@@ -824,3 +824,4 @@ export * from "./sync.js";
 export * from "./kasia-protocol.js";
 
 export * from "./kasia-cipher.js";
+export * from "./kaposts.js";

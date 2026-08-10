@@ -1,4 +1,9 @@
 import { KaspaEngine } from "../engine/index.js";
+import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount } from "./kaposts.js";
+import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling } from "./broadcasts.js";
+import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
+import { initColdStorage, refreshColdStorage, resetColdStorageForAccount } from "./coldstorage.js";
+import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
 import {
   MESSAGE_STATUSES,
   createConversation,
@@ -1046,8 +1051,13 @@ function setActiveConversationId(id) {
   activeConversationId = id;
   const isOpen = Boolean(id);
   appBody?.classList.toggle("conversation-open", isOpen);
-  if (conversation) conversation.hidden = !isOpen;
-  if (detailEmptyState) detailEmptyState.hidden = isOpen;
+  // The conversation pane and its "Select a conversation" empty state belong to the CHATS
+  // tab only - background refreshes call this with null while another tab (KaPosts etc.)
+  // is showing, and unconditionally unhiding the empty state stacked it on top of that
+  // tab's screen.
+  const onChatsTab = currentAppTab === "chats";
+  if (conversation) conversation.hidden = !isOpen || !onChatsTab;
+  if (detailEmptyState) detailEmptyState.hidden = isOpen || !onChatsTab;
   updateDetailActiveClass();
 }
 
@@ -1552,6 +1562,13 @@ function persistState() {
 }
 
 function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
+  // KaPosts state (follows/mutes/blocks + session posts) is per account too.
+  try { resetKaPostsForAccount(); } catch { /* not yet initialized */ }
+  try { reloadDockPrefsForAccount(); } catch { /* not yet initialized */ }
+  try { resetBroadcastsForAccount(); } catch { /* not yet initialized */ }
+  try { resetPortfolioForAccount(); } catch { /* not yet initialized */ }
+  try { resetColdStorageForAccount(); } catch { /* not yet initialized */ }
+  try { resetSwapsForAccount(); } catch { /* not yet initialized */ }
   const clean = String(address || "").trim();
   if (!clean) {
     state = { contacts: [], conversations: [] };
@@ -2404,6 +2421,28 @@ const appTabScreens = document.querySelectorAll("[data-app-tab-screen]");
 let ownKnsAssetId = null;
 let ownKnsProfileFields = null;
 
+function updateProfileHero(info, profileInfo) {
+  const bannerEl = document.querySelector("[data-profile-hero-banner]");
+  const avatarEl = document.querySelector("[data-profile-hero-avatar]");
+  const nameEl = document.querySelector("[data-profile-hero-name]");
+  const bioEl = document.querySelector("[data-profile-hero-bio]");
+  const domain = info?.explicitPrimaryDomain || info?.primaryDomain || "";
+  const displayName = domain
+    ? (domain.toLowerCase().endsWith(".kas") ? domain.slice(0, -4) : domain)
+    : (activeAccountMetadata().name || "Account");
+  if (nameEl) nameEl.textContent = displayName;
+  const bio = profileInfo?.profile?.bio || "";
+  if (bioEl) { bioEl.hidden = !bio; bioEl.textContent = bio; }
+  const bannerUrl = profileInfo?.profile?.bannerUrl || "";
+  if (bannerEl) bannerEl.style.backgroundImage = bannerUrl ? `url("${bannerUrl}")` : "";
+  const avatarUrl = profileInfo?.profile?.avatarUrl || "";
+  if (avatarEl) {
+    avatarEl.innerHTML = avatarUrl
+      ? `<img src="${escapeHtml(avatarUrl)}" alt="" />`
+      : `<svg viewBox="0 0 24 24"><path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.118a7.5 7.5 0 0 1 15 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.5-1.632Z"/></svg>`;
+  }
+}
+
 async function refreshOwnKnsProfile() {
   if (!engine.address || !profileKnsOwned || !profileKnsEmptyCta) return;
   const address = engine.address;
@@ -2412,6 +2451,7 @@ async function refreshOwnKnsProfile() {
     engine.fetchKnsAddressProfile(address).catch(() => null),
   ]);
   if (engine.address !== address) return; // account switched mid-fetch
+  updateProfileHero(info, profileInfo);
 
   if (!info?.primaryDomain) {
     profileKnsEmptyCta.hidden = false;
@@ -3061,41 +3101,318 @@ function setActiveAppTab(tab) {
   }
   updateDetailActiveClass();
   if (tab === "profile") { refreshOwnKnsProfile(); refreshSpendingSummary(); }
+  if (tab === "kaposts") refreshKaPostsFeed();
+  if (tab === "broadcasts") refreshBroadcasts();
+  else stopBroadcastPolling();
+  if (tab === "portfolio") refreshPortfolio();
+  if (tab === "cold-storage") refreshColdStorage();
+  if (tab === "swaps") refreshSwaps();
 }
 
 sidebarTabButtons.forEach((button) => {
-  button.addEventListener("click", () => setActiveAppTab(button.dataset.appTab));
+  button.addEventListener("click", () => {
+    const tab = button.dataset.appTab;
+    // Chats-slot cycle (matches iOS): clicking Chats while ON a cycle page advances
+    // chats -> kaposts -> broadcasts -> chats; from elsewhere it returns to whichever
+    // page the slot last showed (sticky).
+    if (tab === "chats") {
+      const cycle = chatsSlotCycle();
+      if (cycle.length > 1) {
+        if (cycle.includes(currentAppTab)) {
+          const next = cycle[(cycle.indexOf(currentAppTab) + 1) % cycle.length];
+          showChatsSlotTab(next);
+        } else {
+          showChatsSlotTab(chatsSlotTab);
+        }
+        return;
+      }
+    }
+    setActiveAppTab(tab);
+    applyDockLayout();
+  });
 });
+
+// 4.0 dock auto-hide: the dock sits centered at the bottom but stays tucked away until the
+// pointer nears the bottom edge (macOS-dock style). It also shows briefly after a tab
+// switch so the selection change is visible, and always shows while it has keyboard focus.
+const dockBar = document.querySelector(".sidebar-tabbar");
+const DOCK_REVEAL_ZONE_PX = 110;
+let dockHideTimer = null;
+
+function showDock() {
+  if (!dockBar) return;
+  dockBar.classList.remove("dock-hidden");
+  if (dockHideTimer) { clearTimeout(dockHideTimer); dockHideTimer = null; }
+}
+
+function hideDockSoon(delay = 400) {
+  if (!dockBar) return;
+  if (dockHideTimer) clearTimeout(dockHideTimer);
+  dockHideTimer = window.setTimeout(() => {
+    if (dockBar.matches(":hover") || dockBar.contains(document.activeElement)) return;
+    dockBar.classList.add("dock-hidden");
+  }, delay);
+}
+
+if (dockBar) {
+  window.addEventListener("mousemove", (event) => {
+    if (window.innerHeight - event.clientY <= DOCK_REVEAL_ZONE_PX) showDock();
+    else hideDockSoon();
+  }, { passive: true });
+  dockBar.addEventListener("focusin", showDock);
+  dockBar.addEventListener("focusout", () => hideDockSoon(800));
+  // Tab switches surface the dock for a moment so the new selection is visible.
+  sidebarTabButtons.forEach((button) => {
+    button.addEventListener("click", () => { showDock(); hideDockSoon(1600); });
+  });
+  // Start revealed so first-time users see the dock exists, then tuck away.
+  hideDockSoon(2600);
+}
 
 // Menu customization (Settings > Customization > Menu) — which dock tabs appear.
 // Chats and Profile are always shown (like iOS); Portfolio, Cold Storage and Swap
 // can be hidden. Hidden ids persist in accountShellPrefs.hiddenTabs.
-const MENU_TOGGLEABLE_TABS = ["portfolio", "cold-storage", "swaps"];
-function isTabHidden(tab) {
-  return Array.isArray(accountShellPrefs.hiddenTabs) && accountShellPrefs.hiddenTabs.includes(tab);
+// ---------------------------------------------------------------------------
+// 4.0 dock model (matches iOS AppTab): at most 5 tabs render; KaPosts/Broadcasts
+// drop out FIRST when over the cap and ride the Chats slot instead — clicking
+// Chats then cycles chats -> kaposts -> broadcasts, and hovering the Chats tab
+// pops a jump menu. Dock config (hidden + order) is PER ACCOUNT.
+// ---------------------------------------------------------------------------
+
+const DOCK_PREFS_KEY = "kachat-dock-prefs-v1"; // account-scoped: { hiddenTabs, order }
+const DOCK_DEFAULT_ORDER = ["cold-storage", "portfolio", "chats", "kaposts", "broadcasts", "swaps", "profile"];
+const DOCK_ALWAYS_VISIBLE = ["chats", "profile"];
+const DOCK_CYCLABLE = ["kaposts", "broadcasts"];
+const MAX_DOCK_ITEMS = 5;
+const MENU_TOGGLEABLE_TABS = ["portfolio", "cold-storage", "swaps", "kaposts", "broadcasts"];
+
+let chatsSlotTab = "chats"; // sticky: which cycle page the Chats slot currently shows
+
+function loadDockPrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(accountScopedKey(DOCK_PREFS_KEY)) || "null");
+    if (parsed && typeof parsed === "object") {
+      return {
+        hiddenTabs: Array.isArray(parsed.hiddenTabs) ? parsed.hiddenTabs : [],
+        order: Array.isArray(parsed.order) ? parsed.order : [...DOCK_DEFAULT_ORDER],
+      };
+    }
+  } catch { /* fall through */ }
+  // Migration: adopt the old global hiddenTabs the first time an account loads.
+  const legacy = Array.isArray(accountShellPrefs.hiddenTabs) ? accountShellPrefs.hiddenTabs : [];
+  return { hiddenTabs: [...legacy], order: [...DOCK_DEFAULT_ORDER] };
 }
-function applyMenuTabVisibility() {
+
+let dockPrefs = loadDockPrefs();
+
+function persistDockPrefs() {
+  localStorage.setItem(accountScopedKey(DOCK_PREFS_KEY), JSON.stringify(dockPrefs));
+}
+
+function reloadDockPrefsForAccount() {
+  dockPrefs = loadDockPrefs();
+  chatsSlotTab = "chats";
+  applyDockLayout();
+}
+
+function isTabHidden(tab) {
+  return dockPrefs.hiddenTabs.includes(tab);
+}
+
+function dockResolvedOrder() {
+  const known = DOCK_DEFAULT_ORDER;
+  const order = dockPrefs.order.filter((t) => known.includes(t));
+  return [...order, ...known.filter((t) => !order.includes(t))];
+}
+
+/** The tabs the dock actually renders, in order — iOS AppTab.visible. */
+function dockVisibleTabs() {
+  let visible = dockResolvedOrder().filter((t) => DOCK_ALWAYS_VISIBLE.includes(t) || !isTabHidden(t));
+  for (const cyclable of DOCK_CYCLABLE) {
+    if (visible.length > MAX_DOCK_ITEMS) visible = visible.filter((t) => t !== cyclable);
+  }
+  if (visible.length > MAX_DOCK_ITEMS) visible = visible.slice(0, MAX_DOCK_ITEMS);
+  return visible;
+}
+
+/** Chats-slot cycle: chats + whichever of KaPosts/Broadcasts are enabled but not docked. */
+function chatsSlotCycle() {
+  const visible = dockVisibleTabs();
+  const cycle = ["chats"];
+  for (const tab of DOCK_CYCLABLE) {
+    if (!isTabHidden(tab) && !visible.includes(tab)) cycle.push(tab);
+  }
+  return cycle;
+}
+
+const DOCK_TAB_META = {
+  chats: { label: "Chats", icon: null }, // icon captured from markup below
+  kaposts: { label: "KaPosts", icon: null },
+  broadcasts: { label: "Broadcasts", icon: null },
+};
+// Capture each cycle tab's icon/label markup once so the Chats slot can morph.
+for (const tab of Object.keys(DOCK_TAB_META)) {
+  const btn = document.querySelector(`.sidebar-tab[data-app-tab="${tab}"]`);
+  if (btn) DOCK_TAB_META[tab].icon = btn.querySelector(".sidebar-tab-icon")?.innerHTML || "";
+}
+
+function applyDockLayout() {
+  const tabbar = document.querySelector(".sidebar-tabbar");
+  if (!tabbar) return;
+  const visible = dockVisibleTabs();
+  const cycle = chatsSlotCycle();
+  if (!cycle.includes(chatsSlotTab)) chatsSlotTab = "chats";
+
+  // Order + visibility straight from the per-account prefs.
+  for (const tab of dockResolvedOrder()) {
+    const btn = tabbar.querySelector(`.sidebar-tab[data-app-tab="${tab}"]`);
+    if (!btn) continue;
+    tabbar.appendChild(btn);
+    btn.hidden = !visible.includes(tab);
+  }
+
+  // Chats-slot morph: while a cycle page shows, the Chats button wears its identity.
+  const chatsBtn = tabbar.querySelector('.sidebar-tab[data-app-tab="chats"]');
+  if (chatsBtn) {
+    const slot = cycle.length > 1 && cycle.includes(currentAppTab) && currentAppTab !== "chats"
+      ? currentAppTab
+      : (cycle.includes(chatsSlotTab) ? chatsSlotTab : "chats");
+    const meta = DOCK_TAB_META[slot] || DOCK_TAB_META.chats;
+    const iconEl = chatsBtn.querySelector(".sidebar-tab-icon");
+    const labelEl = chatsBtn.querySelector("span:not(.sidebar-tab-icon)");
+    if (iconEl && meta.icon) iconEl.innerHTML = meta.icon;
+    if (labelEl) labelEl.textContent = meta.label;
+    const onCyclePage = cycle.length > 1 && cycle.includes(currentAppTab);
+    if (onCyclePage) chatsBtn.classList.add("active");
+  }
+
+  // Menu checkboxes + cycle hints mirror the state.
   MENU_TOGGLEABLE_TABS.forEach((tab) => {
-    const hidden = isTabHidden(tab);
-    document.querySelectorAll(`.sidebar-tab[data-app-tab="${tab}"]`).forEach((btn) => { btn.hidden = hidden; });
     const input = document.querySelector(`[data-menu-tab="${tab}"]`);
-    if (input) input.checked = !hidden;
+    if (input) input.checked = !isTabHidden(tab);
+    const hint = document.querySelector(`[data-menu-tab-hint="${tab}"]`);
+    if (hint) hint.hidden = isTabHidden(tab) || visible.includes(tab);
   });
-  const activeBtn = document.querySelector(".sidebar-tab.active");
+
+  const activeBtn = tabbar.querySelector(".sidebar-tab.active");
   if (activeBtn && activeBtn.hidden) setActiveAppTab("chats");
 }
+
+function applyMenuTabVisibility() { applyDockLayout(); }
+
 document.querySelectorAll("[data-menu-tab]").forEach((input) => {
   input.addEventListener("change", () => {
     const tab = input.dataset.menuTab;
-    let hidden = Array.isArray(accountShellPrefs.hiddenTabs) ? [...accountShellPrefs.hiddenTabs] : [];
+    let hidden = [...dockPrefs.hiddenTabs];
     if (input.checked) hidden = hidden.filter((t) => t !== tab);
     else if (!hidden.includes(tab)) hidden.push(tab);
-    accountShellPrefs.hiddenTabs = hidden;
-    persistAccountShellPreferences();
-    applyMenuTabVisibility();
+    dockPrefs.hiddenTabs = hidden;
+    persistDockPrefs();
+    applyDockLayout();
   });
 });
-applyMenuTabVisibility();
+applyDockLayout();
+
+// --- Chats-slot cycle + hover jump menu -----------------------------------
+
+const dockSlotMenu = document.querySelector("[data-dock-slot-menu]");
+let slotMenuHideTimer = null;
+
+function showSlotMenu() {
+  const cycle = chatsSlotCycle();
+  const chatsBtn = document.querySelector('.sidebar-tab[data-app-tab="chats"]');
+  if (!dockSlotMenu || !chatsBtn || cycle.length < 2) return;
+  dockSlotMenu.innerHTML = cycle.map((tab) => {
+    const meta = DOCK_TAB_META[tab];
+    const current = (cycle.includes(currentAppTab) ? currentAppTab : chatsSlotTab) === tab;
+    return `<button type="button" data-dock-slot-option="${tab}" class="${current ? "active" : ""}">
+      <span class="sidebar-tab-icon">${meta.icon}</span><span>${meta.label}</span>
+    </button>`;
+  }).join("");
+  const rect = chatsBtn.getBoundingClientRect();
+  dockSlotMenu.hidden = false;
+  const menuRect = dockSlotMenu.getBoundingClientRect();
+  dockSlotMenu.style.left = `${Math.round(rect.left + rect.width / 2 - menuRect.width / 2)}px`;
+  dockSlotMenu.style.top = `${Math.round(rect.top - menuRect.height - 10)}px`;
+}
+
+function hideSlotMenuSoon(delay = 250) {
+  if (slotMenuHideTimer) clearTimeout(slotMenuHideTimer);
+  slotMenuHideTimer = window.setTimeout(() => {
+    if (dockSlotMenu?.matches(":hover")) return;
+    if (dockSlotMenu) dockSlotMenu.hidden = true;
+  }, delay);
+}
+
+function showChatsSlotTab(tab) {
+  chatsSlotTab = tab;
+  setActiveAppTab(tab);
+  applyDockLayout();
+}
+
+{
+  const chatsBtn = document.querySelector('.sidebar-tab[data-app-tab="chats"]');
+  chatsBtn?.addEventListener("mouseenter", () => {
+    if (slotMenuHideTimer) clearTimeout(slotMenuHideTimer);
+    showSlotMenu();
+  });
+  chatsBtn?.addEventListener("mouseleave", () => hideSlotMenuSoon());
+  dockSlotMenu?.addEventListener("mouseleave", () => hideSlotMenuSoon());
+  dockSlotMenu?.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-dock-slot-option]");
+    if (!option) return;
+    dockSlotMenu.hidden = true;
+    showChatsSlotTab(option.dataset.dockSlotOption);
+  });
+}
+
+// --- What's-new wizard (once per install) ---------------------------------
+
+const DOCK_WIZARD_DISMISSED_KEY = "kachat-dock-wizard-dismissed-v1";
+const DOCK_WIZARD_PAGES = [
+  { title: "Meet KaPosts", body: "A social feed built on Kaspa — post, follow, and discover, fully on-chain. It lives in your dock now." },
+  { title: "The dock hides itself", body: "Your dock stays tucked away until your mouse nears the bottom of the window — glide down to bring it up." },
+  { title: "Chats cycles", body: "When the dock is full, clicking Chats cycles through Chats, KaPosts and Broadcasts — or hover it for a jump menu." },
+  { title: "Make it yours", body: "Choose which tabs show from Settings → Customization → Menu. Each account keeps its own dock." },
+];
+let dockWizardPage = 0;
+
+function renderDockWizard() {
+  const backdrop = document.querySelector("[data-dock-wizard]");
+  const pageEl = document.querySelector("[data-dock-wizard-page]");
+  const dotsEl = document.querySelector("[data-dock-wizard-dots]");
+  const nextBtn = document.querySelector("[data-dock-wizard-next]");
+  if (!backdrop || !pageEl) return;
+  const page = DOCK_WIZARD_PAGES[dockWizardPage];
+  pageEl.innerHTML = `<h3>${page.title}</h3><p>${page.body}</p>`;
+  if (dotsEl) {
+    dotsEl.innerHTML = DOCK_WIZARD_PAGES
+      .map((_, i) => `<span class="${i === dockWizardPage ? "active" : ""}"></span>`).join("");
+  }
+  if (nextBtn) nextBtn.textContent = dockWizardPage === DOCK_WIZARD_PAGES.length - 1 ? "Get Started" : "Next";
+}
+
+function dismissDockWizard() {
+  localStorage.setItem(DOCK_WIZARD_DISMISSED_KEY, "1");
+  const backdrop = document.querySelector("[data-dock-wizard]");
+  if (backdrop) backdrop.hidden = true;
+}
+
+function maybeShowDockWizard() {
+  if (localStorage.getItem(DOCK_WIZARD_DISMISSED_KEY)) return;
+  if (!engine.address) return;
+  dockWizardPage = 0;
+  renderDockWizard();
+  const backdrop = document.querySelector("[data-dock-wizard]");
+  if (backdrop) backdrop.hidden = false;
+}
+
+document.querySelector("[data-dock-wizard-skip]")?.addEventListener("click", dismissDockWizard);
+document.querySelector("[data-dock-wizard-next]")?.addEventListener("click", () => {
+  if (dockWizardPage >= DOCK_WIZARD_PAGES.length - 1) { dismissDockWizard(); return; }
+  dockWizardPage += 1;
+  renderDockWizard();
+});
 
 // Step 104 — Profile screen mockup wiring. QR buttons reveal the existing
 // real QR card; address dropdowns expand/collapse; anything without real
@@ -5616,8 +5933,73 @@ document.querySelectorAll("[data-close-contact]").forEach((button) => {
 });
 
 document.querySelectorAll("[data-open-account-view]").forEach((button) => {
-  button.addEventListener("click", () => openAccountOverlay());
+  button.addEventListener("click", () => {
+    openAccountOverlay();
+    showSettingsCategory(null); // always land on the hub, matching iOS
+  });
 });
+
+// ---------------------------------------------------------------------------
+// 4.0 settings HUB (matches iOS/Android): the settings screen opens as a flat
+// list of category rows; picking one shows just that category's group with a
+// back affordance. The existing group markup is untouched — only gated.
+// ---------------------------------------------------------------------------
+
+const settingsScreenEl = document.querySelector('[data-screen="settings"]');
+const settingsGroupsEls = settingsScreenEl
+  ? [...settingsScreenEl.querySelectorAll(":scope > .settings-group")]
+  : [];
+
+const settingsHubEl = (() => {
+  if (!settingsScreenEl || settingsGroupsEls.length === 0) return null;
+  const hub = document.createElement("section");
+  hub.className = "settings-group settings-hub";
+  const rows = settingsGroupsEls.map((group, index) => {
+    const label = group.querySelector(".settings-group-label")?.textContent?.trim() || `Section ${index + 1}`;
+    const danger = group.classList.contains("danger-zone-group");
+    return `<button class="settings-list-row settings-hub-row${danger ? " danger" : ""}" type="button" data-settings-hub-row="${index}">
+      <span>${label}</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+    </button>`;
+  });
+  // View Seed Phrase: a direct action on the hub, not a sub-page (matches iOS).
+  rows.splice(settingsGroupsEls.length - 1, 0, `
+    <button class="settings-list-row settings-hub-row seed" type="button" data-settings-hub-seed>
+      <span>View Seed Phrase</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z"/></svg>
+    </button>`);
+  hub.innerHTML = `<div class="settings-list-card">${rows.join("")}</div>`;
+  settingsScreenEl.prepend(hub);
+
+  const backBar = document.createElement("button");
+  backBar.type = "button";
+  backBar.className = "settings-hub-back";
+  backBar.dataset.settingsHubBack = "";
+  backBar.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg><span>Settings</span>`;
+  backBar.hidden = true;
+  settingsScreenEl.prepend(backBar);
+  return hub;
+})();
+
+function showSettingsCategory(index) {
+  if (!settingsScreenEl || !settingsHubEl) return;
+  const backBar = settingsScreenEl.querySelector("[data-settings-hub-back]");
+  const inCategory = Number.isInteger(index);
+  settingsHubEl.hidden = inCategory;
+  if (backBar) backBar.hidden = !inCategory;
+  settingsGroupsEls.forEach((group, i) => { group.hidden = !inCategory || i !== index; });
+  settingsScreenEl.scrollTop = 0;
+}
+
+settingsScreenEl?.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-settings-hub-row]");
+  if (row) { showSettingsCategory(Number(row.dataset.settingsHubRow)); return; }
+  if (event.target.closest("[data-settings-hub-back]")) { showSettingsCategory(null); return; }
+  if (event.target.closest("[data-settings-hub-seed]")) {
+    document.querySelector('[data-shell-action="view-recovery"]')?.click();
+  }
+});
+showSettingsCategory(null);
 
 contactModal.addEventListener("click", (event) => {
   if (event.target === contactModal) closeContactModal();
@@ -8300,6 +8682,33 @@ queueMicrotask(async () => {
     if (cipherReady) await refreshAllConversations({ quiet: true });
     startAutomaticRefresh();
   }
+
+  initKaPosts({
+    engine,
+    escapeHtml,
+    shortAddress,
+    accountScopedKey,
+    showToast: showCopyToast,
+    appendEngineLog,
+    explorerTxUrl,
+  });
+
+  initBroadcasts({
+    engine,
+    escapeHtml,
+    shortAddress,
+    accountScopedKey,
+    showToast: showCopyToast,
+    appendEngineLog,
+  });
+
+  initPortfolio({ engine, escapeHtml, accountScopedKey });
+  initColdStorage({ engine, escapeHtml, shortAddress, accountScopedKey, showToast: showCopyToast, appendEngineLog, explorerAddressUrl });
+  initSwaps({ engine, escapeHtml, accountScopedKey, showToast: showCopyToast, appendEngineLog });
+
+  // Per-account dock prefs may differ from the pre-login defaults rendered at load.
+  reloadDockPrefsForAccount();
+  window.setTimeout(maybeShowDockWizard, 1200);
 
   reloadStateFromBrowserStorage();
   reconcileEstablishedRelationships();

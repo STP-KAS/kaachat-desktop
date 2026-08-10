@@ -13,6 +13,8 @@ const ENDPOINTS_KEY = "kachat-endpoints-v1";
 export const ENDPOINT_DEFAULTS = Object.freeze({
   kaspaApi: "https://api.kaspa.org",
   kasiaIndexer: "https://indexer.kasia.fyi",
+  kapostIndexer: "https://kachat.duckdns.org",
+  broadcastIndexer: "https://kachat.duckdns.org",
   pushIndexer: "https://indexer.kasia.fyi",
   knsApi: "https://api.knsdomains.org/mainnet/api/v1",
   trustedNode: "",
