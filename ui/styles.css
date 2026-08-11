@@ -5253,20 +5253,6 @@ body.session-logged-out [data-account-rename-modal] {
   .kaposts-rail-post::after { content: "+"; font-size: 20px; }
 }
 
-/* Chats-slot hover jump menu */
-.dock-slot-menu {
-  position: fixed; z-index: 410;
-  display: flex; gap: 4px; padding: 6px;
-  border: 1px solid var(--card-border); border-radius: 18px;
-  background: #0d1116; box-shadow: 0 14px 40px rgba(0,0,0,.5);
-}
-.dock-slot-menu button {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  width: 84px; padding: 10px 0; border: 0; border-radius: 14px;
-  background: transparent; color: var(--text); font-size: 11px; font-weight: 650; cursor: pointer;
-}
-.dock-slot-menu button:hover, .dock-slot-menu button.active { background: var(--surface-2); color: var(--kaspa-ink); }
-.dock-slot-menu .sidebar-tab-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
 /* What's-new wizard */
 .dock-wizard-backdrop { position: fixed; inset: 0; z-index: 500; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
@@ -5285,7 +5271,6 @@ body.session-logged-out [data-account-rename-modal] {
 .dock-wizard-actions { display: flex; justify-content: space-between; gap: 10px; }
 
 /* Customize Menu cycle hints */
-.menu-tab-hint { color: var(--muted); font-size: 11px; margin-right: 8px; }
 
 /* Broadcasts (4.0) */
 .broadcasts-screen {
@@ -5358,7 +5343,6 @@ body.session-logged-out [data-account-rename-modal] {
 .portfolio-tx-type.buy { color: #4cd964; }
 .portfolio-tx-type.sell { color: #ff6b6b; }
 .portfolio-tx-date, .portfolio-tx-notes { color: var(--muted); font-size: 12px; }
-.cold-label-input { max-width: 140px; }
 .swap-disclaimer-text { color: var(--muted); font-size: 13.5px; line-height: 1.5; margin: 0 0 10px; }
 .swap-terms-check { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; font-size: 13px; cursor: pointer; }
 .swap-terms-check input { margin-top: 2px; accent-color: var(--kaspa); }
@@ -5531,3 +5515,218 @@ body.session-logged-out [data-account-rename-modal] {
   width: 2px; border-radius: 2px; background: var(--line);
 }
 .kaposts-thread-reply .kaposts-cell { border: 0; background: transparent; padding: 10px 2px; }
+
+/* Cold Storage (iOS-matched list) */
+.cold-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  text-align: center; padding: 48px 24px; color: var(--muted);
+}
+.cold-empty strong { color: var(--text); font-size: 16px; }
+.cold-empty p { margin: 0; font-size: 13.5px; max-width: 320px; }
+.cold-empty-icon svg { width: 42px; height: 42px; fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.cold-account-row { align-items: center; }
+.cold-row-lock svg { width: 20px; height: 20px; fill: none; stroke: var(--kaspa-ink); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.cold-kpub { font-size: 12px; color: var(--muted); font-family: ui-monospace, monospace; }
+/* Sticky like iOS's safeAreaInset bottom bar: floats over the scrolling list
+   instead of trailing after the last row. */
+.cold-bottom-actions {
+  display: flex; gap: 12px; margin-top: 14px;
+  position: sticky; bottom: 8px; z-index: 5;
+  transition: bottom .28s cubic-bezier(.2,.9,.3,1); /* mirrors the dock's reveal easing */
+}
+/* While the dock is revealed it floats over the bottom ~90px of the window —
+   lift the capsules clear of it, then settle back down as it tucks away. */
+body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px; }
+.cold-bottom-actions .cold-capsule,
+.cold-actions-wrap > .primary-button { box-shadow: 0 10px 26px rgba(0,0,0,.35); }
+.cold-capsule {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border-radius: 999px; padding: 14px 0; font-weight: 750;
+}
+.cold-capsule svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Account rows: main body button + real ⋯ dropdown (reuses spending-row-menu look) */
+.cold-account-row { align-items: center; padding-right: 4px; }
+.cold-account-main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 12px;
+  padding: 0; border: 0; background: transparent;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.cold-account-main .chat-meta { min-width: 0; }
+.cold-menu-wrap { align-self: stretch; }
+
+/* Detail header: back / title / red trash (iOS toolbar) */
+.cold-detail-header { display: flex; align-items: center; gap: 10px; }
+.cold-detail-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cold-trash-button { color: #ff6b6b; }
+.cold-trash-button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Detail summary: plain labeled text, deliberately not a card (matches iOS) */
+.cold-summary { display: flex; flex-direction: column; gap: 18px; padding: 10px 6px 18px; }
+.cold-summary-row { display: flex; align-items: flex-start; gap: 10px; }
+.cold-summary-row > div { flex: 1; min-width: 0; }
+.cold-summary-label { margin: 0 0 3px; font-size: 12px; color: var(--muted); }
+.cold-summary-name { margin: 0; font-weight: 650; }
+.cold-summary-kpub { margin: 0 0 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text); word-break: break-all; }
+.cold-summary-balance { margin: 0; font-size: 22px; font-weight: 750; }
+.cold-inline-icon {
+  border: 0; background: transparent; color: var(--kaspa-ink); cursor: pointer;
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px;
+}
+.cold-inline-icon:hover { background: var(--surface-2, rgba(255,255,255,.05)); }
+.cold-inline-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.cold-inline-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: transparent; padding: 0;
+  color: var(--kaspa-ink); font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.cold-inline-link svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+.cold-hidden-link {
+  border: 0; background: transparent; padding: 0 6px 12px;
+  color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; text-align: left;
+}
+.cold-hidden-link:hover { color: var(--text); }
+
+.cold-address-list { display: flex; flex-direction: column; gap: 10px; }
+.cold-addr-label { color: var(--kaspa-ink); font-size: 12.5px; font-weight: 750; }
+.cold-detail-note { margin: 8px 2px; color: var(--muted); font-size: 13.5px; }
+.cold-detail-footnote { margin-top: 16px; }
+
+/* Address Actions capsule with an upward menu (iOS bottom Menu). No `position`
+   override here — the wrap must keep the sticky positioning from
+   .cold-bottom-actions (which also makes it the menu's containing block). */
+.cold-actions-menu {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  top: auto; right: auto; min-width: 250px;
+}
+
+/* Per-address screen (iOS ColdStorageAddressTransactionHistoryView) */
+.cold-globe-link { display: flex; align-items: center; justify-content: center; color: var(--kaspa-ink); }
+.cold-globe-link svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.cold-address-panel { margin-top: 10px; }
+.cold-utxo-row { gap: 10px; }
+.cold-coinbase-tag { font-size: 11px; font-weight: 650; color: var(--muted); flex: 0 0 auto; }
+
+.cold-danger-button { background: #e5484d !important; border-color: #e5484d !important; color: #fff !important; }
+
+/* KSPT send flow (iOS ColdSendFlowView) */
+/* Cold Storage dialogs sit ABOVE the auto-hide dock (z 400) — otherwise the dock's
+   bottom-edge reveal slides over the modal's own bottom buttons and steals their clicks. */
+[data-cold-send-modal], [data-cold-input-modal], [data-cold-confirm-modal], [data-cold-qr-modal] { z-index: 450; }
+.cold-send-modal { width: min(100%, 460px); max-height: min(92vh, 780px); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.cold-send-rows { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--card-border, var(--line)); border-radius: 12px; background: var(--surface-1, rgba(255,255,255,.04)); }
+.cold-send-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.cold-send-row span:first-child { color: var(--muted); }
+.cold-send-row code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.cold-send-status { margin: 4px 0 0; font-size: 12px; }
+.cold-send-status.good { color: #30d158; }
+.cold-send-status.bad { color: #ff6b60; }
+.cold-send-status.muted { color: var(--muted); }
+.cold-send-status.mono { color: var(--muted); font-family: ui-monospace, monospace; word-break: break-all; }
+.cold-send-locked-recipient { padding: 10px 12px; border: 1px solid var(--card-border, var(--line)); border-radius: 12px; }
+.cold-send-locked-recipient code { font-family: ui-monospace, monospace; font-size: 11.5px; word-break: break-all; color: var(--kaspa-ink); }
+.cold-send-amount-wrap { display: flex; align-items: center; gap: 10px; }
+.cold-send-amount-wrap .field-input { flex: 1; }
+.cold-send-fee-row { padding: 2px 2px 0; }
+.cold-send-fee-input { max-width: 160px; }
+.field-error { color: #ff6b60; font-size: 12.5px; margin: 0; }
+
+/* QR step: white panel so another device's camera gets maximum contrast */
+.cold-send-qr-panel {
+  background: #ffffff; color: #0b1210; border-radius: 16px;
+  padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.cold-send-qr-panel .cold-send-rows.dark { width: 100%; border-color: rgba(0,0,0,.12); background: rgba(0,0,0,.03); color: #1c2422; }
+.cold-send-qr-panel .cold-send-rows.dark span:first-child { color: rgba(0,0,0,.55); }
+.cold-send-qr-hint { margin: 0; font-size: 13.5px; color: rgba(0,0,0,.6); }
+.cold-send-qr-panel .cold-qr-frame canvas { display: block; width: 280px; height: 280px; }
+.cold-send-frame-dots { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; max-width: 300px; }
+.cold-send-frame-dots span { width: 8px; height: 8px; border-radius: 50%; background: #d1d5d3; }
+.cold-send-frame-dots span.active { background: var(--kaspa, #058b6f); }
+.cold-send-frame-counter { margin: 0; font-size: 12px; color: rgba(0,0,0,.55); }
+.cold-send-frame-controls { display: flex; gap: 18px; }
+.cold-send-frame-controls button {
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--kaspa, #058b6f); font-size: 18px; line-height: 1;
+}
+
+/* Signed-response scan step */
+.cold-send-scan-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+/* Same corner-bracket target square as the kpub scanner (.cold-scan-target) — the frame
+   just needs to be the positioning context the brackets center themselves in. */
+.cold-send-scan-frame { position: relative; width: 100%; }
+.cold-send-scan-frame video { display: block; width: 100%; max-height: 320px; border-radius: 14px; background: #000; object-fit: cover; }
+.cold-send-scan-hint { margin: 0; font-size: 13px; color: var(--muted); text-align: center; }
+.cold-send-scan-progress { margin: 0; font-size: 13px; font-weight: 650; text-align: center; }
+.cold-send-scan-dots { display: flex; gap: 4px; justify-content: center; margin-top: 6px; }
+.cold-send-scan-dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-3, rgba(255,255,255,.14)); }
+.cold-send-scan-dots span.got { background: var(--kaspa, #058b6f); }
+
+.cold-send-wait { margin: 30px 0; text-align: center; color: var(--muted); }
+.cold-send-result-icon { font-size: 44px; text-align: center; line-height: 1; }
+.cold-send-result-icon.good { color: #30d158; }
+.cold-send-result-icon.bad { color: #ff6b60; }
+.cold-send-result-title { margin: 0; text-align: center; font-size: 17px; font-weight: 750; }
+.cold-send-fail-message { text-align: center; }
+.cold-send-txid { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--card-border, var(--line)); border-radius: 12px; text-decoration: none; color: inherit; }
+.cold-send-txid span { font-size: 12px; color: var(--muted); }
+.cold-send-txid code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--kaspa-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Compound row in the UTXOs tab */
+.cold-compound-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 14px; margin-bottom: 4px;
+  border: 1px solid var(--card-border, var(--line)); border-radius: 12px;
+  background: var(--surface-1, rgba(255,255,255,.04));
+  color: var(--kaspa-ink); font-size: 13.5px; font-weight: 700; cursor: pointer; text-align: left;
+}
+.cold-compound-row:hover { background: var(--surface-2, rgba(255,255,255,.06)); }
+.cold-compound-row svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.cold-compound-note { margin: 0 2px 10px; font-size: 12px; color: var(--muted); }
+.cold-mono-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+
+/* Address QR sheet: white card + teal-bordered QR, matching iOS's ColdStorageAddressQRView */
+.cold-qr-card {
+  width: min(100%, 360px);
+  background: #ffffff; color: #0b1210;
+  border-radius: 20px; padding: 18px 22px 22px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+}
+.cold-qr-head { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cold-qr-head strong { font-size: 15px; }
+.cold-qr-close { color: #55605c; }
+.cold-qr-frame { border: 3px solid var(--kaspa, #058b6f); border-radius: 20px; padding: 14px; background: #fff; }
+.cold-qr-frame canvas { display: block; width: 240px; height: 240px; }
+.cold-qr-address {
+  margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; color: rgba(0,0,0,.7); word-break: break-all; text-align: center;
+}
+.cold-qr-copy {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 0; background: transparent; padding: 4px 8px;
+  color: var(--kaspa, #058b6f); font-size: 13.5px; font-weight: 700; cursor: pointer;
+}
+.cold-qr-copy svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.cold-scan-modal {
+  position: fixed; inset: 0; z-index: 500; background: rgba(0,0,0,.8);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+}
+.cold-scan-modal video { width: min(80vw, 420px); border-radius: 18px; }
+
+/* Scan overlay: corner-bracketed target square over the camera feed */
+.cold-scan-frame { position: relative; }
+.cold-scan-frame video { display: block; width: min(80vw, 420px); border-radius: 18px; }
+.cold-scan-target {
+  position: absolute; top: 50%; left: 50%;
+  width: min(56vw, 240px); aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.cold-scan-target span { position: absolute; width: 34px; height: 34px; border: 3px solid var(--kaspa); }
+.cold-scan-target span:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; border-top-left-radius: 10px; }
+.cold-scan-target span:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; border-top-right-radius: 10px; }
+.cold-scan-target span:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; border-bottom-left-radius: 10px; }
+.cold-scan-target span:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; border-bottom-right-radius: 10px; }
+.cold-scan-hint { margin: 0; color: #fff; font-size: 13.5px; font-weight: 650; text-shadow: 0 1px 6px rgba(0,0,0,.6); }

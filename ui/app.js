@@ -3077,7 +3077,22 @@ function openSpendingSendModal(index) {
 
 document.querySelectorAll("[data-close-spending-send]").forEach((b) => b.addEventListener("click", closeSpendingSendModal));
 
+// Refresh keeps your place: the active tab persists and is re-applied at boot (the
+// screens themselves refetch their data, so the restored spot is fresh, not a snapshot).
+const UI_SPOT_TAB_KEY = "kachat-ui-spot-tab-v1";
+
+function restoreLastAppTab() {
+  try {
+    const tab = localStorage.getItem(UI_SPOT_TAB_KEY);
+    if (tab && tab !== "chats" && document.querySelector(`.sidebar-tab[data-app-tab="${tab}"]`)) {
+      setActiveAppTab(tab);
+      applyDockLayout(); // falls back to chats if this account hides that tab
+    }
+  } catch { /* restoring the spot is best-effort */ }
+}
+
 function setActiveAppTab(tab) {
+  try { localStorage.setItem(UI_SPOT_TAB_KEY, tab); } catch { /* best-effort */ }
   sidebarTabButtons.forEach((button) => {
     const active = button.dataset.appTab === tab;
     button.classList.toggle("active", active);
@@ -3111,23 +3126,7 @@ function setActiveAppTab(tab) {
 
 sidebarTabButtons.forEach((button) => {
   button.addEventListener("click", () => {
-    const tab = button.dataset.appTab;
-    // Chats-slot cycle (matches iOS): clicking Chats while ON a cycle page advances
-    // chats -> kaposts -> broadcasts -> chats; from elsewhere it returns to whichever
-    // page the slot last showed (sticky).
-    if (tab === "chats") {
-      const cycle = chatsSlotCycle();
-      if (cycle.length > 1) {
-        if (cycle.includes(currentAppTab)) {
-          const next = cycle[(cycle.indexOf(currentAppTab) + 1) % cycle.length];
-          showChatsSlotTab(next);
-        } else {
-          showChatsSlotTab(chatsSlotTab);
-        }
-        return;
-      }
-    }
-    setActiveAppTab(tab);
+    setActiveAppTab(button.dataset.appTab);
     applyDockLayout();
   });
 });
@@ -3156,6 +3155,9 @@ function hideDockSoon(delay = 400) {
 
 if (dockBar) {
   window.addEventListener("mousemove", (event) => {
+    // No bottom-edge reveal while a modal dialog is up — the dock would slide over the
+    // dialog's own bottom buttons (e.g. the Cold Storage send flow's Scan button).
+    if (document.querySelector(".modal-backdrop:not([hidden])")) { hideDockSoon(); return; }
     if (window.innerHeight - event.clientY <= DOCK_REVEAL_ZONE_PX) showDock();
     else hideDockSoon();
   }, { passive: true });
@@ -3173,20 +3175,15 @@ if (dockBar) {
 // Chats and Profile are always shown (like iOS); Portfolio, Cold Storage and Swap
 // can be hidden. Hidden ids persist in accountShellPrefs.hiddenTabs.
 // ---------------------------------------------------------------------------
-// 4.0 dock model (matches iOS AppTab): at most 5 tabs render; KaPosts/Broadcasts
-// drop out FIRST when over the cap and ride the Chats slot instead — clicking
-// Chats then cycles chats -> kaposts -> broadcasts, and hovering the Chats tab
-// pops a jump menu. Dock config (hidden + order) is PER ACCOUNT.
+// 4.0 dock model, desktop variant: unlike iOS (5-tab cap with KaPosts/Broadcasts
+// riding a Chats-slot cycle), a desktop window fits everything — every enabled
+// tab renders directly in the dock. Dock config (hidden + order) is PER ACCOUNT.
 // ---------------------------------------------------------------------------
 
 const DOCK_PREFS_KEY = "kachat-dock-prefs-v1"; // account-scoped: { hiddenTabs, order }
 const DOCK_DEFAULT_ORDER = ["cold-storage", "portfolio", "chats", "kaposts", "broadcasts", "swaps", "profile"];
 const DOCK_ALWAYS_VISIBLE = ["chats", "profile"];
-const DOCK_CYCLABLE = ["kaposts", "broadcasts"];
-const MAX_DOCK_ITEMS = 5;
 const MENU_TOGGLEABLE_TABS = ["portfolio", "cold-storage", "swaps", "kaposts", "broadcasts"];
-
-let chatsSlotTab = "chats"; // sticky: which cycle page the Chats slot currently shows
 
 function loadDockPrefs() {
   try {
@@ -3211,7 +3208,6 @@ function persistDockPrefs() {
 
 function reloadDockPrefsForAccount() {
   dockPrefs = loadDockPrefs();
-  chatsSlotTab = "chats";
   applyDockLayout();
 }
 
@@ -3225,43 +3221,15 @@ function dockResolvedOrder() {
   return [...order, ...known.filter((t) => !order.includes(t))];
 }
 
-/** The tabs the dock actually renders, in order — iOS AppTab.visible. */
+/** The tabs the dock actually renders, in order — every enabled tab, no cap. */
 function dockVisibleTabs() {
-  let visible = dockResolvedOrder().filter((t) => DOCK_ALWAYS_VISIBLE.includes(t) || !isTabHidden(t));
-  for (const cyclable of DOCK_CYCLABLE) {
-    if (visible.length > MAX_DOCK_ITEMS) visible = visible.filter((t) => t !== cyclable);
-  }
-  if (visible.length > MAX_DOCK_ITEMS) visible = visible.slice(0, MAX_DOCK_ITEMS);
-  return visible;
-}
-
-/** Chats-slot cycle: chats + whichever of KaPosts/Broadcasts are enabled but not docked. */
-function chatsSlotCycle() {
-  const visible = dockVisibleTabs();
-  const cycle = ["chats"];
-  for (const tab of DOCK_CYCLABLE) {
-    if (!isTabHidden(tab) && !visible.includes(tab)) cycle.push(tab);
-  }
-  return cycle;
-}
-
-const DOCK_TAB_META = {
-  chats: { label: "Chats", icon: null }, // icon captured from markup below
-  kaposts: { label: "KaPosts", icon: null },
-  broadcasts: { label: "Broadcasts", icon: null },
-};
-// Capture each cycle tab's icon/label markup once so the Chats slot can morph.
-for (const tab of Object.keys(DOCK_TAB_META)) {
-  const btn = document.querySelector(`.sidebar-tab[data-app-tab="${tab}"]`);
-  if (btn) DOCK_TAB_META[tab].icon = btn.querySelector(".sidebar-tab-icon")?.innerHTML || "";
+  return dockResolvedOrder().filter((t) => DOCK_ALWAYS_VISIBLE.includes(t) || !isTabHidden(t));
 }
 
 function applyDockLayout() {
   const tabbar = document.querySelector(".sidebar-tabbar");
   if (!tabbar) return;
   const visible = dockVisibleTabs();
-  const cycle = chatsSlotCycle();
-  if (!cycle.includes(chatsSlotTab)) chatsSlotTab = "chats";
 
   // Order + visibility straight from the per-account prefs.
   for (const tab of dockResolvedOrder()) {
@@ -3271,27 +3239,10 @@ function applyDockLayout() {
     btn.hidden = !visible.includes(tab);
   }
 
-  // Chats-slot morph: while a cycle page shows, the Chats button wears its identity.
-  const chatsBtn = tabbar.querySelector('.sidebar-tab[data-app-tab="chats"]');
-  if (chatsBtn) {
-    const slot = cycle.length > 1 && cycle.includes(currentAppTab) && currentAppTab !== "chats"
-      ? currentAppTab
-      : (cycle.includes(chatsSlotTab) ? chatsSlotTab : "chats");
-    const meta = DOCK_TAB_META[slot] || DOCK_TAB_META.chats;
-    const iconEl = chatsBtn.querySelector(".sidebar-tab-icon");
-    const labelEl = chatsBtn.querySelector("span:not(.sidebar-tab-icon)");
-    if (iconEl && meta.icon) iconEl.innerHTML = meta.icon;
-    if (labelEl) labelEl.textContent = meta.label;
-    const onCyclePage = cycle.length > 1 && cycle.includes(currentAppTab);
-    if (onCyclePage) chatsBtn.classList.add("active");
-  }
-
-  // Menu checkboxes + cycle hints mirror the state.
+  // Menu checkboxes mirror the state.
   MENU_TOGGLEABLE_TABS.forEach((tab) => {
     const input = document.querySelector(`[data-menu-tab="${tab}"]`);
     if (input) input.checked = !isTabHidden(tab);
-    const hint = document.querySelector(`[data-menu-tab-hint="${tab}"]`);
-    if (hint) hint.hidden = isTabHidden(tab) || visible.includes(tab);
   });
 
   const activeBtn = tabbar.querySelector(".sidebar-tab.active");
@@ -3313,66 +3264,12 @@ document.querySelectorAll("[data-menu-tab]").forEach((input) => {
 });
 applyDockLayout();
 
-// --- Chats-slot cycle + hover jump menu -----------------------------------
-
-const dockSlotMenu = document.querySelector("[data-dock-slot-menu]");
-let slotMenuHideTimer = null;
-
-function showSlotMenu() {
-  const cycle = chatsSlotCycle();
-  const chatsBtn = document.querySelector('.sidebar-tab[data-app-tab="chats"]');
-  if (!dockSlotMenu || !chatsBtn || cycle.length < 2) return;
-  dockSlotMenu.innerHTML = cycle.map((tab) => {
-    const meta = DOCK_TAB_META[tab];
-    const current = (cycle.includes(currentAppTab) ? currentAppTab : chatsSlotTab) === tab;
-    return `<button type="button" data-dock-slot-option="${tab}" class="${current ? "active" : ""}">
-      <span class="sidebar-tab-icon">${meta.icon}</span><span>${meta.label}</span>
-    </button>`;
-  }).join("");
-  const rect = chatsBtn.getBoundingClientRect();
-  dockSlotMenu.hidden = false;
-  const menuRect = dockSlotMenu.getBoundingClientRect();
-  dockSlotMenu.style.left = `${Math.round(rect.left + rect.width / 2 - menuRect.width / 2)}px`;
-  dockSlotMenu.style.top = `${Math.round(rect.top - menuRect.height - 10)}px`;
-}
-
-function hideSlotMenuSoon(delay = 250) {
-  if (slotMenuHideTimer) clearTimeout(slotMenuHideTimer);
-  slotMenuHideTimer = window.setTimeout(() => {
-    if (dockSlotMenu?.matches(":hover")) return;
-    if (dockSlotMenu) dockSlotMenu.hidden = true;
-  }, delay);
-}
-
-function showChatsSlotTab(tab) {
-  chatsSlotTab = tab;
-  setActiveAppTab(tab);
-  applyDockLayout();
-}
-
-{
-  const chatsBtn = document.querySelector('.sidebar-tab[data-app-tab="chats"]');
-  chatsBtn?.addEventListener("mouseenter", () => {
-    if (slotMenuHideTimer) clearTimeout(slotMenuHideTimer);
-    showSlotMenu();
-  });
-  chatsBtn?.addEventListener("mouseleave", () => hideSlotMenuSoon());
-  dockSlotMenu?.addEventListener("mouseleave", () => hideSlotMenuSoon());
-  dockSlotMenu?.addEventListener("click", (event) => {
-    const option = event.target.closest("[data-dock-slot-option]");
-    if (!option) return;
-    dockSlotMenu.hidden = true;
-    showChatsSlotTab(option.dataset.dockSlotOption);
-  });
-}
-
 // --- What's-new wizard (once per install) ---------------------------------
 
 const DOCK_WIZARD_DISMISSED_KEY = "kachat-dock-wizard-dismissed-v1";
 const DOCK_WIZARD_PAGES = [
   { title: "Meet KaPosts", body: "A social feed built on Kaspa — post, follow, and discover, fully on-chain. It lives in your dock now." },
   { title: "The dock hides itself", body: "Your dock stays tucked away until your mouse nears the bottom of the window — glide down to bring it up." },
-  { title: "Chats cycles", body: "When the dock is full, clicking Chats cycles through Chats, KaPosts and Broadcasts — or hover it for a jump menu." },
   { title: "Make it yours", body: "Choose which tabs show from Settings → Customization → Menu. Each account keeps its own dock." },
 ];
 let dockWizardPage = 0;
@@ -8601,6 +8498,7 @@ if (localStorage.getItem(SESSION_LOGGED_OUT_KEY) === "true" || !hasSavedAccounts
 } else {
   hideLoggedOutScreen();
   renderChats();
+  restoreLastAppTab();
 }
 updateWalletUi();
 updateServiceSummary();
@@ -8703,7 +8601,18 @@ queueMicrotask(async () => {
   });
 
   initPortfolio({ engine, escapeHtml, accountScopedKey });
-  initColdStorage({ engine, escapeHtml, shortAddress, accountScopedKey, showToast: showCopyToast, appendEngineLog, explorerAddressUrl });
+  initColdStorage({
+    engine, escapeHtml, shortAddress, accountScopedKey,
+    showToast: showCopyToast, appendEngineLog,
+    explorerAddressUrl, explorerTxUrl,
+    txDirectionForAddress: manageAddressTxDirection,
+    // Fiat toggle in the send flow: live KAS price in the user's selected currency,
+    // plus the same symbol/format helpers the manage-address send screen uses.
+    fetchKasPrice: () => fetchKasPrice(selectedCurrency),
+    currencySymbol: () => currencyMeta().symbol.trim(),
+    currencyCode: () => selectedCurrency.toUpperCase(),
+    formatFiatValue,
+  });
   initSwaps({ engine, escapeHtml, accountScopedKey, showToast: showCopyToast, appendEngineLog });
 
   // Per-account dock prefs may differ from the pre-login defaults rendered at load.

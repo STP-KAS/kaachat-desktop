@@ -11,8 +11,8 @@
   },
   "dependencies": {
     "@vitejs/plugin-basic-ssl": "latest",
-    "vite": "latest",
-    "qrcode": "latest"
-  },
-  "devDependencies": {}
+    "jsqr": "^1.4.0",
+    "qrcode": "latest",
+    "vite": "latest"
+  }
 }
