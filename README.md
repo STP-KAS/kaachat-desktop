@@ -25,9 +25,7 @@ cd KaChat-Desktop && npm run dev
 
 
 ## Self-Hosted Cloud (Nextcloud) Setup
-  <details>
-  <summary>Read</summary>
-    
+
 KaChat can preview and stream **Nextcloud public share links** (photos and videos) directly
 inside a chat, and can use Nextcloud as a private destination for chat-history backup. Hosting
 your own Nextcloud gives you a personal media/backup server that you fully control — no third
@@ -85,11 +83,11 @@ DUCKDNS_TOKEN=changeme
 EOF
 fi
 
-# 3) Custom Nextcloud image: ffmpeg (video previews) + extra image formats (HEIC)
+# 3) Custom Nextcloud image with ffmpeg (needed for video thumbnails)
 cat > Dockerfile.nextcloud <<'EOF'
 FROM nextcloud:stable
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg libmagickcore-6.q16-6-extra \
+ && apt-get install -y --no-install-recommends ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 EOF
 
@@ -172,12 +170,19 @@ networks:
   cloud:
 EOF
 
-# 5) Build and start
-$DK compose up -d --build
+# 5) Build and start (only continue to preview setup if this succeeds)
+if ! $DK compose up -d --build; then
+  echo ""
+  echo "!! Build or start failed — scroll up to read the error, fix it, then paste this block again."
+else
 
 # 6) Wait for first-time setup, then switch on photo/video previews
 echo "Waiting for Nextcloud to finish first-time setup (can take a few minutes)..."
-until $DK compose exec -T -u www-data nextcloud php occ status 2>/dev/null | grep -q "installed: true"; do sleep 5; done
+tries=0
+until $DK compose exec -T -u www-data nextcloud php occ status 2>/dev/null | grep -q "installed: true"; do
+  tries=$((tries+1)); [ "$tries" -gt 120 ] && { echo "Timed out waiting for setup; check: $DK compose logs nextcloud"; break; }
+  sleep 5
+done
 SECRET=$(grep IMAGINARY_SECRET .env | cut -d= -f2)
 occ() { $DK compose exec -T -u www-data nextcloud php occ "$@"; }
 occ config:system:set enable_previews --value=true --type=boolean
@@ -192,7 +197,6 @@ occ config:system:set enabledPreviewProviders 2 --value='OC\Preview\MP4'
 occ config:system:set enabledPreviewProviders 3 --value='OC\Preview\MOV'
 occ config:system:set enabledPreviewProviders 4 --value='OC\Preview\MKV'
 occ config:system:set enabledPreviewProviders 5 --value='OC\Preview\AVI'
-occ config:system:set enabledPreviewProviders 6 --value='OC\Preview\HEIC'
 occ app:install previewgenerator 2>/dev/null || occ app:enable previewgenerator 2>/dev/null || true
 
 echo ""
@@ -203,6 +207,7 @@ echo "Portainer            ->  https://${LAN_IP}:9443 (create your admin user wi
 echo ""
 echo "Your Nextcloud admin username/password is saved in:  ${KC_DIR}/.env"
 echo "======================================================"
+fi
 ```
 
 **Windows** — open **PowerShell as Administrator** and paste this whole block:
@@ -237,11 +242,11 @@ DUCKDNS_TOKEN=changeme
 "@ | Set-Content -Encoding ASCII .env
 }
 
-# 3) Custom Nextcloud image: ffmpeg + extra image formats
+# 3) Custom Nextcloud image with ffmpeg (needed for video thumbnails)
 @'
 FROM nextcloud:stable
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg libmagickcore-6.q16-6-extra \
+ && apt-get install -y --no-install-recommends ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 '@ | Set-Content -Encoding ASCII Dockerfile.nextcloud
 
@@ -324,12 +329,16 @@ networks:
   cloud:
 '@ | Set-Content -Encoding ASCII docker-compose.yml
 
-# 5) Build and start
+# 5) Build and start (only continue to preview setup if this succeeds)
 docker compose up -d --build
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "!! Build or start failed — scroll up to read the error, fix it, then paste this block again." -ForegroundColor Yellow
+} else {
 
 # 6) Wait for setup, then switch on photo/video previews
 Write-Host "Waiting for Nextcloud to finish first-time setup (can take a few minutes)..."
-do { Start-Sleep 5; $st = docker compose exec -T -u www-data nextcloud php occ status 2>$null } until ($st -match "installed: true")
+$tries = 0
+do { Start-Sleep 5; $tries++; $st = docker compose exec -T -u www-data nextcloud php occ status 2>$null } until ($st -match "installed: true" -or $tries -gt 120)
 $SECRET = (Select-String -Path .env -Pattern 'IMAGINARY_SECRET=(.*)').Matches.Groups[1].Value
 function occ { docker compose exec -T -u www-data nextcloud php occ @args }
 occ config:system:set enable_previews --value=true --type=boolean
@@ -344,7 +353,6 @@ occ config:system:set enabledPreviewProviders 2 --value='OC\Preview\MP4'
 occ config:system:set enabledPreviewProviders 3 --value='OC\Preview\MOV'
 occ config:system:set enabledPreviewProviders 4 --value='OC\Preview\MKV'
 occ config:system:set enabledPreviewProviders 5 --value='OC\Preview\AVI'
-occ config:system:set enabledPreviewProviders 6 --value='OC\Preview\HEIC'
 occ app:install previewgenerator 2>$null
 
 Write-Host ""
@@ -355,6 +363,7 @@ Write-Host "Portainer            ->  https://$LAN:9443 (create your admin user w
 Write-Host ""
 Write-Host "Your Nextcloud admin username/password is saved in:  $KC\.env"
 Write-Host "======================================================"
+}
 ```
 
 > **Copy tips:** copy only the command text — no leading `$`, `%`, or `>` prompt symbols. The
