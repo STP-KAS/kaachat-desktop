@@ -227,7 +227,18 @@ function loadJsonMap(key) {
 }
 
 function saveJsonMap(key, map) {
-  try { localStorage.setItem(key, JSON.stringify(map)); } catch {}
+  try { localStorage.setItem(key, JSON.stringify(map)); return; } catch { /* quota — prune below */ }
+  // Storage is full (e.g. right after a large phone-backup import). Silently dropping the
+  // write would forget every cached "this address has no domain" answer, so each reload
+  // re-fires a 404 lookup per contact — keep the newest entries and retry instead.
+  try {
+    const pruned = Object.fromEntries(
+      Object.entries(map)
+        .sort((a, b) => (b[1]?.fetchedAt || 0) - (a[1]?.fetchedAt || 0))
+        .slice(0, 300),
+    );
+    localStorage.setItem(key, JSON.stringify(pruned));
+  } catch { /* still no room — the in-memory cache prevents refetches this session */ }
 }
 
 let domainCache = loadJsonMap(DOMAIN_CACHE_KEY);
