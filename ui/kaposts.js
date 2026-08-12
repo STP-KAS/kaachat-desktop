@@ -186,6 +186,9 @@ function mapRemotePost(post) {
 }
 
 async function loadFeed() {
+  // The KaPosts tab can be clicked before initKaPosts has run (startup awaits storage/engine
+  // first) — deps is still null then, and every deps.* access below would throw.
+  if (!deps) return;
   if (feedLoading) return;
   feedLoading = true;
   feedError = null;

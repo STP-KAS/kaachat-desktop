@@ -2027,6 +2027,11 @@ function closeExportChoice() {
 function updateSelectionUi() {
   if (selectionToolbar) selectionToolbar.hidden = !messageSelectionMode;
   if (selectionCount) selectionCount.textContent = `${selectedMessageIds.size} selected`;
+  const selectAllButton = document.querySelector("[data-select-all-messages]");
+  if (selectAllButton) {
+    const total = messageArea?.querySelectorAll("[data-message-id]").length || 0;
+    selectAllButton.textContent = total > 0 && selectedMessageIds.size >= total ? "Deselect All" : "Select All";
+  }
   messageArea?.classList.toggle("selection-mode", messageSelectionMode);
 }
 
@@ -6953,6 +6958,19 @@ document.querySelectorAll("[data-export-format]").forEach((button) => {
 });
 
 document.querySelector("[data-cancel-selection]")?.addEventListener("click", exitMessageSelection);
+document.querySelector("[data-select-all-messages]")?.addEventListener("click", () => {
+  if (!messageSelectionMode) return;
+  // Toggle: everything already selected -> deselect all (matches iOS's Select All/Deselect All).
+  const allIds = Array.from(messageArea?.querySelectorAll("[data-message-id]") || [])
+    .map((el) => String(el.dataset.messageId))
+    .filter(Boolean);
+  const allSelected = allIds.length > 0 && allIds.every((id) => selectedMessageIds.has(id));
+  selectedMessageIds.clear();
+  if (!allSelected) for (const id of allIds) selectedMessageIds.add(id);
+  updateSelectionUi();
+  const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
+  if (conversationEntry) renderMessages(conversationEntry);
+});
 document.querySelector("[data-delete-selected]")?.addEventListener("click", openDeleteSelectedConfirmation);
 document.querySelector("[data-cancel-delete-selected]")?.addEventListener("click", closeDeleteSelectedConfirmation);
 document.querySelector("[data-confirm-delete-selected]")?.addEventListener("click", deleteSelectedMessages);
