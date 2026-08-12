@@ -1,8 +1,7 @@
 # KaChat Desktop
 
-==================================================
 QUICK START (Mac, Linux, Windows/WSL)
-==================================================
+
 
 No Rust, cargo, or wasm-pack needed for normal use — the Rusty Kaspa and
 Kasia cipher WebAssembly builds are already included in this repository.
