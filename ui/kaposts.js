@@ -14,6 +14,7 @@ import {
   fetchPostEngagement,
   fetchReplies,
   fetchUserPosts,
+  fetchUserReplies,
   decodePostContent,
   stripKaChatMarker,
   kaspaAddressFromPubkey,
@@ -271,8 +272,11 @@ async function resolveAndOpenPost(txId) {
     try {
       const pubkey = safeRequesterPubkey();
       if (pubkey) {
-        const result = await fetchUserPosts({ engine: deps.engine, pubkey, includeReplies: true });
-        myContentPosts = result.posts.map(mapRemotePost).filter(Boolean);
+        const [ownPosts, ownReplies] = await Promise.all([
+          fetchUserPosts({ engine: deps.engine, pubkey }),
+          fetchUserReplies({ engine: deps.engine, pubkey }).catch(() => ({ posts: [] })),
+        ]);
+        myContentPosts = [...ownPosts.posts, ...ownReplies.posts].map(mapRemotePost).filter(Boolean);
         post = findPostByRemoteId(txId);
       }
     } catch (error) {
@@ -930,14 +934,17 @@ async function openPosterProfile(address, pubkey) {
     .then(() => { if (activePanel?.type === "profile" && activePanel.address === address) renderPanel(); });
   if (!pubkey) { activePanel.loading = false; renderPanel(); return; }
   try {
-    const [details, content] = await Promise.all([
+    const [details, content, repliesContent] = await Promise.all([
       fetchKaPostUserDetails({ engine: deps.engine, pubkey }).catch(() => null),
-      fetchUserPosts({ engine: deps.engine, pubkey, includeReplies: true }),
+      fetchUserPosts({ engine: deps.engine, pubkey }),
+      // Separate endpoint — get-posts never returns replies (see fetchUserPosts' note). A
+      // replies failure must not blank the Posts tab.
+      fetchUserReplies({ engine: deps.engine, pubkey }).catch(() => ({ posts: [] })),
     ]);
     if (activePanel?.type !== "profile" || activePanel.address !== address) return;
     const mapped = content.posts.map(mapRemotePost).filter(Boolean);
     activePanel.posts = mapped.filter((p) => !p.parentRemoteId);
-    activePanel.replies = mapped.filter((p) => p.parentRemoteId);
+    activePanel.replies = repliesContent.posts.map(mapRemotePost).filter(Boolean);
     activePanel.details = details;
     activePanel.loading = false;
     renderPanel();

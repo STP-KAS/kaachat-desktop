@@ -174,15 +174,25 @@ export async function fetchFollowingFeed({ engine, limit = 50, before = null } =
 }
 
 /** One user's posts; includeReplies also returns their replies (parentPostId set). */
-export async function fetchUserPosts({ engine, pubkey, limit = 50, before = null, includeReplies = false } = {}) {
+export async function fetchUserPosts({ engine, pubkey, limit = 50, before = null } = {}) {
+  // Note: the deployed indexer has no includeReplies param on get-posts (silently dropped;
+  // its SQL is hard-filtered to content_type post/quote) — replies come from
+  // fetchUserReplies' get-replies?user= instead.
   const json = await kapostGet("get-posts", {
     user: pubkey,
     requesterPubkey: requesterPubkeyFor(engine),
     limit,
     before,
-    includeReplies: includeReplies ? "true" : null,
   });
   return { posts: filterKaChatPosts(json?.posts), pagination: json?.pagination || null };
+}
+
+/** All replies MADE BY a user — get-replies' user= mode (post= gives replies TO a post). */
+export async function fetchUserReplies({ engine, pubkey, limit = 50, before = null } = {}) {
+  const json = await kapostGet("get-replies", {
+    user: pubkey, requesterPubkey: requesterPubkeyFor(engine), limit, before,
+  });
+  return { posts: filterKaChatPosts(json?.replies), pagination: json?.pagination || null };
 }
 
 export async function fetchReplies({ engine, postId, limit = 100, before = null } = {}) {
