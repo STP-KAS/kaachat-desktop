@@ -2523,7 +2523,12 @@ async function syncIncomingHandshakeRequests({ quiet = true } = {}) {
           }
         }
       } else if (contact.relationshipState !== "established") {
-        contact.relationshipState = "incoming-request";
+        // Restored/merged history (e.g. a phone-backup restore) can already prove both sides
+        // were talking — the acceptance happened on the other device, so don't resurface
+        // accept/decline for a conversation we clearly replied in.
+        const alreadyTalking = (conversationEntry?.messages || []).some((m) =>
+          m?.direction === "outgoing" && m?.messageType !== "handshake" && String(m?.text || "").trim().length > 0);
+        contact.relationshipState = alreadyTalking ? "established" : "incoming-request";
       }
       if (request.alias && (!contact.name || contact.name.startsWith("kaspa:"))) contact.name = request.alias;
       if (!conversationEntry) {
@@ -8268,6 +8273,17 @@ function importPhoneChatArchive(json) {
     conversationEntry.lastReactionEvent = preReactionEvent;
     conversationEntry.lastActivityAt = Math.max(preLastActivityAt, Number(last?.createdAt || 0));
     conversationEntry.updatedAt = Math.max(preUpdatedAt, Number(last?.updatedAt || last?.createdAt || 0));
+    // Restored two-way history means the relationship was already accepted on the phone —
+    // mark it established here so later handshake sync can't resurface accept/decline.
+    if (contact.relationshipState !== "established") {
+      const merged = conversationEntry.messages;
+      const hasOutgoing = merged.some((m) => m.direction === "outgoing" && m.messageType !== "handshake" && String(m.text || "").trim().length > 0);
+      const hasIncoming = merged.some((m) => m.direction === "incoming" && m.messageType !== "handshake" && String(m.text || "").trim().length > 0);
+      if (hasOutgoing && hasIncoming) {
+        contact.relationshipState = "established";
+        contact.updatedAt = Date.now();
+      }
+    }
   }
 
   // Persist with a quota guard. In IndexedDB mode persistState never throws
