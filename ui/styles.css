@@ -5674,6 +5674,61 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
 .cold-send-txid span { font-size: 12px; color: var(--muted); }
 .cold-send-txid code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--kaspa-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Nextcloud (connect card, folder browser, photo grid) */
+.nc-connect-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.nc-picker-modal { width: min(100%, 520px); max-height: min(90vh, 720px); display: flex; flex-direction: column; }
+.nc-picker-head { display: flex; align-items: center; gap: 10px; }
+.nc-picker-actions { display: flex; align-items: center; gap: 10px; }
+.nc-picker-body { flex: 1; min-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.nc-picker-error { margin: 8px 2px; }
+.nc-folder-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 12px; border: 0; border-radius: 10px;
+  background: transparent; color: var(--text); font-size: 14px; text-align: left; cursor: pointer;
+}
+.nc-folder-row:hover { background: var(--surface-1, rgba(255,255,255,.05)); }
+.nc-folder-row svg { width: 19px; height: 19px; fill: none; stroke: var(--kaspa-ink); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.nc-folder-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nc-folder-row .nc-chevron { stroke: var(--muted); width: 16px; height: 16px; }
+.nc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 3px; padding: 4px 0; }
+.nc-cell {
+  position: relative; aspect-ratio: 1; border: 0; border-radius: 8px; cursor: pointer;
+  background: var(--surface-1, rgba(255,255,255,.06)) center/cover no-repeat;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.nc-cell.has-thumb .nc-cell-icon { display: none; }
+.nc-cell-icon svg { width: 26px; height: 26px; fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.nc-play {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 22px; text-shadow: 0 1px 6px rgba(0,0,0,.6); pointer-events: none;
+}
+.nc-cell-busy {
+  position: absolute; inset: 0; background: rgba(0,0,0,.5);
+}
+.nc-cell-busy::after {
+  content: ""; position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+  margin: -10px 0 0 -10px; border: 2.5px solid rgba(255,255,255,.35); border-top-color: #fff;
+  border-radius: 50%; animation: nc-spin .8s linear infinite;
+}
+@keyframes nc-spin { to { transform: rotate(360deg); } }
+.nc-empty { margin: 24px 0; text-align: center; color: var(--muted); font-size: 13.5px; }
+.nc-file-row small { color: var(--muted); font-size: 11.5px; flex: 0 0 auto; }
+
+/* Non-media Nextcloud previews (recipient side) */
+.message-link-audio { display: block; width: min(100%, 280px); margin-top: 8px; }
+.message-attachment-card {
+  display: inline-flex; align-items: center; gap: 12px;
+  margin-top: 8px; padding: 12px 14px;
+  border: 1px solid var(--card-border, var(--line)); border-radius: 14px;
+  background: var(--surface-1, rgba(255,255,255,.05));
+  color: inherit; text-decoration: none; max-width: 280px;
+}
+.message-attachment-card:hover { background: var(--surface-2, rgba(255,255,255,.08)); }
+.message-attachment-card svg { width: 26px; height: 26px; fill: none; stroke: var(--kaspa-ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.message-attachment-card span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.message-attachment-card strong { font-size: 13.5px; }
+.message-attachment-card small { font-size: 12px; color: var(--muted); }
+
 /* Compound row in the UTXOs tab */
 .cold-compound-row {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -5685,6 +5740,19 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
 .cold-compound-row:hover { background: var(--surface-2, rgba(255,255,255,.06)); }
 .cold-compound-row svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .cold-compound-note { margin: 0 2px 10px; font-size: 12px; color: var(--muted); }
+
+/* Message link previews (docs/NEXTCLOUD_MEDIA_PREVIEW.md) */
+.message-link { color: var(--kaspa-ink); word-break: break-all; text-decoration: underline; }
+.message-link:hover { opacity: .85; }
+.message-link-image {
+  display: block; max-width: min(100%, 280px); max-height: 320px;
+  margin-top: 8px; border-radius: 12px; cursor: pointer; object-fit: contain;
+}
+.message-link-video {
+  display: block; max-width: min(100%, 320px); max-height: 320px;
+  margin-top: 8px; border-radius: 12px; background: #000;
+}
+.message-nextcloud-reveal { margin-top: 8px; }
 .cold-mono-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 
 /* Address QR sheet: white card + teal-bordered QR, matching iOS's ColdStorageAddressQRView */

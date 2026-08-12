@@ -3,6 +3,7 @@ import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount } from "./kapos
 import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling } from "./broadcasts.js";
 import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
 import { initColdStorage, refreshColdStorage, resetColdStorageForAccount } from "./coldstorage.js";
+import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
 import {
   MESSAGE_STATUSES,
@@ -750,6 +751,154 @@ function openPhotoPreview(dataUrl) {
 }
 
 photoPreviewOverlay?.addEventListener("click", () => { photoPreviewOverlay.hidden = true; });
+
+// --- Message link previews (docs/NEXTCLOUD_MEDIA_PREVIEW.md) -----------------
+// Linkifies URLs in message text and, for previewable links, appends a media
+// card. Nextcloud public shares are privacy-gated: nothing is fetched from the
+// sender's server until the recipient taps "view" (the share URL alone doesn't
+// say image vs video, so the tap runs a progressive probe — try <video>, fall
+// back to <img>, else an "Open in Nextcloud" link).
+
+const URL_IN_TEXT_RE = /https?:\/\/[^\s<>"']+/g;
+
+/** `https://host/s/TOKEN` (or `/index.php/s/TOKEN`) -> its raw-file endpoints, else null. */
+function nextcloudShareDownloadUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/^(\/index\.php)?\/s\/([A-Za-z0-9_-]{10,})\/?$/);
+    if (!match) return null;
+    const base = `${parsed.origin}${match[1] || ""}/s/${match[2]}`;
+    return { downloadUrl: `${base}/download`, previewUrl: `${base}/preview` };
+  } catch { return null; }
+}
+
+function isDirectImageUrl(url) {
+  return /\.(png|jpe?g|gif|webp|avif)(\?[^#]*)?$/i.test(url);
+}
+
+function isPreviewableUrl(url) {
+  return isDirectImageUrl(url) || Boolean(nextcloudShareDownloadUrl(url));
+}
+
+/** Renders `text` into `container` with URLs as clickable links; returns the URLs found. */
+function renderTextWithLinks(container, text) {
+  const source = String(text ?? "");
+  const urls = [];
+  let last = 0;
+  for (const match of source.matchAll(URL_IN_TEXT_RE)) {
+    let url = match[0];
+    const trailing = url.match(/[),.;:!?\]]+$/); // sentence punctuation isn't part of the URL
+    if (trailing) url = url.slice(0, -trailing[0].length);
+    if (!url) continue;
+    if (match.index > last) container.append(source.slice(last, match.index));
+    const anchor = document.createElement("a");
+    anchor.className = "message-link";
+    anchor.href = url;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.textContent = url;
+    anchor.addEventListener("click", (event) => event.stopPropagation());
+    container.append(anchor);
+    urls.push(url);
+    last = match.index + url.length;
+  }
+  if (last < source.length) container.append(source.slice(last));
+  return urls;
+}
+
+/** Preview card for the first previewable link in a message, or null. */
+function buildLinkPreviewCard(url) {
+  const nextcloud = nextcloudShareDownloadUrl(url);
+  if (nextcloud) return buildNextcloudRevealCard(url, nextcloud.downloadUrl);
+  if (isDirectImageUrl(url)) {
+    const img = document.createElement("img");
+    img.className = "message-link-image";
+    img.loading = "lazy";
+    img.alt = "Image preview";
+    img.addEventListener("error", () => img.remove(), { once: true });
+    img.addEventListener("click", (event) => { event.stopPropagation(); openPhotoPreview(url); });
+    img.src = url;
+    return img;
+  }
+  return null;
+}
+
+function buildNextcloudRevealCard(shareUrl, downloadUrl) {
+  const reveal = document.createElement("button");
+  reveal.type = "button";
+  reveal.className = "message-photo-hidden message-nextcloud-reveal";
+  reveal.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 18.5h-11a4 4 0 0 1-.6-7.96 5.5 5.5 0 0 1 10.7-1.4 4.5 4.5 0 0 1 .9 9.36Z"/></svg><span>Tap to view Nextcloud media</span>';
+  reveal.addEventListener("click", (event) => {
+    event.stopPropagation();
+    probeNextcloudMedia(reveal, shareUrl, downloadUrl);
+  });
+  return reveal;
+}
+
+/** Progressive type probe (cross-origin headers are unreadable without CORS, but media
+ *  element `src` loads need none): <video> that reports a finite duration wins; on error
+ *  retry as <img>; if both fail, an "Open in Nextcloud" link. */
+function probeNextcloudMedia(placeholder, shareUrl, downloadUrl) {
+  placeholder.disabled = true;
+  const label = placeholder.querySelector("span");
+  if (label) label.textContent = "Loading…";
+  let settled = false;
+  const settle = (el) => {
+    if (settled) return;
+    settled = true;
+    placeholder.replaceWith(el);
+  };
+
+  // Probe order: video -> audio (a media element that has duration but no video track is an
+  // mp3/m4a) -> image -> attachment card. Office docs and other unrenderable types land on the
+  // card, whose link opens Nextcloud's own web viewer — the only thing that can show them.
+  const attachmentFallback = () => {
+    const card = document.createElement("a");
+    card.className = "message-attachment-card";
+    card.href = shareUrl;
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
+    card.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg><span><strong>File on Nextcloud</strong><small>Open in Nextcloud</small></span>';
+    card.addEventListener("click", (event) => event.stopPropagation());
+    settle(card);
+  };
+
+  const settleAudio = () => {
+    if (settled) return;
+    const audio = document.createElement("audio");
+    audio.className = "message-link-audio";
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.addEventListener("click", (event) => event.stopPropagation());
+    audio.src = downloadUrl;
+    settle(audio);
+  };
+
+  const tryImage = () => {
+    if (settled) return;
+    const img = document.createElement("img");
+    img.className = "message-link-image";
+    img.alt = "Nextcloud media";
+    img.addEventListener("load", () => settle(img), { once: true });
+    img.addEventListener("error", attachmentFallback, { once: true });
+    img.addEventListener("click", (event) => { event.stopPropagation(); openPhotoPreview(downloadUrl); });
+    img.src = downloadUrl;
+  };
+
+  const video = document.createElement("video");
+  video.className = "message-link-video";
+  video.controls = true;
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.addEventListener("loadedmetadata", () => {
+    if (Number.isFinite(video.duration) && video.duration > 0 && video.videoWidth > 0) settle(video);
+    else if (Number.isFinite(video.duration) && video.duration > 0) settleAudio(); // audio-only stream
+    else tryImage(); // metadata but no playable track (e.g. the file is an image)
+  }, { once: true });
+  video.addEventListener("error", tryImage, { once: true });
+  video.addEventListener("click", (event) => event.stopPropagation());
+  video.src = downloadUrl;
+}
 
 // --- Reply-to-message (matches iOS's ChatService.replyingTo/cancelReply) ---
 
@@ -1568,6 +1717,7 @@ function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
   try { resetBroadcastsForAccount(); } catch { /* not yet initialized */ }
   try { resetPortfolioForAccount(); } catch { /* not yet initialized */ }
   try { resetColdStorageForAccount(); } catch { /* not yet initialized */ }
+  try { resetNextcloudForAccount(); } catch { /* not yet initialized */ }
   try { resetSwapsForAccount(); } catch { /* not yet initialized */ }
   const clean = String(address || "").trim();
   if (!clean) {
@@ -5389,8 +5539,14 @@ function renderMessages(conversationEntry) {
     } else {
       const text = document.createElement("span");
       text.className = "message-text";
-      text.textContent = replyEnvelope ? replyEnvelope.text : message.text;
+      const bodyText = replyEnvelope ? replyEnvelope.text : message.text;
+      const linkUrls = renderTextWithLinks(text, bodyText);
       bubble.append(text);
+      const previewable = linkUrls.find(isPreviewableUrl);
+      if (previewable) {
+        const card = buildLinkPreviewCard(previewable);
+        if (card) bubble.append(card);
+      }
     }
     }
     // Hover reaction bar — desktop's equivalent of iOS's double-tap
@@ -7187,6 +7343,10 @@ async function attachPhotoBlob(blob) {
   setStatus("Compressing photo…");
   try {
     const attachment = await compressImageBlob(blob);
+    // Kept alongside the compressed envelope version so "Send Media via Nextcloud" can
+    // upload the ORIGINAL full-quality file instead of the payload-sized recompression.
+    attachment.originalBlob = blob;
+    attachment.originalName = blob.name || "photo.jpg";
     setPendingPhoto(attachment);
     setStatus(`Photo ready · ${(attachment.bytes / 1024).toFixed(1)} KB`);
   } catch (error) {
@@ -7218,7 +7378,12 @@ function buildImageEnvelopeJson(attachment, fileName = "photo.jpg") {
 // and play — the formats are wire-compatible even though this side doesn't
 // need a hand-rolled encoder to produce them.
 
-const VOICE_MAX_DURATION_SECONDS = 10;
+const VOICE_MAX_DURATION_SECONDS = 10; // on-chain payload cap
+// Nextcloud-uploaded voice notes aren't payload-bound — the server carries them.
+const VOICE_MAX_DURATION_NEXTCLOUD_SECONDS = 600;
+function voiceMaxDurationSeconds() {
+  return isNextcloudMediaSendActive() ? VOICE_MAX_DURATION_NEXTCLOUD_SECONDS : VOICE_MAX_DURATION_SECONDS;
+}
 const VOICE_AUDIO_BITS_PER_SECOND = 8000;
 
 let voiceMediaRecorder = null;
@@ -7283,7 +7448,7 @@ async function startVoiceRecording() {
   voiceRecordingTimer = window.setInterval(() => {
     const elapsed = (Date.now() - voiceRecordingStartedAt) / 1000;
     if (voiceRecordingTimeEl) voiceRecordingTimeEl.textContent = formatRecordingTime(elapsed);
-    if (elapsed >= VOICE_MAX_DURATION_SECONDS) stopVoiceRecording(false);
+    if (elapsed >= voiceMaxDurationSeconds()) stopVoiceRecording(false);
   }, 200);
 }
 
@@ -7306,6 +7471,22 @@ async function handleVoiceRecordingStopped() {
   if (voiceRecordingCancelled || !chunks.length || !activeConversationId) return;
 
   const blob = new Blob(chunks, { type: mimeType });
+
+  // "Send Media via Nextcloud": upload the recording and send its share link (renders as an
+  // audio card + player on the recipient's side). Failure falls back to the on-chain envelope.
+  if (isNextcloudMediaSendActive()) {
+    const conversationId = activeConversationId;
+    setStatus("Uploading voice note to Nextcloud…");
+    try {
+      const url = await uploadNextcloudMedia(blob, `voice_${Date.now()}.webm`, mimeType);
+      queueConversationMessage(conversationId, url);
+      setStatus("Voice note sent via Nextcloud.");
+      return;
+    } catch (error) {
+      showCopyToast(`Nextcloud upload failed — sending on-chain instead. (${error.message})`);
+    }
+  }
+
   const reader = new FileReader();
   const dataUrl = await new Promise((resolve, reject) => {
     reader.onload = () => resolve(reader.result);
@@ -7635,11 +7816,29 @@ composer.addEventListener("submit", async (event) => {
 
   if (pendingPhotoAttachment) {
     const attachment = pendingPhotoAttachment;
-    const envelopeJson = buildImageEnvelopeJson(attachment);
     input.value = "";
     clearPendingPhoto();
     hideFeeEstimateBanner();
-    queueConversationMessage(activeConversationId, envelopeJson);
+    // "Send Media via Nextcloud": upload the full-quality original and send its share link
+    // (renders as a media bubble on the recipient's side). Any failure falls back to the
+    // on-chain envelope so the message never silently vanishes.
+    if (isNextcloudMediaSendActive() && attachment.originalBlob) {
+      const conversationId = activeConversationId;
+      setStatus("Uploading photo to Nextcloud…");
+      try {
+        const url = await uploadNextcloudMedia(
+          attachment.originalBlob,
+          attachment.originalName || "photo.jpg",
+          attachment.originalBlob.type || "image/jpeg"
+        );
+        queueConversationMessage(conversationId, url);
+        setStatus("Photo sent via Nextcloud.");
+        return;
+      } catch (error) {
+        showCopyToast(`Nextcloud upload failed — sending on-chain instead. (${error.message})`);
+      }
+    }
+    queueConversationMessage(activeConversationId, buildImageEnvelopeJson(attachment));
     return;
   }
 
@@ -8614,6 +8813,35 @@ queueMicrotask(async () => {
     formatFiatValue,
   });
   initSwaps({ engine, escapeHtml, accountScopedKey, showToast: showCopyToast, appendEngineLog });
+  initNextcloud({
+    accountScopedKey, escapeHtml, appendEngineLog,
+    showToast: showCopyToast,
+    getActiveConversationId: () => activeConversationId,
+    queueConversationMessage,
+    // The backup payload is the desktop's own persisted state (conversations + contacts +
+    // message history), NOT the iOS archive schema — hence the platform-distinct filename.
+    exportBackupPayload: () => JSON.stringify({
+      kind: "kachat-desktop-backup",
+      version: 1,
+      savedAt: new Date().toISOString(),
+      state: JSON.parse(localStorage.getItem(accountScopedKey(STORAGE_KEY)) || "null"),
+      history: JSON.parse(localStorage.getItem(accountScopedKey(MESSAGE_HISTORY_KEY)) || "null"),
+    }),
+    importBackupPayload: (json) => {
+      const parsed = JSON.parse(json);
+      if (parsed?.kind !== "kachat-desktop-backup" || !parsed.state) {
+        throw new Error("That file is not a KaChat desktop backup.");
+      }
+      const serialized = JSON.stringify(parsed.state);
+      localStorage.setItem(accountScopedKey(STORAGE_KEY), serialized);
+      localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY), serialized);
+      if (parsed.history) {
+        localStorage.setItem(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(parsed.history));
+      }
+      reloadStateFromBrowserStorage();
+      renderChats();
+    },
+  });
 
   // Per-account dock prefs may differ from the pre-login defaults rendered at load.
   reloadDockPrefsForAccount();
