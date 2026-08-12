@@ -7972,6 +7972,226 @@ function appendIncomingOrReactionMessage(conversationEntry, message) {
   return addMessageToConversation(conversationEntry, message);
 }
 
+// ---------------------------------------------------------------------------
+// Phone (iOS/Android) chat-history archive import — used by the Nextcloud
+// restore flow. The phone apps back up `kachat-backup.json` in the shared
+// ChatHistoryArchive schema ({schemaVersion, exportedAt, walletAddress,
+// conversations: [{contactAddress, contactAlias, unreadCount, messages}]}),
+// which is NOT the desktop backup format. Unlike importBackupPayload (which
+// REPLACES local state), this MERGES into the existing desktop conversations:
+// find-or-create per contact address, dedupe by txid, reactions go through the
+// same reactionsByTxId store as live messages, and base64 voice bodies /
+// oversized payloads become small placeholders so a multi-megabyte archive
+// can't blow the localStorage quota.
+// ---------------------------------------------------------------------------
+
+const PHONE_ARCHIVE_MAX_CONTENT_CHARS = 100_000;
+
+// iOS deliveryStatus -> desktop MESSAGE_STATUSES. "warning" is iOS's
+// "broadcast but unverified", which is exactly the desktop BROADCAST state.
+const PHONE_ARCHIVE_STATUSES = {
+  pending: MESSAGE_STATUSES.PENDING,
+  sent: MESSAGE_STATUSES.CONFIRMED,
+  failed: MESSAGE_STATUSES.FAILED,
+  warning: MESSAGE_STATUSES.BROADCAST,
+};
+
+// The archive's timestamps are ISO8601 strings when exported normally, but a
+// numeric epoch can appear when a message was encoded without the iso strategy:
+// ms since 1970, seconds since 1970, or Swift's seconds-since-2001 reference
+// date. blockTime (ms) wins when it looks like a plausible epoch.
+function phoneArchiveTimestampMs(archiveMessage) {
+  const blockTime = Number(archiveMessage?.blockTime || 0);
+  if (Number.isFinite(blockTime) && blockTime > 1e12) return blockTime;
+  const raw = archiveMessage?.timestamp;
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    if (numeric >= 1e12) return numeric;              // already ms since 1970
+    if (numeric >= 1e9) return numeric * 1000;        // seconds since 1970
+    return (numeric + 978307200) * 1000;              // Swift reference date (2001)
+  }
+  return Number.isFinite(blockTime) && blockTime > 0 ? blockTime : Date.now();
+}
+
+function phoneArchiveMessageText(archiveMessage, rawContent) {
+  const messageType = String(archiveMessage?.messageType || "");
+  // Voice notes carry the whole base64 Opus envelope as content — never store
+  // that in localStorage-backed state; same for any other oversized payload.
+  if (messageType === "audio") return "🎤 Voice message (from phone backup)";
+  if (rawContent.length > PHONE_ARCHIVE_MAX_CONTENT_CHARS) return "📎 Media message (from phone backup)";
+  if (rawContent.trim()) return rawContent; // payments arrive as "Sent/Received X KAS" text already
+  if (messageType === "handshake") return "Communication request";
+  if (messageType === "payment") return "[Payment]";
+  return "";
+}
+
+function importPhoneChatArchive(json) {
+  const archive = JSON.parse(json);
+  if (!archive || !Array.isArray(archive.conversations)) {
+    throw new Error("That file is not a KaChat phone chat backup.");
+  }
+  const archiveWallet = String(archive.walletAddress || "").trim();
+  if (archiveWallet && engine.address && archiveWallet !== engine.address) {
+    throw new Error(`That phone backup belongs to a different wallet (${shortAddress(archiveWallet)}).`);
+  }
+
+  // Merge against what is actually persisted right now (the desktop restore may
+  // have just replaced storage).
+  reloadStateFromBrowserStorage();
+
+  const addedMessageIds = new Set();
+  const touchedConversationIds = new Set();
+
+  for (const archived of archive.conversations) {
+    const contactAddress = String(archived?.contactAddress || "").trim();
+    if (!contactAddress) continue;
+    const archivedMessages = Array.isArray(archived?.messages) ? archived.messages : [];
+    if (!archivedMessages.length) continue;
+
+    const alias = String(archived?.contactAlias || "").trim();
+    let contact = state.contacts.find((entry) => entry.address === contactAddress);
+    let conversationEntry = contact ? state.conversations.find((entry) => entry.contactId === contact.id) : null;
+    if (!contact) {
+      const createdAt = phoneArchiveTimestampMs(archivedMessages[0]);
+      const displayName = alias || shortAddress(contactAddress);
+      contact = {
+        id: nowId(), name: displayName, nameIsCustom: false, address: contactAddress,
+        avatar: initialsFor(displayName), createdAt, updatedAt: createdAt,
+        relationshipState: "legacy-manual", handshakeTxid: "", incomingHandshakeTxid: "", peerConversationId: "",
+      };
+      state.contacts.push(contact);
+    } else if (alias && !contact.nameIsCustom) {
+      // Only fill in a name the desktop side never chose — placeholder names
+      // derived from the raw address; a custom alias is never overwritten.
+      const isPlaceholderName = !contact.name || contact.name === "Unnamed"
+        || contact.name === shortAddress(contact.address) || contact.name.startsWith("kaspa");
+      if (isPlaceholderName) {
+        contact.name = alias;
+        contact.avatar = initialsFor(alias);
+      }
+    }
+    if (!conversationEntry) {
+      conversationEntry = createConversation({ contactId: contact.id, createdAt: Number(contact.createdAt || Date.now()) });
+      state.conversations.push(conversationEntry);
+    }
+
+    const hidden = new Set((conversationEntry.hiddenMessageKeys || []).map(String));
+    const knownTxids = new Set((conversationEntry.messages || []).map((m) => m.txid).filter(Boolean).map(String));
+    const knownIds = new Set((conversationEntry.messages || []).map((m) => String(m.id)));
+    const preLastActivityAt = Number(conversationEntry.lastActivityAt || 0);
+    const preUpdatedAt = Number(conversationEntry.updatedAt || 0);
+    const preReactionEvent = conversationEntry.lastReactionEvent ?? null;
+    let changed = false;
+
+    for (const archiveMessage of archivedMessages) {
+      const txid = String(archiveMessage?.txId || "").trim();
+      const id = String(archiveMessage?.id || "").trim() || nowId();
+      if (txid && (knownTxids.has(txid) || hidden.has(txid))) continue;
+      if (knownIds.has(id) || hidden.has(id)) continue;
+
+      const rawContent = String(archiveMessage?.content || "");
+      const reaction = parseReactionEnvelope(rawContent);
+      if (reaction) {
+        // Same interception as live sync: a reaction only ever updates the
+        // reactions store — it never becomes a visible chat row.
+        const reactor = String(archiveMessage?.senderAddress || (archiveMessage?.isOutgoing ? engine.address || "" : contactAddress));
+        if (reaction.action === "add") applyLocalReaction(conversationEntry, reaction.targetTxId, reactor, reaction.emoji);
+        else removeLocalReaction(conversationEntry, reaction.targetTxId, reactor);
+        if (txid) knownTxids.add(txid);
+        changed = true;
+        continue;
+      }
+
+      const text = phoneArchiveMessageText(archiveMessage, rawContent);
+      if (!text) continue;
+      const createdAt = phoneArchiveTimestampMs(archiveMessage);
+      const message = createMessage({
+        conversationId: conversationEntry.id,
+        contactId: contact.id,
+        direction: archiveMessage?.isOutgoing ? "outgoing" : "incoming",
+        text,
+        sender: String(archiveMessage?.senderAddress || "") || null,
+        receiver: String(archiveMessage?.receiverAddress || "") || null,
+        status: PHONE_ARCHIVE_STATUSES[String(archiveMessage?.deliveryStatus || "")] || MESSAGE_STATUSES.CONFIRMED,
+        transport: "phone-backup",
+        createdAt,
+      });
+      message.id = id;
+      message.txid = txid || null;
+      message.messageType = String(archiveMessage?.messageType || "") || null;
+      message.note = "Imported from phone backup";
+      if (message.status === MESSAGE_STATUSES.CONFIRMED) message.confirmations = Math.max(1, Number(message.confirmations || 0));
+      if (message.messageType === "payment") {
+        const amount = rawContent.match(/^(?:Sent|Received)\s+([0-9][0-9.,]*)\s+KAS/i);
+        if (amount) message.paymentAmountKas = amount[1].replaceAll(",", "");
+      }
+      conversationEntry.messages.push(message);
+      knownIds.add(id);
+      if (txid) knownTxids.add(txid);
+      addedMessageIds.add(id);
+      changed = true;
+    }
+
+    if (!changed) continue;
+    touchedConversationIds.add(conversationEntry.id);
+    conversationEntry.messages.sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+    const last = conversationEntry.messages.at(-1);
+    // Historical import, not a live reaction event — don't let it fake sidebar
+    // activity or advertise a years-old tapback as "new".
+    conversationEntry.lastReactionEvent = preReactionEvent;
+    conversationEntry.lastActivityAt = Math.max(preLastActivityAt, Number(last?.createdAt || 0));
+    conversationEntry.updatedAt = Math.max(preUpdatedAt, Number(last?.updatedAt || last?.createdAt || 0));
+  }
+
+  // Persist with a quota guard: even with placeholders the archive can exceed
+  // what localStorage will take. Trim only the messages imported THIS run
+  // (oldest first, per conversation) until the state fits — pre-existing
+  // desktop messages are never dropped.
+  const isQuotaError = (error) =>
+    error?.name === "QuotaExceededError" || error?.code === 22 || /quota/i.test(String(error?.message || ""));
+  let quotaTrimmed = false;
+  try {
+    persistState();
+  } catch (error) {
+    if (!isQuotaError(error)) { reloadStateFromBrowserStorage(); throw error; }
+    let persisted = false;
+    for (const keepPerConversation of [200, 50, 10, 0]) {
+      for (const conversationEntry of state.conversations || []) {
+        const importedHere = (conversationEntry.messages || []).filter((m) => addedMessageIds.has(String(m.id)));
+        if (importedHere.length <= keepPerConversation) continue;
+        const keepIds = new Set(importedHere.slice(-keepPerConversation).map((m) => String(m.id)));
+        conversationEntry.messages = conversationEntry.messages.filter(
+          (m) => !addedMessageIds.has(String(m.id)) || keepIds.has(String(m.id)),
+        );
+      }
+      try { persistState(); persisted = true; break; }
+      catch (retryError) { if (!isQuotaError(retryError)) { reloadStateFromBrowserStorage(); throw retryError; } }
+    }
+    if (!persisted) {
+      reloadStateFromBrowserStorage();
+      throw new Error("Backup too large to store — not enough local storage space to merge the phone backup.");
+    }
+    quotaTrimmed = true;
+  }
+
+  // Count what actually survived persistence (quota trimming may have dropped some).
+  let mergedMessages = 0;
+  for (const conversationEntry of state.conversations || []) {
+    for (const message of conversationEntry.messages || []) {
+      if (addedMessageIds.has(String(message.id))) mergedMessages += 1;
+    }
+  }
+
+  reloadStateFromBrowserStorage();
+  renderChats();
+  if (quotaTrimmed) showCopyToast("Backup too large to store fully — imported what fit.");
+  return { conversations: touchedConversationIds.size, messages: mergedMessages };
+}
+
 // Sends a reaction as a real on-chain message (same encrypted pipeline as
 // text), but — matching iOS — never creates a visible bubble for it: applies
 // optimistically to the local reactions store first, then fires the actual
@@ -9189,6 +9409,9 @@ queueMicrotask(async () => {
       reloadStateFromBrowserStorage();
       renderChats();
     },
+    // Phone (iOS/Android) `kachat-backup.json` found in the same folder:
+    // merged into the desktop conversations, never a state replace.
+    importPhoneArchive: importPhoneChatArchive,
   });
 
   // Per-account dock prefs may differ from the pre-login defaults rendered at load.

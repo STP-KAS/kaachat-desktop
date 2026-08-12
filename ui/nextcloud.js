@@ -12,6 +12,7 @@
 
 const NC_KEY = "kachat-nextcloud-v1"; // account-scoped: { server, username, appPassword, startFolder, backupFolder, autoBackup, lastAutoBackup }
 const BACKUP_FILENAME = "kachat-backup-desktop.json"; // distinct from iOS's kachat-backup.json — different archive schema
+const PHONE_BACKUP_FILENAME = "kachat-backup.json"; // iOS/Android chat-history archive — merged into desktop state, never a replace
 const DEFAULT_BACKUP_FOLDER = "KaChat";
 const AUTO_BACKUP_MIN_MS = 3600_000;
 const AUTO_CATCHUP_MS = 86_400_000;
@@ -275,11 +276,12 @@ async function fetchBackupInfo() {
   } catch { return null; }
 }
 
-async function downloadBackup() {
+/** Downloads one backup file from the configured folder; null when it doesn't exist (404). */
+async function downloadBackupFile(filename) {
   const davRoot = `${apiBase()}/remote.php/dav/files/${nc.username}`;
-  const url = `${davRoot}/${backupFolderPath().split("/").map(encodeURIComponent).join("/")}/${BACKUP_FILENAME}`;
+  const url = `${davRoot}/${backupFolderPath().split("/").map(encodeURIComponent).join("/")}/${encodeURIComponent(filename)}`;
   const response = await fetch(url, { headers: { Authorization: authHeader() }, cache: "no-store" });
-  if (response.status === 404) throw new Error("No KaChat backup was found in that folder.");
+  if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Backup download failed (HTTP ${response.status}).`);
   return response.text();
 }
@@ -340,7 +342,7 @@ function renderSettings() {
       <div class="settings-toggle-row"><span><strong>Automatic Backup</strong><small>Uploads hourly while open, plus a daily catch-up at launch.</small></span><label class="switch-control"><input type="checkbox" data-nc-auto ${nc.autoBackup ? "checked" : ""}><span></span></label></div>
       <button class="settings-list-row" type="button" data-nc-pick-backup><span class="settings-row-copy"><strong>Backup Folder</strong><small>${deps.escapeHtml(nc.backupFolder || `${DEFAULT_BACKUP_FOLDER} (default)`)}</small></span></button>
       <button class="settings-list-row" type="button" data-nc-backup-now><span class="settings-row-copy"><strong>Back Up Messages Now</strong><small data-nc-backup-status>Checking last backup…</small></span></button>
-      <button class="settings-list-row" type="button" data-nc-restore><span class="settings-row-copy"><strong>Restore from Backup</strong><small>Replaces this device's local chat data with the server backup.</small></span></button>
+      <button class="settings-list-row" type="button" data-nc-restore><span class="settings-row-copy"><strong>Restore from Backup</strong><small>Restores the desktop backup (replaces this device's chat data) and merges any phone backup found in the folder.</small></span></button>
       <button class="settings-list-row danger-row" type="button" data-nc-disconnect><span class="settings-row-copy"><strong>Disconnect</strong><small>Removes the stored app password from this device.</small></span></button>
     </div>`;
   updateComposerButton();
@@ -628,11 +630,24 @@ function wireSettings() {
       return;
     }
     if (event.target.closest("[data-nc-restore]")) {
-      if (!window.confirm("Replace this device's local chat data with the server backup?")) return;
+      if (!window.confirm("Restore from the backups in that folder? A desktop backup replaces this device's local chat data; a phone backup merges into it.")) return;
       try {
-        const json = await downloadBackup();
-        deps.importBackupPayload(json);
-        deps.showToast?.("Backup restored.");
+        // The folder can hold either backup flavor (or both): the desktop file
+        // and the iOS/Android archive. A missing file (404) is fine as long as
+        // the other one exists.
+        const desktopJson = await downloadBackupFile(BACKUP_FILENAME);
+        const phoneJson = await downloadBackupFile(PHONE_BACKUP_FILENAME);
+        if (!desktopJson && !phoneJson) throw new Error("No KaChat backup was found in that folder.");
+        if (desktopJson) deps.importBackupPayload(desktopJson);
+        // Merge AFTER the desktop restore so the state replace can't wipe the
+        // phone history that was just merged in.
+        const summary = phoneJson ? deps.importPhoneArchive?.(phoneJson) : null;
+        if (summary) {
+          const merged = `Merged ${summary.messages} message${summary.messages === 1 ? "" : "s"} from ${summary.conversations} chat${summary.conversations === 1 ? "" : "s"} from your phone backup.`;
+          deps.showToast?.(desktopJson ? `Backup restored. ${merged}` : merged);
+        } else {
+          deps.showToast?.("Backup restored.");
+        }
       } catch (error) {
         deps.showToast?.(corsHint(error));
       }
