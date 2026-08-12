@@ -25,7 +25,9 @@ cd KaChat-Desktop && npm run dev
 
 
 ## Self-Hosted Cloud (Nextcloud) Setup
-
+  <details>
+  <summary>Read</summary>
+    
 KaChat can preview and stream **Nextcloud public share links** (photos and videos) directly
 inside a chat, and can use Nextcloud as a private destination for chat-history backup. Hosting
 your own Nextcloud gives you a personal media/backup server that you fully control — no third
