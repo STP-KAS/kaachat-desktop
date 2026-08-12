@@ -5555,6 +5555,14 @@ body.session-logged-out [data-account-rename-modal] {
 }
 .settings-hub-back svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
+/* Converted dropdown pages (iOS: every picker/section is its own page).
+   .settings-page-form is the free-form body block (fields, segmented rows,
+   hints) that used to live inside .settings-dropdown-body; select rows sit
+   directly inside the page's .settings-list-card. */
+.settings-page-form { padding: 14px 15px 16px; display: grid; gap: 12px; }
+.settings-list-card > .settings-dropdown-row { margin: 0; width: 100%; border-bottom: 1px solid var(--line); }
+.settings-list-card > .settings-dropdown-row + .settings-dropdown-row { border-top: 0; }
+
 /* Hub row icons (iOS settingsCategoryRow tint) — the leading icon is accent
    colored; used both by generated hub rows and static rows like Storage's
    Nextcloud sub-screen row. */

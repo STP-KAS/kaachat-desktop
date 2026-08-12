@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=222" />
+  <link rel="stylesheet" href="./ui/styles.css?v=223" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -571,13 +571,28 @@
                   <button type="button" class="settings-segmented-option" data-theme-option="dark" data-i18n="theme.dark">Dark</button>
                 </div>
               </div>
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong data-i18n="language">Language</strong><small>App display language.</small></span>
-                  <span class="settings-dropdown-value" data-language-current>System</span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="language">
+                <span class="settings-row-copy"><strong data-i18n="language">Language</strong><small>App display language.</small></span>
+                <span class="settings-dropdown-value" data-language-current>System</span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="currency">
+                <span class="settings-row-copy"><strong data-i18n="currency">Currency</strong><small>Fiat used for KAS value display.</small></span>
+                <span class="settings-dropdown-value" data-currency-current>US Dollar (USD)</span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="dock">
+                <span class="settings-row-copy"><strong>Customize Dock</strong><small>Choose which tabs appear in your dock.</small></span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+              <div class="settings-toggle-row"><span><strong>Show Setup Guides</strong></span><label class="switch-control"><input type="checkbox" data-pref-show-setup-guides checked><span></span></label></div>
+            </div>
+          </section>
+
+          <!-- Customization sub-screens (iOS: every picker is its own page). -->
+          <section class="settings-group" data-settings-subscreen="language">
+            <p class="settings-group-label" data-i18n="language">Language</p>
+            <div class="settings-list-card">
                   <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="system">System</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="en">English</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="es">Español</button>
@@ -597,15 +612,12 @@
                   <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="ko">한국어</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="vi">Tiếng Việt</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-language-option="zh-Hans">简体中文</button>
-                </div>
-              </div>
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong data-i18n="currency">Currency</strong><small>Fiat used for KAS value display.</small></span>
-                  <span class="settings-dropdown-value" data-currency-current>US Dollar (USD)</span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
+            </div>
+          </section>
+
+          <section class="settings-group" data-settings-subscreen="currency">
+            <p class="settings-group-label" data-i18n="currency">Currency</p>
+            <div class="settings-list-card">
                   <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="usd">US Dollar (USD)</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="eur">Euro (EUR)</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="gbp">British Pound (GBP)</button>
@@ -625,14 +637,13 @@
                   <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="try">Turkish Lira (TRY)</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="zar">South African Rand (ZAR)</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-currency-option="btc">Bitcoin (BTC)</button>
-                </div>
-              </div>
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong>Customize Dock</strong><small>Choose which tabs appear in your dock.</small></span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
+            </div>
+          </section>
+
+          <section class="settings-group" data-settings-subscreen="dock">
+            <p class="settings-group-label">Customize Dock</p>
+            <div class="settings-list-card">
+              <div class="settings-page-form">
                   <div class="menu-tab-row">
                     <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg>Chats</span>
                     <span class="menu-tab-locked">Always shown</span>
@@ -661,9 +672,7 @@
                     <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546"/></svg>Broadcasts</span>
                     <label class="switch-control"><input type="checkbox" data-menu-tab="broadcasts" checked><span></span></label>
                   </div>
-                </div>
               </div>
-              <div class="settings-toggle-row"><span><strong>Show Setup Guides</strong></span><label class="switch-control"><input type="checkbox" data-pref-show-setup-guides checked><span></span></label></div>
             </div>
           </section>
 
@@ -682,13 +691,24 @@
           <section class="settings-group">
             <p class="settings-group-label">Connection</p>
             <div class="settings-list-card">
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong>Connection Settings</strong></span>
-                  <span class="settings-dropdown-caption">Mainnet</span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="connection-settings">
+                <span class="settings-row-copy"><strong>Connection Settings</strong></span>
+                <span class="settings-dropdown-caption">Mainnet</span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="explorer">
+                <span class="settings-row-copy"><strong>Kaspa Explorer</strong><small>Which explorer transaction and address links open in.</small></span>
+                <span class="settings-dropdown-value" data-explorer-current>explorer.kaspa.org</span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+            </div>
+          </section>
+
+          <!-- Connection sub-screens. -->
+          <section class="settings-group" data-settings-subscreen="connection-settings">
+            <p class="settings-group-label">Connection Settings</p>
+            <div class="settings-list-card">
+              <div class="settings-page-form">
                   <div class="settings-toggle-row settings-segmented-row">
                     <span><strong>Network</strong></span>
                     <div class="settings-segmented">
@@ -713,19 +733,15 @@
                   </label>
                   <p class="field-hint">Leave a field blank to use its default. Trusted Node empty = auto-search over wRPC.</p>
                   <button class="danger-button subtle full" type="button" data-reset-connection-defaults>Reset to Defaults</button>
-                </div>
               </div>
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong>Kaspa Explorer</strong><small>Which explorer transaction and address links open in.</small></span>
-                  <span class="settings-dropdown-value" data-explorer-current>explorer.kaspa.org</span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
+            </div>
+          </section>
+
+          <section class="settings-group" data-settings-subscreen="explorer">
+            <p class="settings-group-label">Kaspa Explorer</p>
+            <div class="settings-list-card">
                   <button class="settings-dropdown-row settings-select-row" type="button" data-explorer-option="kaspaStream">kaspa.stream</button>
                   <button class="settings-dropdown-row settings-select-row" type="button" data-explorer-option="kaspaOrg">explorer.kaspa.org</button>
-                </div>
-              </div>
             </div>
           </section>
 
@@ -734,13 +750,20 @@
             <div class="settings-list-card">
               <div class="settings-toggle-row"><span><strong>Show Fee Estimate</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong>Notifications</strong></span>
-                  <span class="architecture-badge">Coming Soon</span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="notifications">
+                <span class="settings-row-copy"><strong>Notifications</strong></span>
+                <span class="architecture-badge">Coming Soon</span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+              <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+            </div>
+          </section>
+
+          <!-- Chats sub-screen. -->
+          <section class="settings-group" data-settings-subscreen="notifications">
+            <p class="settings-group-label">Notifications</p>
+            <div class="settings-list-card">
+              <div class="settings-page-form">
                   <div class="settings-toggle-row settings-segmented-row">
                     <span><strong>Mode</strong></span>
                     <div class="settings-segmented">
@@ -751,9 +774,7 @@
                   <div class="settings-toggle-row"><span><strong>Play sound</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
                   <div class="settings-toggle-row"><span><strong>Vibration</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
                   <p class="field-hint">Per-contact notification overrides live in each chat's info screen.</p>
-                </div>
               </div>
-              <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
             </div>
           </section>
 
@@ -770,25 +791,28 @@
             <p class="settings-group-label">Storage</p>
             <div class="settings-list-card">
               <div class="settings-toggle-row"><span><strong>Store encrypted messages locally</strong><small>Required for browser history and future cross-device backup.</small></span><label class="switch-control"><input type="checkbox" data-pref-store-messages checked><span></span></label></div>
-              <div class="settings-dropdown" data-settings-dropdown>
-                <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong>Message retention</strong></span>
-                  <span class="settings-dropdown-caption" data-retention-label>30 days</span>
-                  <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="settings-dropdown-body" hidden>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-forever">Keep forever</button>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-30">30 days</button>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-90">90 days</button>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-365">1 year</button>
-                </div>
-              </div>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="retention">
+                <span class="settings-row-copy"><strong>Message retention</strong></span>
+                <span class="settings-dropdown-caption" data-retention-label>30 days</span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
               <div class="settings-list-row settings-info-row"><span class="settings-row-copy"><strong>Local storage used</strong><small data-local-storage-used>Calculating…</small></span></div>
               <button class="settings-list-row" type="button" data-settings-open-subscreen="nextcloud">
                 <span class="settings-hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M17.5 18.5h-11a4 4 0 0 1-.7-7.94A5.5 5.5 0 0 1 16.5 9a4.75 4.75 0 0 1 1 9.4z"/></svg></span>
                 <span class="settings-row-copy"><strong>Nextcloud</strong><small>Send large media through your own Nextcloud.</small></span>
                 <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
               </button>
+            </div>
+          </section>
+
+          <!-- Storage sub-screens. -->
+          <section class="settings-group" data-settings-subscreen="retention">
+            <p class="settings-group-label">Message retention</p>
+            <div class="settings-list-card">
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-forever">Keep forever</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-30">30 days</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-90">90 days</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-365">1 year</button>
             </div>
           </section>
 
@@ -1968,7 +1992,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=192"></script>
+  <script type="module" src="./ui/app.js?v=193"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>
