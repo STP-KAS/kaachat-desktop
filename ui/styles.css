@@ -5506,6 +5506,9 @@ body.session-logged-out [data-account-rename-modal] {
    reserve a dead bottom strip for it.
    ============================================================ */
 .profile-screen { padding-bottom: 24px; }
+/* Floating dock must never cover the tail of the Profile scroll (the About card) —
+   same dodge the composer and cold-storage actions use. */
+body:has(.sidebar-tabbar:not(.dock-hidden)) .profile-screen { padding-bottom: 132px; }
 .app-placeholder-screen { padding-bottom: 24px; }
 .sidebar-scroll { padding-bottom: 24px; }
 .kaposts-screen { padding-bottom: 16px; }
