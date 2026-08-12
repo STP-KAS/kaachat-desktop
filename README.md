@@ -7,7 +7,7 @@ No Rust, cargo, or wasm-pack needed for normal use — the Rusty Kaspa and
 Kasia cipher WebAssembly builds are already included in this repository.
 
 ```
-git clone <repo-url>
+git clone [<repo-url>](https://github.com/KaspaSilver/KaChat-Desktop.git)
 cd KaChat-Desktop
 npm install
 npm run dev
