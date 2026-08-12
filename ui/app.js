@@ -1198,6 +1198,7 @@ function updateDetailActiveClass() {
 
 function setActiveConversationId(id) {
   activeConversationId = id;
+  try { updateChatFundingGate(); } catch { /* gate section not evaluated yet */ }
   const isOpen = Boolean(id);
   appBody?.classList.toggle("conversation-open", isOpen);
   // The conversation pane and its "Select a conversation" empty state belong to the CHATS
@@ -3465,11 +3466,13 @@ document.querySelector("[data-dock-wizard-next]")?.addEventListener("click", () 
 // real QR card; address dropdowns expand/collapse; anything without real
 // desktop backend yet (KNS, spending address, withdraw, transaction history,
 // manage addresses, gift) just surfaces a "Coming soon" toast.
+// "Receive Kaspa" opens the same full-screen QR view as Chatting Address (and the
+// spending-address Receive), just without the chat-fee note — the old inline
+// profile-qr-card toggle looked nothing like it.
 document.querySelectorAll("[data-profile-qr-trigger]").forEach((button) => {
   button.addEventListener("click", () => {
-    if (!profileQrCard || !engine.address) return;
-    profileQrCard.hidden = !profileQrCard.hidden;
-    if (!profileQrCard.hidden) drawProfileQr();
+    if (!engine.address) return;
+    openChattingAddressScreen({ subtitle: null });
   });
 });
 
@@ -3511,6 +3514,95 @@ document.querySelector("[data-open-chatting-address]")?.addEventListener("click"
 document.querySelector("[data-close-chatting-address]")?.addEventListener("click", closeChattingAddressScreen);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && chattingAddressScreen && !chattingAddressScreen.hidden) closeChattingAddressScreen();
+});
+
+// --- Profile > Apps and Help screens (iOS ProfileAppsView / ProfileHelpView).
+// Both follow the full-screen overlay pattern of the address screens: back
+// button and Escape close them. The Help rows launch the existing guides
+// (setup guide modals sit below the 1500 z-band, so close Help first).
+const appsScreenEl = document.querySelector("[data-apps-screen]");
+const helpScreenEl = document.querySelector("[data-help-screen]");
+
+document.querySelector("[data-open-apps-screen]")?.addEventListener("click", () => {
+  if (appsScreenEl) appsScreenEl.hidden = false;
+});
+document.querySelector("[data-close-apps-screen]")?.addEventListener("click", () => {
+  if (appsScreenEl) appsScreenEl.hidden = true;
+});
+document.querySelector("[data-open-help-screen]")?.addEventListener("click", () => {
+  if (helpScreenEl) helpScreenEl.hidden = false;
+});
+document.querySelector("[data-close-help-screen]")?.addEventListener("click", () => {
+  if (helpScreenEl) helpScreenEl.hidden = true;
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (appsScreenEl && !appsScreenEl.hidden) appsScreenEl.hidden = true;
+  else if (helpScreenEl && !helpScreenEl.hidden) helpScreenEl.hidden = true;
+});
+
+document.querySelector("[data-help-welcome]")?.addEventListener("click", () => {
+  if (helpScreenEl) helpScreenEl.hidden = true;
+  openSetupGuide();
+});
+document.querySelector("[data-help-kns]")?.addEventListener("click", () => {
+  if (helpScreenEl) helpScreenEl.hidden = true;
+  document.querySelector("[data-open-kns-register]")?.click();
+});
+document.querySelector("[data-help-dock]")?.addEventListener("click", () => {
+  if (helpScreenEl) helpScreenEl.hidden = true;
+  dockWizardPage = 0;
+  renderDockWizard();
+  const backdrop = document.querySelector("[data-dock-wizard]");
+  if (backdrop) backdrop.hidden = false;
+});
+
+// --- Profile > About: Version and Donate (iOS aboutSection). Donate resolves
+// kachat.kas and jumps straight into that chat in payment mode.
+const APP_VERSION = "2.0.11"; // keep in step with package.json
+const profileVersionEl = document.querySelector("[data-profile-version]");
+if (profileVersionEl) profileVersionEl.textContent = APP_VERSION;
+
+const DONATE_DOMAIN = "kachat.kas";
+let donateResolving = false;
+
+document.querySelector("[data-profile-donate]")?.addEventListener("click", async () => {
+  if (donateResolving) return;
+  donateResolving = true;
+  const labelEl = document.querySelector("[data-profile-donate-label]");
+  if (labelEl) labelEl.textContent = "Resolving…";
+  try {
+    await ensureRuntimes({ quiet: true });
+    if (!engine.address) throw new Error("Generate or import a wallet first.");
+    const resolution = await engine.resolveKnsDomain(DONATE_DOMAIN);
+    if (!resolution) throw new Error(`Couldn't resolve ${DONATE_DOMAIN}. Please try again later.`);
+    const address = validateContactAddress(resolution.ownerAddress);
+    let contact = state.contacts.find((entry) => entry.address === address);
+    if (!contact) {
+      const createdAt = Date.now();
+      contact = {
+        id: nowId(), name: resolution.domain || DONATE_DOMAIN, nameIsCustom: false, address,
+        avatar: initialsFor(resolution.domain || DONATE_DOMAIN), createdAt, updatedAt: createdAt,
+        relationshipState: "legacy-manual", handshakeTxid: "",
+      };
+      state.contacts.push(contact);
+    }
+    let conversationEntry = state.conversations.find((entry) => entry.contactId === contact.id);
+    if (!conversationEntry) {
+      conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
+      state.conversations.push(conversationEntry);
+      refreshSubscriptionAddresses({ restart: true });
+      persistState();
+    }
+    setActiveAppTab("chats");
+    openConversation(conversationEntry.id);
+    await activateComposerMode("kas");
+  } catch (error) {
+    showCopyToast(error?.message || `Couldn't resolve ${DONATE_DOMAIN}.`);
+  } finally {
+    donateResolving = false;
+    if (labelEl) labelEl.textContent = DONATE_DOMAIN;
+  }
 });
 
 // --- Send Kaspa modal (matches iOS's WithdrawKaspaView for this pass: real
@@ -5095,7 +5187,96 @@ profileAccountName?.addEventListener("keydown", (event) => {
   }
 });
 
+// Zero-balance chat gate: with a confirmed 0 KAS chatting balance, composing is disabled
+// and a funding card (QR + address + copy) shows above the composer. "--"/unknown never
+// gates — only a real zero does. Clears itself the moment the balance refresh finds funds.
+let fundingGateQrDrawnFor = null;
+
+/// True only for a CONFIRMED zero chatting balance ("--"/unknown never gates).
+function isChattingBalanceZero() {
+  const kas = Number(currentBalanceKas);
+  return Boolean(engine.address) && Number.isFinite(kas) && kas === 0;
+}
+
+// Modal variant of the funding gate, for flows without an inline composer to gate
+// (broadcast rooms, KaPosts new-post/reply). Built once, on demand.
+let fundingGateModalEl = null;
+
+function showFundingGateModal() {
+  if (!fundingGateModalEl) {
+    fundingGateModalEl = document.createElement("div");
+    fundingGateModalEl.className = "modal-backdrop funding-gate-backdrop";
+    fundingGateModalEl.innerHTML = `
+      <div class="contact-modal funding-gate-modal" role="dialog" aria-modal="true" aria-label="Fund your chatting address">
+        <div class="modal-header">
+          <div><p class="modal-kicker">Balance needed</p><h2>Fund your chatting address to start chatting</h2></div>
+          <button class="modal-close" type="button" data-funding-modal-close aria-label="Close">×</button>
+        </div>
+        <div class="chat-funding-gate funding-gate-modal-body">
+          <canvas width="360" height="360" data-funding-modal-qr></canvas>
+          <button type="button" class="chat-funding-gate-address" data-funding-modal-address title="Copy address"></button>
+          <button type="button" class="secondary-button" data-funding-modal-copy>Copy Address</button>
+        </div>
+      </div>`;
+    document.body.appendChild(fundingGateModalEl);
+    fundingGateModalEl.addEventListener("click", async (event) => {
+      if (event.target === fundingGateModalEl || event.target.closest("[data-funding-modal-close]")) {
+        fundingGateModalEl.hidden = true;
+        return;
+      }
+      if (event.target.closest("[data-funding-modal-address]") || event.target.closest("[data-funding-modal-copy]")) {
+        if (!engine.address) return;
+        try { await copyTextToClipboard(engine.address); showCopyToast("Address copied to clipboard."); }
+        catch (error) { appendEngineLog(error.message); }
+      }
+    });
+  }
+  const addressEl = fundingGateModalEl.querySelector("[data-funding-modal-address]");
+  if (addressEl) addressEl.textContent = engine.address || "";
+  const canvas = fundingGateModalEl.querySelector("[data-funding-modal-qr]");
+  if (canvas && engine.address) {
+    engine.drawQrFor(canvas, engine.address, { dark: "#06110f", light: "#ffffff" })
+      .then(() => { canvas.style.width = "180px"; canvas.style.height = "180px"; })
+      .catch(() => {});
+  }
+  fundingGateModalEl.hidden = false;
+}
+
+function updateChatFundingGate() {
+  // Looked up per call (not a module const): this runs from setActiveConversationId too,
+  // which can fire before module evaluation reaches this section.
+  const fundingGateEl = document.querySelector("[data-funding-gate]");
+  if (!fundingGateEl) return;
+  const kas = Number(currentBalanceKas);
+  const shouldGate = Boolean(activeConversationId) && Boolean(engine.address)
+    && Number.isFinite(kas) && kas === 0;
+  fundingGateEl.hidden = !shouldGate;
+  composer?.classList.toggle("composer-gated", shouldGate);
+  const input = composer?.elements?.message;
+  if (input) input.disabled = shouldGate;
+  if (!shouldGate) return;
+
+  const addressEl = fundingGateEl.querySelector("[data-funding-gate-address]");
+  if (addressEl) addressEl.textContent = engine.address;
+  const canvas = fundingGateEl.querySelector("[data-funding-gate-qr]");
+  if (canvas && fundingGateQrDrawnFor !== engine.address) {
+    fundingGateQrDrawnFor = engine.address;
+    engine.drawQrFor(canvas, engine.address, { dark: "#06110f", light: "#ffffff" })
+      .then(() => { canvas.style.width = "180px"; canvas.style.height = "180px"; })
+      .catch(() => { fundingGateQrDrawnFor = null; });
+  }
+}
+
+document.querySelector("[data-funding-gate]")?.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-funding-gate-address]") || event.target.closest("[data-funding-gate-copy]")) {
+    if (!engine.address) return;
+    try { await copyTextToClipboard(engine.address); showCopyToast("Address copied to clipboard."); }
+    catch (error) { appendEngineLog(error.message); }
+  }
+});
+
 function updateWalletUi() {
+  updateChatFundingGate();
   const address = engine.address;
   const meta = activeAccountMetadata();
   const accountName = meta?.name || (address ? "Current Account" : "No Active Account");
@@ -5118,6 +5299,7 @@ function updateWalletUi() {
 }
 
 async function drawProfileQr() {
+  if (!profileQr) return; // inline profile QR card removed — Receive Kaspa uses the full-screen view
   const ctx = profileQr.getContext("2d");
   ctx.clearRect(0, 0, profileQr.width, profileQr.height);
 
@@ -5136,25 +5318,72 @@ function setCreateChatError(message = "") {
   createChatError.hidden = !message;
 }
 
+// Live validity feedback under the Create Chat address field, matching iOS's
+// "Valid address" / "Resolved: name.kas" / "Invalid address format" states.
+let createChatResolveToken = 0;
+
+function renderCreateChatStatus(html) {
+  const statusEl = document.querySelector("[data-create-chat-status]");
+  if (!statusEl) return;
+  statusEl.innerHTML = html || "";
+  statusEl.hidden = !html;
+}
+
 function updateCreateChatAddState() {
   if (!createChatAddButton || !contactAddressInput) return;
   const raw = String(contactAddressInput.value || "").trim();
-  let enabled = false;
-  if (raw) {
-    if (engine.knsLooksLikeDomain(raw)) {
-      // Matches both "name.kas" and a bare "name" — resolution normalizes
-      // either form by appending .kas if it's missing (see resolveKnsDomain).
-      enabled = true;
-    } else if (engine.kaspa) {
-      try {
-        validateContactAddress(raw);
-        enabled = true;
-      } catch {}
-    } else {
-      enabled = raw.startsWith("kaspa:") && raw.length > 20;
-    }
+  const token = ++createChatResolveToken;
+
+  if (!raw) {
+    renderCreateChatStatus("");
+    createChatAddButton.disabled = true;
+    return;
   }
-  createChatAddButton.disabled = !enabled;
+
+  if (raw.startsWith("kaspa:") || raw.startsWith("kaspatest:")) {
+    let valid = false;
+    if (engine.kaspa) {
+      try { validateContactAddress(raw); valid = true; } catch { /* invalid */ }
+    } else {
+      valid = raw.length > 20;
+    }
+    renderCreateChatStatus(valid
+      ? '<span class="create-chat-status-good">✓ Valid address</span>'
+      : '<span class="create-chat-status-bad">✕ Invalid address format</span>');
+    createChatAddButton.disabled = !valid;
+    return;
+  }
+
+  if (engine.knsLooksLikeDomain(raw)) {
+    // Matches both "name.kas" and a bare "name" — resolution normalizes either
+    // form by appending .kas if it's missing (see resolveKnsDomain). Debounced
+    // live resolution so Add only enables for a domain that actually exists.
+    renderCreateChatStatus('<span class="create-chat-status-muted">Resolving KNS domain…</span>');
+    createChatAddButton.disabled = true;
+    window.setTimeout(async () => {
+      if (token !== createChatResolveToken) return;
+      try {
+        const resolution = await engine.resolveKnsDomain(raw);
+        if (token !== createChatResolveToken) return;
+        if (resolution?.ownerAddress) {
+          renderCreateChatStatus(
+            `<span class="create-chat-status-good">✓ Resolved: ${escapeHtml(resolution.domain || raw)}</span>`
+            + `<span class="create-chat-status-mono">${escapeHtml(resolution.ownerAddress)}</span>`
+          );
+          createChatAddButton.disabled = false;
+        } else {
+          renderCreateChatStatus('<span class="create-chat-status-bad">✕ KNS domain not found</span>');
+        }
+      } catch {
+        if (token !== createChatResolveToken) return;
+        renderCreateChatStatus('<span class="create-chat-status-bad">✕ KNS domain not found</span>');
+      }
+    }, 300);
+    return;
+  }
+
+  renderCreateChatStatus('<span class="create-chat-status-bad">✕ Invalid address format</span>');
+  createChatAddButton.disabled = true;
 }
 
 function setContactAddressValue(value) {
@@ -6002,25 +6231,50 @@ const settingsScreenEl = document.querySelector('[data-screen="settings"]');
 const settingsGroupsEls = settingsScreenEl
   ? [...settingsScreenEl.querySelectorAll(":scope > .settings-group")]
   : [];
+// The engineering diagnostics <details> rides along with the Diagnostics page only.
+const settingsDiagnosticsDetailsEl = settingsScreenEl?.querySelector(":scope > .diagnostics-panel") || null;
+const settingsDiagnosticsIndex = settingsGroupsEls.findIndex(
+  (group) => group.querySelector(".settings-group-label")?.textContent?.trim() === "Diagnostics"
+);
+
+// iOS SettingsView category icons (SF-symbol equivalents as inline SVGs), keyed by
+// the .settings-group-label text.
+const SETTINGS_HUB_ICONS = {
+  "Customization": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4 6 6-8.5 8.5L6 20l1.5-5.5z"/><path d="m12.5 5.5 6 6"/></svg>',
+  "Security": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.8v5.4c0 4.5-3 8.2-7 9.8-4-1.6-7-5.3-7-9.8V5.8z"/><circle cx="12" cy="10.6" r="1.6"/><path d="M12 12.2v2.8"/></svg>',
+  "Connection": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="1.8"/><path d="M8.5 15.5a5 5 0 0 1 0-7M15.5 8.5a5 5 0 0 1 0 7M5.6 18.4a9 9 0 0 1 0-12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>',
+  "Chats": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg>',
+  "Contacts": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3"/><path d="M3.5 19c.9-3 2.9-4.5 5.5-4.5s4.6 1.5 5.5 4.5"/><path d="M15.2 5.9a2.9 2.9 0 1 1 1.3 5.5M17.3 14.7c1.7.7 2.8 2 3.2 4.3"/></svg>',
+  "Storage": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="8" rx="2.2"/><path d="M6.5 12h.01M10 12h.01"/><circle cx="17.4" cy="12" r=".4"/></svg>',
+  "Chat History": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.25"/><path d="M12 7.5V12l3 1.8"/></svg>',
+  "Diagnostics": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></svg>',
+  "Danger Zone": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 21 19.5H3z"/><path d="M12 10v4.2"/><circle cx="12" cy="16.6" r=".3"/></svg>',
+};
 
 const settingsHubEl = (() => {
   if (!settingsScreenEl || settingsGroupsEls.length === 0) return null;
   const hub = document.createElement("section");
   hub.className = "settings-group settings-hub";
-  const rows = settingsGroupsEls.map((group, index) => {
+  const chevron = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>`;
+  const rows = [];
+  settingsGroupsEls.forEach((group, index) => {
+    if (group.dataset.settingsSubscreen) return; // sub-screens open from their parent page, not the hub
     const label = group.querySelector(".settings-group-label")?.textContent?.trim() || `Section ${index + 1}`;
     const danger = group.classList.contains("danger-zone-group");
-    return `<button class="settings-list-row settings-hub-row${danger ? " danger" : ""}" type="button" data-settings-hub-row="${index}">
-      <span>${label}</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
-    </button>`;
-  });
-  // View Seed Phrase: a direct action on the hub, not a sub-page (matches iOS).
-  rows.splice(settingsGroupsEls.length - 1, 0, `
-    <button class="settings-list-row settings-hub-row seed" type="button" data-settings-hub-seed>
-      <span>View Seed Phrase</span>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z"/></svg>
+    if (danger) {
+      // View Seed Phrase: a direct action right above Danger Zone, not a sub-page (matches iOS).
+      rows.push(`<button class="settings-list-row settings-hub-row seed" type="button" data-settings-hub-seed>
+        <span class="settings-hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z"/></svg></span>
+        <span class="settings-hub-label">View Seed Phrase</span>
+        ${chevron}
+      </button>`);
+    }
+    rows.push(`<button class="settings-list-row settings-hub-row${danger ? " danger" : ""}" type="button" data-settings-hub-row="${index}">
+      <span class="settings-hub-icon" aria-hidden="true">${SETTINGS_HUB_ICONS[label] || ""}</span>
+      <span class="settings-hub-label">${label}</span>
+      ${chevron}
     </button>`);
+  });
   hub.innerHTML = `<div class="settings-list-card">${rows.join("")}</div>`;
   settingsScreenEl.prepend(hub);
 
@@ -6028,26 +6282,62 @@ const settingsHubEl = (() => {
   backBar.type = "button";
   backBar.className = "settings-hub-back";
   backBar.dataset.settingsHubBack = "";
-  backBar.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg><span>Settings</span>`;
+  backBar.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg><span data-settings-hub-back-label>Settings</span>`;
   backBar.hidden = true;
   settingsScreenEl.prepend(backBar);
   return hub;
 })();
 
+// When a sub-screen (e.g. Storage > Nextcloud) is showing, back returns to its
+// parent category instead of the hub.
+let settingsSubscreenParentIndex = null;
+
+function setSettingsBackBar(visible, label) {
+  const backBar = settingsScreenEl?.querySelector("[data-settings-hub-back]");
+  if (!backBar) return;
+  backBar.hidden = !visible;
+  const labelEl = backBar.querySelector("[data-settings-hub-back-label]");
+  if (labelEl) labelEl.textContent = label || "Settings";
+}
+
 function showSettingsCategory(index) {
   if (!settingsScreenEl || !settingsHubEl) return;
-  const backBar = settingsScreenEl.querySelector("[data-settings-hub-back]");
   const inCategory = Number.isInteger(index);
+  settingsSubscreenParentIndex = null;
   settingsHubEl.hidden = inCategory;
-  if (backBar) backBar.hidden = !inCategory;
+  setSettingsBackBar(inCategory, "Settings");
   settingsGroupsEls.forEach((group, i) => { group.hidden = !inCategory || i !== index; });
+  if (settingsDiagnosticsDetailsEl) settingsDiagnosticsDetailsEl.hidden = !inCategory || index !== settingsDiagnosticsIndex;
+  settingsScreenEl.scrollTop = 0;
+}
+
+function showSettingsSubscreen(name, parentIndex) {
+  if (!settingsScreenEl || !settingsHubEl) return;
+  const target = settingsGroupsEls.find((group) => group.dataset.settingsSubscreen === name);
+  if (!target) return;
+  settingsSubscreenParentIndex = Number.isInteger(parentIndex) && parentIndex >= 0 ? parentIndex : null;
+  settingsHubEl.hidden = true;
+  settingsGroupsEls.forEach((group) => { group.hidden = group !== target; });
+  if (settingsDiagnosticsDetailsEl) settingsDiagnosticsDetailsEl.hidden = true;
+  const parentLabel = settingsSubscreenParentIndex != null
+    ? settingsGroupsEls[settingsSubscreenParentIndex]?.querySelector(".settings-group-label")?.textContent?.trim()
+    : null;
+  setSettingsBackBar(true, parentLabel || "Settings");
   settingsScreenEl.scrollTop = 0;
 }
 
 settingsScreenEl?.addEventListener("click", (event) => {
+  const sub = event.target.closest("[data-settings-open-subscreen]");
+  if (sub) {
+    showSettingsSubscreen(sub.dataset.settingsOpenSubscreen, settingsGroupsEls.indexOf(sub.closest(".settings-group")));
+    return;
+  }
   const row = event.target.closest("[data-settings-hub-row]");
   if (row) { showSettingsCategory(Number(row.dataset.settingsHubRow)); return; }
-  if (event.target.closest("[data-settings-hub-back]")) { showSettingsCategory(null); return; }
+  if (event.target.closest("[data-settings-hub-back]")) {
+    showSettingsCategory(settingsSubscreenParentIndex != null ? settingsSubscreenParentIndex : null);
+    return;
+  }
   if (event.target.closest("[data-settings-hub-seed]")) {
     document.querySelector('[data-shell-action="view-recovery"]')?.click();
   }
@@ -7386,13 +7676,6 @@ function voiceMaxDurationSeconds() {
 }
 const VOICE_AUDIO_BITS_PER_SECOND = 8000;
 
-let voiceMediaRecorder = null;
-let voiceMediaStream = null;
-let voiceRecordedChunks = [];
-let voiceRecordingStartedAt = 0;
-let voiceRecordingTimer = null;
-let voiceRecordingCancelled = false;
-
 const voiceRecordingPanel = document.querySelector("[data-voice-recording-panel]");
 const voiceRecordingTimeEl = document.querySelector("[data-voice-recording-time]");
 
@@ -7410,67 +7693,107 @@ function pickVoiceMimeType() {
   return "";
 }
 
-async function startVoiceRecording() {
-  if (voiceMediaRecorder) return;
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    showCopyToast("Voice recording isn't supported in this browser.");
-    return;
-  }
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch {
-    showCopyToast("Microphone access was denied.");
-    return;
-  }
-  const mimeType = pickVoiceMimeType();
-  voiceMediaStream = stream;
-  voiceRecordedChunks = [];
-  voiceRecordingCancelled = false;
-  try {
-    voiceMediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: VOICE_AUDIO_BITS_PER_SECOND } : undefined);
-  } catch {
-    showCopyToast("Could not start voice recording.");
-    stream.getTracks().forEach((track) => track.stop());
-    voiceMediaStream = null;
-    return;
+// Generic MediaRecorder wrapper shared by the 1:1 composer and the broadcast
+// composer (handed to initBroadcasts via deps). Owns the stream, chunk
+// collection, the elapsed timer and the max-duration auto-stop; presentation
+// (panel visibility, timer text) and what happens to the finished blob stay
+// with the caller.
+function createVoiceRecorder({ maxDurationSeconds, onElapsed, onFinish }) {
+  let recorder = null;
+  let stream = null;
+  let chunks = [];
+  let startedAt = 0;
+  let timer = null;
+  let cancelled = false;
+
+  function clearTimer() {
+    if (timer) { window.clearInterval(timer); timer = null; }
   }
 
-  voiceMediaRecorder.addEventListener("dataavailable", (event) => {
-    if (event.data && event.data.size > 0) voiceRecordedChunks.push(event.data);
-  });
-  voiceMediaRecorder.addEventListener("stop", handleVoiceRecordingStopped);
+  function handleStopped() {
+    stream?.getTracks().forEach((track) => track.stop());
+    stream = null;
+    clearTimer();
+    const mimeType = recorder?.mimeType || "audio/webm";
+    const recorded = chunks;
+    recorder = null;
+    chunks = [];
+    const blob = recorded.length ? new Blob(recorded, { type: mimeType }) : null;
+    onFinish?.({ blob, mimeType, cancelled });
+  }
 
-  voiceMediaRecorder.start();
-  voiceRecordingStartedAt = Date.now();
-  if (voiceRecordingPanel) voiceRecordingPanel.hidden = false;
-  if (voiceRecordingTimeEl) voiceRecordingTimeEl.textContent = "0:00";
-  voiceRecordingTimer = window.setInterval(() => {
-    const elapsed = (Date.now() - voiceRecordingStartedAt) / 1000;
+  /** Starts recording. Returns an error string for the caller to toast, or null on success. */
+  async function start() {
+    if (recorder) return null;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      return "Voice recording isn't supported in this browser.";
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      return "Microphone access was denied.";
+    }
+    const mimeType = pickVoiceMimeType();
+    chunks = [];
+    cancelled = false;
+    try {
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: VOICE_AUDIO_BITS_PER_SECOND } : undefined);
+    } catch {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+      return "Could not start voice recording.";
+    }
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size > 0) chunks.push(event.data);
+    });
+    recorder.addEventListener("stop", handleStopped);
+    recorder.start();
+    startedAt = Date.now();
+    onElapsed?.(0);
+    timer = window.setInterval(() => {
+      const elapsed = (Date.now() - startedAt) / 1000;
+      onElapsed?.(elapsed);
+      if (elapsed >= maxDurationSeconds()) stop(false);
+    }, 200);
+    return null;
+  }
+
+  function stop(cancel) {
+    cancelled = Boolean(cancel);
+    clearTimer();
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    else handleStopped();
+  }
+
+  return { start, stop, isRecording: () => recorder != null };
+}
+
+const chatVoiceRecorder = createVoiceRecorder({
+  maxDurationSeconds: voiceMaxDurationSeconds,
+  onElapsed: (elapsed) => {
     if (voiceRecordingTimeEl) voiceRecordingTimeEl.textContent = formatRecordingTime(elapsed);
-    if (elapsed >= voiceMaxDurationSeconds()) stopVoiceRecording(false);
-  }, 200);
+  },
+  onFinish: handleChatVoiceRecordingFinished,
+});
+
+async function startVoiceRecording() {
+  if (chatVoiceRecorder.isRecording()) return;
+  const error = await chatVoiceRecorder.start();
+  if (error) {
+    showCopyToast(error);
+    return;
+  }
+  if (voiceRecordingTimeEl) voiceRecordingTimeEl.textContent = "0:00";
+  if (voiceRecordingPanel) voiceRecordingPanel.hidden = false;
 }
 
 function stopVoiceRecording(cancelled) {
-  voiceRecordingCancelled = cancelled;
-  if (voiceRecordingTimer) { window.clearInterval(voiceRecordingTimer); voiceRecordingTimer = null; }
-  if (voiceMediaRecorder && voiceMediaRecorder.state !== "inactive") voiceMediaRecorder.stop();
-  else handleVoiceRecordingStopped();
+  chatVoiceRecorder.stop(cancelled);
 }
 
-async function handleVoiceRecordingStopped() {
-  voiceMediaStream?.getTracks().forEach((track) => track.stop());
-  voiceMediaStream = null;
+async function handleChatVoiceRecordingFinished({ blob, mimeType, cancelled }) {
   if (voiceRecordingPanel) voiceRecordingPanel.hidden = true;
-  const mimeType = voiceMediaRecorder?.mimeType || "audio/webm";
-  const chunks = voiceRecordedChunks;
-  voiceMediaRecorder = null;
-  voiceRecordedChunks = [];
-
-  if (voiceRecordingCancelled || !chunks.length || !activeConversationId) return;
-
-  const blob = new Blob(chunks, { type: mimeType });
+  if (cancelled || !blob || !activeConversationId) return;
 
   // "Send Media via Nextcloud": upload the recording and send its share link (renders as an
   // audio card + player on the recipient's side). Failure falls back to the on-chain envelope.
@@ -8201,10 +8524,8 @@ function renderSetupExtra(kind) {
     // Don't close the guide — the address screen (z-index 1500) layers above it,
     // so backing out of the QR returns here on the funding step.
     qrBtn.addEventListener("click", () => { openChattingAddressScreen(); });
-    const gift = document.createElement("div");
-    gift.className = "setup-gift-row";
-    gift.textContent = "Gift unavailable";
-    wrap.append(addrBtn, qrBtn, gift);
+    // No gift row: desktop deliberately has no free-gift program (mobile-only).
+    wrap.append(addrBtn, qrBtn);
     setupExtraEl.appendChild(wrap);
   } else if (kind === "node") {
     // Desktop connects via auto-discovery (wRPC resolver) by default; "own node"
@@ -8785,6 +9106,8 @@ queueMicrotask(async () => {
     escapeHtml,
     shortAddress,
     accountScopedKey,
+    isChattingBalanceZero,
+    showFundingGate: showFundingGateModal,
     showToast: showCopyToast,
     appendEngineLog,
     explorerTxUrl,
@@ -8795,11 +9118,26 @@ queueMicrotask(async () => {
     escapeHtml,
     shortAddress,
     accountScopedKey,
+    isChattingBalanceZero,
+    showFundingGate: showFundingGateModal,
     showToast: showCopyToast,
     appendEngineLog,
+    // Link previews: the exact same renderers as 1:1 bubbles (linkify + the
+    // progressive Nextcloud video→audio→img→attachment probe).
+    renderTextWithLinks,
+    buildLinkPreviewCard,
+    isPreviewableUrl,
+    // Voice notes: same MediaRecorder wrapper + Nextcloud upload as the 1:1 composer.
+    createVoiceRecorder,
+    formatRecordingTime,
+    isNextcloudMediaSendActive,
+    uploadNextcloudMedia,
+    // Reactions: identical wire parser and fixed tapback set across all clients.
+    parseReactionEnvelope,
+    quickReactionEmojis: QUICK_REACTION_EMOJIS,
   });
 
-  initPortfolio({ engine, escapeHtml, accountScopedKey });
+  initPortfolio({ engine, escapeHtml, accountScopedKey, showToast: showCopyToast });
   initColdStorage({
     engine, escapeHtml, shortAddress, accountScopedKey,
     showToast: showCopyToast, appendEngineLog,
@@ -8818,6 +9156,16 @@ queueMicrotask(async () => {
     showToast: showCopyToast,
     getActiveConversationId: () => activeConversationId,
     queueConversationMessage,
+    // "Send from Nextcloud" staging: the picked file's share link lands in the composer for
+    // review instead of auto-sending — the user presses send themselves.
+    stageComposerText: (text) => {
+      activateComposerMode("message");
+      const input = composer?.elements?.message;
+      if (!input) return;
+      input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    },
     // The backup payload is the desktop's own persisted state (conversations + contacts +
     // message history), NOT the iOS archive schema — hence the platform-distinct filename.
     exportBackupPayload: () => JSON.stringify({

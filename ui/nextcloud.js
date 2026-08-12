@@ -3,8 +3,9 @@
 // public /s/TOKEN share links (rendered by the link-preview feature), and back up the account's
 // chat data to the server (manual + automatic with hourly throttle and launch catch-up).
 //
-// Browser reality: unlike the native apps, every fetch here is subject to CORS. Stock Nextcloud
-// sends no CORS headers on WebDAV/OCS, so the connect screen detects the failure shape and
+// Browser reality: unlike the native apps, fetches here would be subject to CORS — solved by
+// routing all API traffic through vite.config.mjs's same-origin /nc-proxy passthrough (see
+// apiBase()). The connect screen still detects total-failure shapes and
 // tells the user to allow this origin on their server/reverse proxy. Credentials live in
 // account-scoped localStorage — same trust model as the rest of this desktop build (the wallet
 // itself persists there too).
@@ -59,11 +60,19 @@ function authHeader(account = nc) {
   return "Basic " + btoa(`${account.username}:${account.appPassword}`);
 }
 
+/** All API traffic goes through the dev server's same-origin /nc-proxy passthrough (see
+ *  vite.config.mjs) — the browser never makes a cross-origin request, so stock Nextcloud's
+ *  missing CORS headers on WebDAV/OCS no longer matter. Public /s/TOKEN share links are NOT
+ *  proxied; recipients open those on the real server. */
+function apiBase(server = nc?.server) {
+  return `/nc-proxy/${encodeURIComponent(String(server || "").replace(/\/+$/, ""))}`;
+}
+
 function corsHint(error) {
-  // A CORS rejection surfaces as an opaque TypeError with no status. Stock Nextcloud sends no
-  // CORS headers on WebDAV/OCS, so this is the most common desktop failure — say so.
+  // With the same-origin proxy a TypeError means the dev server itself (or the network) is
+  // unreachable, not CORS.
   if (error instanceof TypeError) {
-    return "Could not reach the server from a browser. This is usually CORS: allow this app's origin on your Nextcloud (or reverse proxy) and try again.";
+    return "Could not reach the server. Check the server address and your connection, and make sure the app is running via its own dev server (npm run dev), which provides the built-in proxy.";
   }
   return error.message;
 }
@@ -73,7 +82,7 @@ function corsHint(error) {
 // ---------------------------------------------------------------------------
 
 async function verifyCredentials(server, username, appPassword) {
-  const response = await fetch(`${server}/ocs/v2.php/cloud/user?format=json`, {
+  const response = await fetch(`${apiBase(server)}/ocs/v2.php/cloud/user?format=json`, {
     headers: {
       Authorization: "Basic " + btoa(`${username}:${appPassword}`),
       "OCS-APIRequest": "true",
@@ -109,7 +118,7 @@ function classifyEntry(entry) {
 async function listFolder(relativePath = "") {
   const davBasePath = `/remote.php/dav/files/${nc.username}`;
   const listedPath = relativePath.split("/").filter(Boolean).join("/");
-  const url = `${nc.server}${davBasePath}${listedPath ? "/" + listedPath.split("/").map(encodeURIComponent).join("/") : ""}`;
+  const url = `${apiBase()}${davBasePath}${listedPath ? "/" + listedPath.split("/").map(encodeURIComponent).join("/") : ""}`;
   const response = await fetch(url, {
     method: "PROPFIND",
     headers: {
@@ -158,7 +167,7 @@ async function listFolder(relativePath = "") {
 
 /** Creates (or reuses) a public link share — shareType 3 — and returns its /s/TOKEN URL. */
 async function createPublicShareLink(relativePath) {
-  const endpoint = `${nc.server}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json`;
+  const endpoint = `${apiBase()}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json`;
   const body = `path=${encodeURIComponent("/" + relativePath)}&shareType=3`;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -193,7 +202,7 @@ async function createPublicShareLink(relativePath) {
 async function thumbnailURL(path) {
   if (thumbCache.has(path)) return thumbCache.get(path);
   try {
-    const url = `${nc.server}/index.php/core/preview.png?file=${encodeURIComponent("/" + path)}&x=256&y=256&a=1`;
+    const url = `${apiBase()}/index.php/core/preview.png?file=${encodeURIComponent("/" + path)}&x=256&y=256&a=1`;
     const response = await fetch(url, { headers: { Authorization: authHeader() }, cache: "no-store" });
     if (!response.ok) throw new Error(String(response.status));
     const blob = await response.blob();
@@ -233,7 +242,7 @@ export async function uploadNextcloudMedia(blob, filename, contentType) {
   if (!nc) throw new Error("Nextcloud is not connected.");
   const safeName = String(filename || "file").replace(/[^\w.\-]+/g, "_");
   const unique = `${Math.random().toString(36).slice(2, 10)}_${safeName}`;
-  const davRoot = `${nc.server}/remote.php/dav/files/${nc.username}`;
+  const davRoot = `${apiBase()}/remote.php/dav/files/${nc.username}`;
   const folderURL = await ensureFolder(davRoot, ["KaChat", "Media"]);
   const put = await fetch(`${folderURL}/${encodeURIComponent(unique)}`, {
     method: "PUT",
@@ -245,7 +254,7 @@ export async function uploadNextcloudMedia(blob, filename, contentType) {
 }
 
 async function uploadBackup(payloadJson) {
-  const davRoot = `${nc.server}/remote.php/dav/files/${nc.username}`;
+  const davRoot = `${apiBase()}/remote.php/dav/files/${nc.username}`;
   const folderURL = `${davRoot}/${backupFolderPath().split("/").map(encodeURIComponent).join("/")}`;
   const mkcol = await fetch(folderURL, { method: "MKCOL", headers: { Authorization: authHeader() } });
   if (mkcol.status === 401) throw new Error("Nextcloud rejected the stored app password — reconnect in Settings.");
@@ -267,7 +276,7 @@ async function fetchBackupInfo() {
 }
 
 async function downloadBackup() {
-  const davRoot = `${nc.server}/remote.php/dav/files/${nc.username}`;
+  const davRoot = `${apiBase()}/remote.php/dav/files/${nc.username}`;
   const url = `${davRoot}/${backupFolderPath().split("/").map(encodeURIComponent).join("/")}/${BACKUP_FILENAME}`;
   const response = await fetch(url, { headers: { Authorization: authHeader() }, cache: "no-store" });
   if (response.status === 404) throw new Error("No KaChat backup was found in that folder.");
@@ -314,7 +323,7 @@ function renderSettings() {
         <label class="field-label">Server<input class="field-input" type="text" data-nc-server placeholder="cloud.example.com" autocomplete="off" spellcheck="false" /></label>
         <label class="field-label">Username<input class="field-input" type="text" data-nc-username autocomplete="off" spellcheck="false" /></label>
         <label class="field-label">App password<input class="field-input" type="password" data-nc-password autocomplete="off" /></label>
-        <p class="field-hint">Create an app password in Nextcloud under Settings → Security → Devices &amp; sessions. Browser note: your server must allow this origin (CORS) for desktop access.</p>
+        <p class="field-hint">Create an app password in Nextcloud under Settings → Security → Devices &amp; sessions. No server CORS setup needed — the app's own dev server proxies Nextcloud traffic.</p>
         <p class="field-error" data-nc-connect-error hidden></p>
         <button class="primary-button" type="button" data-nc-connect>Connect</button>
       </div>`;
@@ -485,11 +494,9 @@ async function pickMediaFile(path) {
     const url = await createPublicShareLink(path);
     pickerSharingPath = null;
     closePicker();
-    const conversationId = deps.getActiveConversationId();
-    if (conversationId) {
-      deps.queueConversationMessage(conversationId, url);
-      deps.showToast?.("Nextcloud link sent.");
-    }
+    // Stage the link in the composer for review instead of auto-sending — the user presses
+    // send themselves (matches iOS/Android).
+    deps.stageComposerText?.(url);
   } catch (error) {
     pickerSharingPath = null;
     if (cell) cell.hidden = true;

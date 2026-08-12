@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=212" />
+  <link rel="stylesheet" href="./ui/styles.css?v=222" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -249,6 +249,12 @@
                 <button type="button" data-cancel-reply aria-label="Cancel reply">×</button>
               </div>
 
+              <div class="chat-funding-gate" data-funding-gate hidden>
+                <strong>Fund your chatting address to start chatting</strong>
+                <canvas width="360" height="360" data-funding-gate-qr></canvas>
+                <button type="button" class="chat-funding-gate-address" data-funding-gate-address title="Copy address"></button>
+                <button type="button" class="secondary-button" data-funding-gate-copy>Copy Address</button>
+              </div>
               <form class="composer kachat-composer" data-composer>
                 <button class="composer-tool composer-plus" type="button" data-composer-plus aria-label="More message options">+</button>
                 <div class="composer-field-wrap">
@@ -299,8 +305,18 @@
             <div class="broadcast-room-banner" data-broadcast-room-banner hidden>All messages are public and are stored for 3 days only.</div>
             <div class="broadcast-hidden-panel" data-broadcast-hidden-panel hidden></div>
             <div class="broadcast-room-body" data-broadcast-room-body></div>
+            <div class="voice-recording-panel" data-broadcast-voice-panel hidden>
+              <span class="voice-recording-dot" aria-hidden="true"></span>
+              <span data-broadcast-voice-time>0:00</span>
+              <span class="voice-recording-hint">Recording voice message…</span>
+              <button type="button" class="voice-recording-cancel" data-broadcast-voice-cancel aria-label="Cancel recording">Cancel</button>
+              <button type="button" class="voice-recording-stop" data-broadcast-voice-stop>Send</button>
+            </div>
             <div class="kaposts-reply-bar">
               <textarea class="kaposts-reply-input" data-broadcast-input rows="1" placeholder="Message the room"></textarea>
+              <button class="kaposts-icon-button broadcast-voice-btn" type="button" data-broadcast-voice aria-label="Record voice note" title="Record voice note" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6"/></svg>
+              </button>
               <button class="primary-button" type="button" data-broadcast-send>Send</button>
             </div>
           </div>
@@ -401,6 +417,11 @@
             </button>
           </div>
 
+          <div class="profile-card profile-account-card">
+            <p class="profile-card-label">Account</p>
+            <input class="profile-name-input" data-profile-account-name type="text" value="Current Account" maxlength="48" autocomplete="off" aria-label="Account name" />
+          </div>
+
           <div class="profile-card profile-hero-card">
             <div class="profile-hero-banner" data-profile-hero-banner></div>
             <div class="profile-hero-row">
@@ -412,31 +433,16 @@
             </div>
           </div>
 
-          <div class="profile-card profile-account-card">
-            <p class="profile-card-label">Account</p>
-            <input class="profile-name-input" data-profile-account-name type="text" value="Current Account" maxlength="48" autocomplete="off" aria-label="Account name" />
-          </div>
-
-          <button class="profile-card profile-recovery-row profile-guide-row" type="button" data-open-setup-guide data-setup-guide-row>
-            <span>Welcome Guide</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3z"/><path d="M18.5 13.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/></svg>
+          <!-- Edit KNS Profile: one row, two variants toggled by refreshOwnKnsProfile()
+               (no domain -> the create/register flow, like iOS; domain -> the editor). -->
+          <button class="profile-card profile-recovery-row" type="button" data-open-kns-register data-profile-kns-empty-cta>
+            <span>Edit KNS Profile</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
           </button>
-
-          <p class="profile-section-label">KNS Profile</p>
-          <div class="profile-card profile-kns-card">
-            <button class="profile-kns-empty-cta" type="button" data-open-kns-register data-profile-kns-empty-cta>
-              <span class="profile-kns-empty-text">Create KNS Profile</span>
-            </button>
-            <div class="profile-kns-owned" data-profile-kns-owned hidden>
-              <div class="profile-kns-owned-header">
-                <strong data-profile-kns-domain></strong>
-                <span class="architecture-badge ready">Verified</span>
-              </div>
-              <p class="chat-info-bio" data-profile-kns-bio hidden></p>
-              <div class="chat-info-social-links" data-profile-kns-links></div>
-              <button class="secondary-button full" type="button" data-open-kns-editor>Edit Profile</button>
-            </div>
-          </div>
+          <button class="profile-card profile-recovery-row" type="button" data-open-kns-editor data-profile-kns-owned hidden>
+            <span>Edit KNS Profile</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
 
           <div class="profile-qr-row">
             <button class="profile-qr-button" type="button" data-profile-qr-trigger>
@@ -447,11 +453,6 @@
               <span class="profile-qr-circle" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 18v3"/></svg></span>
               <span>Chatting Address</span>
             </button>
-          </div>
-
-          <div class="profile-qr-card" data-profile-qr-card hidden>
-            <canvas width="512" height="512" data-profile-qr></canvas>
-            <button class="profile-address-button" type="button" data-copy-engine-address><span class="profile-address" data-profile-address>No wallet loaded</span></button>
           </div>
 
           <div class="profile-card profile-dropdown" data-profile-dropdown>
@@ -481,30 +482,14 @@
             </div>
           </div>
 
-          <p class="profile-section-label">About</p>
-          <div class="profile-card">
-            <p class="profile-card-label">Apps</p>
-            <div class="profile-apps-grid">
-              <a class="profile-app-bubble" href="https://kaspa.org" target="_blank" rel="noopener"><span>K</span>kaspa.org</a>
-              <a class="profile-app-bubble" href="https://kaspa.stream" target="_blank" rel="noopener"><span>▶</span>kaspa.stream</a>
-              <a class="profile-app-bubble" href="https://explorer.kaspa.org" target="_blank" rel="noopener"><span>⛓</span>Kaspa explorer</a>
-              <a class="profile-app-bubble" href="https://kasmap.org" target="_blank" rel="noopener"><span>🗺</span>kasmap.org</a>
-              <a class="profile-app-bubble" href="https://kasshi.io" target="_blank" rel="noopener"><span>▶</span>KasShi</a>
-              <a class="profile-app-bubble" href="https://kaspa.news" target="_blank" rel="noopener"><span>📰</span>kaspa.news</a>
-              <a class="profile-app-bubble" href="https://kasplay.fun" target="_blank" rel="noopener"><span>🎮</span>kasplay.fun</a>
-              <a class="profile-app-bubble" href="https://kasmart.org" target="_blank" rel="noopener"><span>🛒</span>kasmart.org</a>
-              <a class="profile-app-bubble" href="https://kasmedia.com" target="_blank" rel="noopener"><span>📺</span>kasmedia.com</a>
-            </div>
-          </div>
-
-          <button class="profile-card profile-gift-row" type="button" data-mockup-action="gift">
-            <span>Gift unavailable</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12v9H4v-9M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7ZM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7Z"/></svg>
+          <button class="profile-card profile-recovery-row" type="button" data-open-apps-screen>
+            <span>Apps</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
           </button>
 
-          <button class="profile-card profile-recovery-row" type="button" data-shell-action="view-recovery">
-            <span>View Seed Phrase</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12l9-9M17 6l3 3M14 9l3 3"/></svg>
+          <button class="profile-card profile-recovery-row" type="button" data-open-help-screen>
+            <span>Help</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.25"/><path d="M9.7 9.4a2.4 2.4 0 0 1 4.66.8c0 1.6-2.36 2-2.36 3.3"/><circle cx="12" cy="16.8" r=".2"/></svg>
           </button>
 
           <button class="profile-card profile-logout-row" type="button" data-shell-action="logout">
@@ -512,8 +497,13 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5.75A1.75 1.75 0 0 0 4 5.75v12.5C4 19.22 4.78 20 5.75 20H10"/><path d="M14 8l4 4-4 4"/><path d="M18 12H9"/></svg>
           </button>
 
+          <p class="profile-section-label">About</p>
           <div class="profile-card profile-about-card">
             <div class="profile-about-row"><strong>Created</strong><span data-profile-created>—</span></div>
+            <div class="profile-about-row"><strong>Version</strong><span data-profile-version>—</span></div>
+            <a class="profile-about-row profile-about-link" href="https://linktr.ee/Kachat_" target="_blank" rel="noopener"><strong>Website</strong><span>linktr.ee/Kachat_</span></a>
+            <a class="profile-about-row profile-about-link" href="mailto:kaspasilver@gmail.com"><strong>Support Email</strong><span>kaspasilver@gmail.com</span></a>
+            <button class="profile-about-row profile-about-link" type="button" data-profile-donate><strong>Donate</strong><span data-profile-donate-label>kachat.kas</span></button>
           </div>
         </div>
       </section>
@@ -639,7 +629,7 @@
               </div>
               <div class="settings-dropdown" data-settings-dropdown>
                 <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
-                  <span class="settings-row-copy"><strong>Menu</strong><small>Choose which tabs appear in your bottom menu.</small></span>
+                  <span class="settings-row-copy"><strong>Customize Dock</strong><small>Choose which tabs appear in your dock.</small></span>
                   <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
                 <div class="settings-dropdown-body" hidden>
@@ -761,9 +751,9 @@
                   <div class="settings-toggle-row"><span><strong>Play sound</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
                   <div class="settings-toggle-row"><span><strong>Vibration</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
                   <p class="field-hint">Per-contact notification overrides live in each chat's info screen.</p>
-                  <button class="settings-dropdown-row" type="button" data-open-photo-quality>Photo Quality</button>
                 </div>
               </div>
+              <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
             </div>
           </section>
 
@@ -780,7 +770,6 @@
             <p class="settings-group-label">Storage</p>
             <div class="settings-list-card">
               <div class="settings-toggle-row"><span><strong>Store encrypted messages locally</strong><small>Required for browser history and future cross-device backup.</small></span><label class="switch-control"><input type="checkbox" data-pref-store-messages checked><span></span></label></div>
-              <div class="settings-toggle-row"><span><strong>Store encrypted messages in iCloud</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle><span></span></label></div>
               <div class="settings-dropdown" data-settings-dropdown>
                 <button class="settings-dropdown-toggle" type="button" data-dropdown-toggle aria-expanded="false">
                   <span class="settings-row-copy"><strong>Message retention</strong></span>
@@ -795,10 +784,18 @@
                 </div>
               </div>
               <div class="settings-list-row settings-info-row"><span class="settings-row-copy"><strong>Local storage used</strong><small data-local-storage-used>Calculating…</small></span></div>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="nextcloud">
+                <span class="settings-hub-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M17.5 18.5h-11a4 4 0 0 1-.7-7.94A5.5 5.5 0 0 1 16.5 9a4.75 4.75 0 0 1 1 9.4z"/></svg></span>
+                <span class="settings-row-copy"><strong>Nextcloud</strong><small>Send large media through your own Nextcloud.</small></span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
             </div>
           </section>
 
-          <section class="settings-group">
+          <!-- Storage sub-screen (iOS Storage > Nextcloud). Excluded from the settings hub;
+               reached via the Nextcloud row on the Storage page. [data-nextcloud-settings]
+               must stay in the DOM permanently — nextcloud.js binds to it at init. -->
+          <section class="settings-group" data-settings-subscreen="nextcloud">
             <p class="settings-group-label">Nextcloud</p>
             <div data-nextcloud-settings></div>
           </section>
@@ -1040,6 +1037,7 @@
           </div>
         </div>
         <p class="create-chat-help">Enter a Kaspa address (kaspa:...) or KNS domain name (e.g., alice.kas)</p>
+        <p class="create-chat-status" data-create-chat-status hidden></p>
         <p class="create-chat-error" data-create-chat-error hidden></p>
       </section>
 
@@ -1500,6 +1498,67 @@
     </div>
   </div>
 
+  <!-- Profile > Apps: Kaspa ecosystem quick links (iOS ProfileAppsView). -->
+  <div class="chatting-address-screen manage-address-screen apps-screen" data-apps-screen hidden role="dialog" aria-modal="true" aria-label="Apps">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-apps-screen aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Apps</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <div class="manage-address-body">
+        <div class="profile-apps-grid apps-screen-grid">
+          <a class="profile-app-bubble" href="https://kaspa.org" target="_blank" rel="noopener"><span>K</span>Kaspa.org</a>
+          <a class="profile-app-bubble" href="https://kaspa.stream" target="_blank" rel="noopener"><span>▶</span>Kaspa Stream</a>
+          <a class="profile-app-bubble" href="https://explorer.kaspa.org" target="_blank" rel="noopener"><span>⛓</span>Kaspa Explorer</a>
+          <a class="profile-app-bubble" href="https://kasmap.org" target="_blank" rel="noopener"><span>🗺</span>KasMap</a>
+          <a class="profile-app-bubble" href="https://kasshi.io" target="_blank" rel="noopener"><span>▶</span>KasShi</a>
+          <a class="profile-app-bubble" href="https://kaspa.news" target="_blank" rel="noopener"><span>📰</span>Kaspa News</a>
+          <a class="profile-app-bubble" href="https://kasplay.fun" target="_blank" rel="noopener"><span>🎮</span>KasPlay</a>
+          <a class="profile-app-bubble" href="https://kasmart.org" target="_blank" rel="noopener"><span>🛒</span>KasMart</a>
+          <a class="profile-app-bubble" href="https://kasmedia.com" target="_blank" rel="noopener"><span>📺</span>KasMedia</a>
+          <a class="profile-app-bubble" href="https://www.kaspalytics.com" target="_blank" rel="noopener"><span>📊</span>Kaspalytics</a>
+          <a class="profile-app-bubble" href="https://kas-smiths.org" target="_blank" rel="noopener"><span>⚒️</span>Kas-Smiths</a>
+          <a class="profile-app-bubble" href="https://t.me/kasparnd" target="_blank" rel="noopener"><span>🔬</span>Kaspa Core R&amp;D</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Profile > Help: every guide in one place (iOS ProfileHelpView). -->
+  <div class="chatting-address-screen manage-address-screen help-screen" data-help-screen hidden role="dialog" aria-modal="true" aria-label="Help">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-help-screen aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Help</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <div class="manage-address-body">
+        <div class="help-guide-list">
+          <button class="help-guide-row" type="button" data-help-welcome>
+            <span class="help-guide-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3z"/><path d="M18.5 13.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2z"/></svg></span>
+            <span class="help-guide-copy"><strong>Welcome Guide</strong><small>The full first-run tour: wallet, chats, payments and more.</small></span>
+            <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <button class="help-guide-row" type="button" data-help-kns>
+            <span class="help-guide-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.2"/><circle cx="8.6" cy="11" r="2"/><path d="M5.8 16c.6-1.5 1.6-2.2 2.8-2.2s2.2.7 2.8 2.2"/><path d="M14 9.6h4.4M14 12.6h4.4"/></svg></span>
+            <span class="help-guide-copy"><strong>KNS Profile Setup Guide</strong><small>Set up your KNS domain, avatar, banner and bio step by step.</small></span>
+            <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <button class="help-guide-row" type="button" data-help-dock>
+            <span class="help-guide-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="15.5" width="18" height="5" rx="2"/><path d="M12 3.5v8M8.5 8l3.5 3.5L15.5 8"/></svg></span>
+            <span class="help-guide-copy"><strong>Dock Guide</strong><small>What's new in 4.0: the auto-hiding dock and how to make it yours.</small></span>
+            <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="chatting-address-screen manage-address-screen" data-manage-address-screen hidden role="dialog" aria-modal="true" aria-label="Manage Address">
     <div class="manage-address-card">
       <div class="manage-address-view" data-manage-view="list">
@@ -1909,7 +1968,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=183"></script>
+  <script type="module" src="./ui/app.js?v=192"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

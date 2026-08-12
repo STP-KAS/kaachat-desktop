@@ -742,6 +742,12 @@ function updateMeter(input, meter, submit = null) {
 }
 
 function openComposer(quoteTarget = null) {
+  // Posting costs KAS — with a confirmed-zero chatting balance, show the funding
+  // popup (QR + address + copy) instead of a composer that could never submit.
+  if (deps.isChattingBalanceZero?.()) {
+    deps.showFundingGate?.();
+    return;
+  }
   composerQuoteTarget = quoteTarget;
   composerTitle.textContent = quoteTarget ? "Quote Post" : "New Post";
   composerInput.value = "";
@@ -1175,6 +1181,10 @@ export function initKaPosts(dependencies) {
 
   replyInput?.addEventListener("input", () => updateMeter(replyInput, replyMeter));
   replySend?.addEventListener("click", () => {
+    if (deps.isChattingBalanceZero?.()) {
+      deps.showFundingGate?.();
+      return;
+    }
     const text = replyInput.value.trim();
     const topId = threadStack[threadStack.length - 1];
     const target = (replyTargetId ? findPost(replyTargetId) : null) || (topId ? findPost(topId) : null);

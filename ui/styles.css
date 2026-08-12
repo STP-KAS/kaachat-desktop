@@ -321,15 +321,18 @@ button { cursor: pointer; }
   z-index: 1500;
   background: rgba(4,6,8,.72);
   display: flex;
-  align-items: stretch;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
 }
 
 .account-overlay-card {
-  width: min(100%, 480px);
-  height: 100%;
+  width: min(100%, 560px);
+  height: min(100%, 86vh);
   background: linear-gradient(180deg, #12171d, #0d1116);
-  border-left: 1px solid rgba(98,244,208,.16);
+  border: 1px solid rgba(98,244,208,.16);
+  border-radius: 24px;
+  box-shadow: 0 30px 90px rgba(0,0,0,.58), 0 0 42px rgba(98,244,208,.06);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1042,7 +1045,9 @@ button { cursor: pointer; }
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  /* Above the Settings overlay (z 1500) — folder/file pickers opened FROM Settings were
+     rendering behind it at the old z 20. Modals are always the topmost layer. */
+  z-index: 2000;
   display: grid;
   place-items: center;
   padding: 22px;
@@ -1216,7 +1221,12 @@ button { cursor: pointer; }
   border-radius: 22px;
   background: var(--surface-1);
   box-shadow: 0 14px 34px rgba(0,0,0,.18);
+  transition: margin-bottom .28s cubic-bezier(.2,.9,.3,1); /* mirrors the dock's reveal easing */
 }
+/* While the dock is revealed it floats over the bottom ~90px of the window — lift the
+   message composer clear of it, then settle back as the dock tucks away (same treatment
+   as the Cold Storage sticky action bars). */
+body:has(.sidebar-tabbar:not(.dock-hidden)) .composer { margin-bottom: 96px; }
 
 .composer-input {
   min-width: 0;
@@ -5169,6 +5179,10 @@ body.session-logged-out [data-account-rename-modal] {
 /* KaPosts social layer: panels, popovers, profile hero, notification rows */
 .kaposts-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .kaposts-panel-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+/* Flex children shrink by default — the profile hero (overflow:hidden) was getting compressed
+   by a tall feed below it, clipping the Following/Followers row off its bottom edge. Panel
+   content must keep natural height and scroll instead. */
+.kaposts-panel-body > * { flex-shrink: 0; }
 
 .kaposts-popover {
   position: absolute; z-index: 70;
@@ -5312,37 +5326,139 @@ body.session-logged-out [data-account-rename-modal] {
 .broadcast-failed { color: #ff6b6b; }
 .broadcast-message-body { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
 
-/* Portfolio / Cold Storage / Swaps (4.0 desktop) */
-.portfolio-picker { display: flex; flex-wrap: wrap; gap: 8px; }
-.portfolio-chip {
-  border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px;
-  background: var(--surface-1); color: var(--text); font-size: 13px; font-weight: 650; cursor: pointer;
+/* Broadcast rooms reuse the 1:1 reaction bar/pill visuals — only the anchoring
+   differs (mine = right-aligned bubbles, others = left). */
+.broadcast-message { position: relative; }
+.broadcast-message .message-reaction-bar { left: 0; }
+.broadcast-message.mine .message-reaction-bar { left: auto; right: 0; }
+.broadcast-message:hover .message-reaction-bar,
+.broadcast-message .message-reaction-bar:hover { opacity: 1; pointer-events: auto; }
+.broadcast-message .message-reaction-pill { right: 8px; }
+.broadcast-message.mine .message-reaction-pill { right: auto; left: 8px; }
+/* Chips hang below the bubble — leave room so they don't overlap the next row. */
+.broadcast-message.has-reactions { margin-bottom: 8px; }
+.message-reaction-pill-entry.active { cursor: pointer; }
+
+/* Broadcast voice notes (visible only while Nextcloud media send is active) */
+.broadcast-voice-btn { flex: 0 0 auto; }
+.voice-recording-panel [data-broadcast-voice-time] {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  flex: 0 0 auto;
 }
-.portfolio-chip.active { border-color: var(--kaspa); color: var(--kaspa-ink); font-weight: 800; }
-.portfolio-chip-add { font-weight: 800; }
-.portfolio-chip-danger { color: #ff6b6b; }
-.portfolio-summary-value { font-size: 30px; font-weight: 850; letter-spacing: -.01em; }
-.portfolio-summary-sub { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13px; margin-top: 4px; }
-.portfolio-summary-sub .gain { color: #4cd964; }
-.portfolio-summary-sub .loss { color: #ff6b6b; }
-.portfolio-chart { width: 100%; height: 130px; display: block; }
+
+/* Portfolio / Cold Storage / Swaps (4.0 desktop) */
+/* Robinhood-style picker cards (iOS PortfolioPickerHeader) */
+.portfolio-cards { display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 8px; }
+.portfolio-card {
+  position: relative; flex: 0 0 auto; width: 150px; text-align: left;
+  border: 1px solid var(--line); border-radius: 16px; padding: 12px;
+  background: var(--surface-1); color: var(--text); cursor: pointer;
+}
+.portfolio-card.active { border-color: var(--kaspa); box-shadow: 0 0 0 1px var(--kaspa); }
+.portfolio-card-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.portfolio-card-name { font-size: 13px; font-weight: 750; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.portfolio-card.active .portfolio-card-name { color: var(--text); }
+.portfolio-card-menu-btn {
+  border: none; background: transparent; color: var(--muted); font-size: 15px; font-weight: 800;
+  cursor: pointer; padding: 0 2px; line-height: 1;
+}
+.portfolio-card-value { font-size: 18px; font-weight: 850; letter-spacing: -.01em; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.portfolio-card-change { font-size: 12px; font-weight: 750; margin-top: 3px; }
+.portfolio-card-change.muted { color: var(--muted); }
+.portfolio-card-actions {
+  position: absolute; top: 34px; right: 8px; z-index: 5; display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3); overflow: hidden; min-width: 110px;
+}
+.portfolio-card-actions button {
+  border: none; background: transparent; color: var(--text); font: inherit; font-size: 13px;
+  text-align: left; padding: 8px 12px; cursor: pointer;
+}
+.portfolio-card-actions button:hover { background: var(--panel-3); }
+.portfolio-card-actions button.danger { color: #ff6b6b; }
+.portfolio-card-add {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  width: 90px; border-style: dashed; color: var(--muted); font-size: 12px; font-weight: 700;
+  background: transparent;
+}
+.portfolio-card-add-plus { font-size: 20px; font-weight: 800; color: var(--kaspa-ink); }
+/* Summary card (iOS summaryCard) */
+.portfolio-summary-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.portfolio-summary-price { font-size: 27px; font-weight: 850; letter-spacing: -.01em; margin-top: 2px; }
+.portfolio-summary-24h { font-size: 13.5px; font-weight: 750; margin-top: 6px; white-space: nowrap; }
+.portfolio-summary-24h .muted, .portfolio-summary .muted { color: var(--muted); font-weight: 600; }
+.portfolio-summary-grid { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.portfolio-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.portfolio-stat.right { text-align: right; align-items: flex-end; }
+.portfolio-stat-label { color: var(--muted); font-size: 12.5px; }
+.portfolio-stat-value { font-size: 16px; font-weight: 800; }
+.portfolio-summary-divider { border-top: 1px solid var(--line); margin-top: 12px; }
+.portfolio-summary .gain, .portfolio-card-change.gain, .portfolio-summary-24h.gain { color: #4cd964; }
+.portfolio-summary .loss, .portfolio-card-change.loss, .portfolio-summary-24h.loss { color: #ff6b6b; }
+/* Charts + scrub crosshair */
+.portfolio-chart-wrap { position: relative; cursor: crosshair; touch-action: none; }
+.portfolio-chart { width: 100%; height: 100%; display: block; }
+.portfolio-scrub-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--muted); opacity: .6; pointer-events: none; }
+.portfolio-scrub-dot { position: absolute; width: 9px; height: 9px; border-radius: 50%; transform: translate(-4px, -4px); pointer-events: none; box-shadow: 0 0 0 2px var(--surface-1); }
 .portfolio-chart-empty { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
-.portfolio-ranges { display: flex; gap: 6px; margin-top: 8px; }
+.portfolio-price-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.portfolio-price-row .profile-card-label { margin: 0; }
+.portfolio-ranges { display: flex; gap: 6px; }
 .portfolio-range { border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; padding: 4px 10px; cursor: pointer; }
 .portfolio-range.active { color: var(--kaspa-ink); border-color: var(--kaspa); }
-.portfolio-add-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.portfolio-add-form select, .portfolio-add-form input {
-  border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1);
-  color: var(--text); padding: 9px 11px; font: inherit; font-size: 13px;
+.portfolio-value-readout { font-size: 19px; font-weight: 800; margin: 2px 0 8px; }
+/* Transactions ledger (iOS PortfolioTransactionsView) */
+.portfolio-tx-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.portfolio-tx-header .profile-card-label { margin: 0; }
+.portfolio-tx-header-actions { position: relative; display: flex; align-items: center; gap: 14px; }
+.portfolio-menu {
+  position: absolute; top: 24px; right: 0; z-index: 6; display: flex; flex-direction: column;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3); overflow: hidden; min-width: 160px;
 }
-.portfolio-add-form input[data-portfolio-tx-amount] { width: 120px; }
-.portfolio-add-form input[data-portfolio-tx-fiat] { width: 110px; }
-.portfolio-add-form input[data-portfolio-tx-notes] { flex: 1; min-width: 120px; }
-.portfolio-tx-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.portfolio-menu button {
+  border: none; background: transparent; color: var(--text); font: inherit; font-size: 13px;
+  text-align: left; padding: 9px 12px; cursor: pointer; white-space: nowrap;
+}
+.portfolio-menu button:hover { background: var(--panel-3); }
+.portfolio-tx-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 0;
+  border-top: 1px solid var(--line); font-size: 13px; cursor: pointer;
+}
+.portfolio-tx-icon {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 14px; font-weight: 850;
+}
+.portfolio-tx-icon.buy { background: rgba(76, 217, 100, .16); color: #4cd964; }
+.portfolio-tx-icon.sell { background: rgba(255, 107, 107, .16); color: #ff6b6b; }
+.portfolio-tx-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .portfolio-tx-type { font-weight: 800; }
 .portfolio-tx-type.buy { color: #4cd964; }
 .portfolio-tx-type.sell { color: #ff6b6b; }
-.portfolio-tx-date, .portfolio-tx-notes { color: var(--muted); font-size: 12px; }
+.portfolio-tx-warn { font-size: 12px; }
+.portfolio-tx-date, .portfolio-tx-notes { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.portfolio-tx-amounts { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.portfolio-tx-amount { font-weight: 750; white-space: nowrap; }
+.portfolio-tx-fiat { color: var(--muted); font-size: 12px; }
+.portfolio-tx-delete {
+  border: none; background: transparent; color: var(--muted); font-size: 16px; font-weight: 800;
+  cursor: pointer; padding: 2px 6px; line-height: 1;
+}
+.portfolio-tx-delete:hover { color: #ff6b6b; }
+/* Transaction editor + address import modals */
+.portfolio-editor-modal { max-width: 420px; }
+.portfolio-editor-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.portfolio-editor-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.portfolio-editor-field select, .portfolio-editor-field input {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1);
+  color: var(--text); padding: 9px 11px; font: inherit; font-size: 13.5px;
+}
+.portfolio-editor-hint { color: var(--muted); font-size: 12px; min-height: 14px; margin: -4px 0 0; }
+.portfolio-editor-actions { display: flex; justify-content: space-between; gap: 10px; }
+.portfolio-editor-actions .primary-button { margin-left: auto; }
+.portfolio-import-note { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin: 0; }
+.portfolio-import-progress { color: var(--kaspa-ink); font-size: 12.5px; min-height: 15px; margin: 0; }
 .swap-disclaimer-text { color: var(--muted); font-size: 13.5px; line-height: 1.5; margin: 0 0 10px; }
 .swap-terms-check { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; font-size: 13px; cursor: pointer; }
 .swap-terms-check input { margin-top: 2px; accent-color: var(--kaspa); }
@@ -5438,6 +5554,39 @@ body.session-logged-out [data-account-rename-modal] {
   font-size: 14px; font-weight: 800; cursor: pointer; padding: 4px 2px 12px;
 }
 .settings-hub-back svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Hub row icons (iOS settingsCategoryRow tint) — the leading icon is accent
+   colored; used both by generated hub rows and static rows like Storage's
+   Nextcloud sub-screen row. */
+.settings-hub-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; flex: 0 0 auto; }
+.settings-hub-icon svg,
+.settings-hub-row .settings-hub-icon svg { width: 18px; height: 18px; fill: none; stroke: var(--kaspa-ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.settings-hub-label { flex: 1; min-width: 0; }
+.settings-hub-row.danger .settings-hub-icon svg { stroke: #ff6b6b; }
+
+/* Profile > About card (iOS aboutSection: Created / Version / Website /
+   Support Email / Donate). */
+.profile-about-card { display: flex; flex-direction: column; gap: 13px; }
+.profile-about-link { width: 100%; margin: 0; padding: 0; border: 0; background: transparent; font: inherit; cursor: pointer; text-decoration: none; }
+.profile-about-link:hover strong { color: var(--kaspa-ink); }
+
+/* Profile > Apps screen: same bubble grid, now on its own full-screen card. */
+.apps-screen-grid { padding: 8px 10px 20px; }
+
+/* Profile > Help screen: guide rows (iOS ProfileHelpView.helpRow). */
+.help-guide-list { display: flex; flex-direction: column; padding: 4px 4px 14px; }
+.help-guide-row {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; padding: 12px; border: 0; border-radius: 14px;
+  background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.help-guide-row:hover { background: var(--surface-1); }
+.help-guide-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; flex: 0 0 auto; }
+.help-guide-icon svg { width: 22px; height: 22px; fill: none; stroke: var(--kaspa-ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.help-guide-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.help-guide-copy strong { font-size: 14px; font-weight: 700; }
+.help-guide-copy small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.help-guide-row .settings-dropdown-chevron { width: 16px; height: 16px; flex: 0 0 auto; }
 
 /* X-style: the whole cell is a click target for its thread */
 .kaposts-cell.openable { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
@@ -5673,6 +5822,34 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
 .cold-send-txid { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--card-border, var(--line)); border-radius: 12px; text-decoration: none; color: inherit; }
 .cold-send-txid span { font-size: 12px; color: var(--muted); }
 .cold-send-txid code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--kaspa-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Zero-balance chat gate: funding card above a disabled composer */
+.chat-funding-gate {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  margin-top: 12px; padding: 18px 16px;
+  border: 1px solid var(--card-border, var(--line)); border-radius: 18px;
+  background: var(--surface-1, rgba(255,255,255,.05));
+  text-align: center;
+}
+.chat-funding-gate strong { font-size: 14.5px; }
+.chat-funding-gate canvas { display: block; width: 180px; height: 180px; border-radius: 12px; background: #fff; padding: 8px; box-sizing: content-box; }
+.chat-funding-gate-address {
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; word-break: break-all; max-width: 420px;
+}
+.chat-funding-gate-address:hover { color: var(--text); }
+.composer-gated { opacity: .5; pointer-events: none; }
+.funding-gate-backdrop { z-index: 460; }
+.funding-gate-modal { width: min(100%, 420px); }
+.funding-gate-modal-body { margin-top: 0; border: 0; background: transparent; padding: 6px 0 0; }
+
+/* Create Chat live address-validity line (matches iOS's valid/resolved/invalid states) */
+.create-chat-status { display: flex; flex-direction: column; gap: 3px; margin: 6px 2px 0; font-size: 12.5px; }
+.create-chat-status-good { color: #30d158; font-weight: 650; }
+.create-chat-status-bad { color: #ff6b60; font-weight: 650; }
+.create-chat-status-muted { color: var(--muted); }
+.create-chat-status-mono { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; word-break: break-all; }
 
 /* Nextcloud (connect card, folder browser, photo grid) */
 .nc-connect-card { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
