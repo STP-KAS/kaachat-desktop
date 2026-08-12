@@ -31,6 +31,12 @@ function nextcloudProxy() {
         // The browser's origin/referer would confuse some reverse-proxy setups — drop them.
         delete headers.origin;
         delete headers.referer;
+        // Opt-in "soft 404": APIs that use 404 to mean "not found, and that's normal" (KNS
+        // primary-name lookups for addresses without domains) make the browser console scream
+        // red for every answer. When the caller sends x-proxy-soft-404, an upstream 404 is
+        // returned as 200 with x-upstream-status: 404 so the client can still detect it.
+        const soft404 = headers["x-proxy-soft-404"] === "1";
+        delete headers["x-proxy-soft-404"];
         const client = origin.protocol === "http:" ? http : https;
         const upstream = client.request(
           {
@@ -42,7 +48,10 @@ function nextcloudProxy() {
             headers,
           },
           (upstreamRes) => {
-            res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+            const mask404 = soft404 && upstreamRes.statusCode === 404;
+            const responseHeaders = { ...upstreamRes.headers };
+            if (mask404) responseHeaders["x-upstream-status"] = "404";
+            res.writeHead(mask404 ? 200 : (upstreamRes.statusCode || 502), responseHeaders);
             upstreamRes.pipe(res);
           },
         );

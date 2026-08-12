@@ -112,12 +112,16 @@ async function fetchJson(url, { method = "GET", body = null } = {}) {
   try {
     const response = await fetch(url, {
       method,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      // x-proxy-soft-404: the dev-server proxy answers upstream 404s (the API's normal "no
+      // domain for this address") as 200 + x-upstream-status, keeping the console clean.
+      headers: { ...(body ? { "Content-Type": "application/json" } : {}), "x-proxy-soft-404": "1" },
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
       cache: "no-store",
     });
-    if (response.status === 404) return { ok: true, notFound: true, status: 404, json: null };
+    if (response.status === 404 || response.headers.get("x-upstream-status") === "404") {
+      return { ok: true, notFound: true, status: 404, json: null };
+    }
     const text = await response.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
