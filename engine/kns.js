@@ -109,7 +109,15 @@ async function fetchJson(url, { method = "GET", body = null } = {}) {
 
 function apiUrl(baseUrl, path) {
   const base = String(baseUrl || KNS_DEFAULT_MAINNET_URL).replace(/\/+$/, "");
-  return `${base}${path}`;
+  // Route through the dev server's same-origin /nc-proxy passthrough (vite.config.mjs — it's
+  // origin-generic, not Nextcloud-specific): the KNS API omits CORS headers on some endpoints
+  // (e.g. /domain/<id>/profile), which the browser hard-blocks when fetched directly.
+  try {
+    const url = new URL(base);
+    return `/nc-proxy/${encodeURIComponent(url.origin)}${url.pathname.replace(/\/+$/, "")}${path}`;
+  } catch {
+    return `${base}${path}`;
+  }
 }
 
 // --- forward resolution: "alice.kas" -> address ----------------------------

@@ -7,5 +7,12 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+  event.respondWith(
+    fetch(event.request).catch(async () => {
+      // caches.match resolves undefined on a miss — respondWith(undefined) throws
+      // "Failed to convert value to 'Response'", so fall through to a network error.
+      const cached = await caches.match(event.request);
+      return cached || Response.error();
+    }),
+  );
 });
