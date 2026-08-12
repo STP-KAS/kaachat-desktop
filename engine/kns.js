@@ -84,7 +84,29 @@ export function looksLikeDomain(input) {
 
 // --- low-level HTTP ---------------------------------------------------------
 
+// Global request pacing: the KNS API rate-limits bursts hard (429) — e.g. the cold pass after
+// a phone-backup restore fires a lookup per contact at once. Cap the in-flight count and space
+// successive requests so the whole app stays under the limit.
+const KNS_MAX_CONCURRENT = 3;
+const KNS_REQUEST_GAP_MS = 250;
+let knsActiveRequests = 0;
+const knsRequestWaiters = [];
+
+async function acquireKnsSlot() {
+  if (knsActiveRequests >= KNS_MAX_CONCURRENT) {
+    await new Promise((resolve) => knsRequestWaiters.push(resolve));
+  }
+  knsActiveRequests += 1;
+}
+
+function releaseKnsSlot() {
+  knsActiveRequests -= 1;
+  const next = knsRequestWaiters.shift();
+  if (next) setTimeout(next, KNS_REQUEST_GAP_MS);
+}
+
 async function fetchJson(url, { method = "GET", body = null } = {}) {
+  await acquireKnsSlot();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -104,6 +126,7 @@ async function fetchJson(url, { method = "GET", body = null } = {}) {
     return { ok: false, notFound: false, status: 0, json: null, error };
   } finally {
     clearTimeout(timer);
+    releaseKnsSlot();
   }
 }
 
@@ -279,7 +302,13 @@ async function fetchAddressInfoWork(address, baseUrl) {
   const hadError = primary.hadError || allDomainsResult.hadError;
   failureCounts.set(address, hadError ? (failureCounts.get(address) || 0) + 1 : 0);
 
-  if (hadError && domainCache[address]) return domainCache[address];
+  if (hadError) {
+    // Never cache a result computed from a failed/rate-limited (429) fetch — the empty answer
+    // would be recorded as "this address has no domain" and poison the cache permanently.
+    // Returning an uncached transient object leaves peek() empty so a later pass retries.
+    return domainCache[address]
+      || { address, primaryDomain: null, primaryInscriptionId: null, allDomains: [], explicitPrimaryDomain: null, explicitPrimaryInscriptionId: null, fetchedAt: 0 };
+  }
 
   const allDomains = allDomainsResult.domains;
   if (!allDomains.length && !primary.domain) {
@@ -389,13 +418,17 @@ async function fetchAddressProfileWork(address, baseUrl) {
   }
 
   profileFailureCounts.set(address, hadError ? (profileFailureCounts.get(address) || 0) + 1 : 0);
+  if (hadError) {
+    // Same no-poison rule as the domain cache: a 429'd profile fetch must not be recorded as
+    // "no profile" (it would blank this contact's avatar until the cache is cleared).
+    return profileCache[address] || { address, domainName: null, assetId: null, profile: null, fetchedAt: 0 };
+  }
   if (!target) {
     const info = { address, domainName: null, assetId: null, profile: null, fetchedAt: Date.now() };
     profileCache[address] = info;
     saveJsonMap(PROFILE_CACHE_KEY, profileCache);
     return info;
   }
-  if (hadError && profileCache[address]) return profileCache[address];
 
   const info = {
     address,
