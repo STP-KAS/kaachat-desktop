@@ -1701,14 +1701,61 @@ function reloadStateFromBrowserStorage() {
   return state;
 }
 
-function persistState() {
+function persistStateWrites({ includeBackup = true } = {}) {
   const serialized = JSON.stringify(state);
   localStorage.setItem(accountScopedKey(STORAGE_KEY), serialized);
-  localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY), serialized);
+  if (includeBackup) localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY), serialized);
   const history = Object.fromEntries((state.conversations || []).map((entry) => [entry.id, entry.messages || []]));
   localStorage.setItem(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(history));
   const verified = localStorage.getItem(accountScopedKey(STORAGE_KEY));
   if (verified !== serialized) throw new Error("Local conversation storage verification failed.");
+}
+
+/** Oldest-first trim of messages imported from a phone backup (transport "phone-backup"),
+ *  keeping at most `keepPerConversation` per chat — live desktop messages are never dropped. */
+function trimPhoneBackupMessages(keepPerConversation) {
+  let removed = 0;
+  for (const entry of state.conversations || []) {
+    const messages = entry.messages || [];
+    const phone = messages.filter((m) => m.transport === "phone-backup");
+    if (phone.length <= keepPerConversation) continue;
+    const drop = new Set(
+      phone
+        .slice()
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+        .slice(0, phone.length - keepPerConversation)
+        .map((m) => m.id || m.txid),
+    );
+    entry.messages = messages.filter((m) => !drop.has(m.id || m.txid));
+    removed += drop.size;
+  }
+  return removed;
+}
+
+let storageQuotaToastShown = false;
+
+/** A full localStorage (e.g. right after a large phone-backup import) must never crash a sync —
+ *  the uncaught QuotaExceededError here was aborting app startup, leaving screens unrendered.
+ *  Recovery order: drop the redundant full-state backup copy (halves the footprint), then trim
+ *  phone-backup messages oldest-first in stages, retrying the save after each step. */
+function persistState() {
+  try {
+    persistStateWrites();
+    return;
+  } catch { /* quota — reclaim space below and retry */ }
+  try { localStorage.removeItem(accountScopedKey(STATE_BACKUP_KEY)); } catch { /* ignore */ }
+  for (const keep of [100, 25, 0]) {
+    trimPhoneBackupMessages(keep);
+    try {
+      persistStateWrites({ includeBackup: false });
+      if (!storageQuotaToastShown) {
+        storageQuotaToastShown = true;
+        try { showCopyToast("Browser storage was full — trimmed the oldest phone-backup messages to keep saving."); } catch { /* early init */ }
+      }
+      return;
+    } catch { /* still full — trim harder */ }
+  }
+  throw new Error("Local storage is full — could not save conversation state.");
 }
 
 function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
