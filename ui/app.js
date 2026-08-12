@@ -6,6 +6,14 @@ import { initColdStorage, refreshColdStorage, resetColdStorageForAccount } from 
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
 import {
+  initChatStorage,
+  setChatStorageFlushErrorHandler,
+  chatStorageGetSync,
+  chatStorageSetSync,
+  chatStorageRemoveSync,
+  flushChatStorage,
+} from "./storage.js";
+import {
   MESSAGE_STATUSES,
   createConversation,
   createMessage,
@@ -103,6 +111,36 @@ function accountScopedKey(baseKey, address = engine.address) {
   const clean = String(address || "").trim();
   return clean ? `${ACCOUNT_DATA_PREFIX}:${clean}:${baseKey}` : baseKey;
 }
+
+// ---------------------------------------------------------------------------
+// Chat state persists in IndexedDB (ui/storage.js): localStorage's ~5MB quota
+// cannot hold a large phone-backup import, IndexedDB's device-proportional
+// quota can. The top-level await below warms storage.js's synchronous cache
+// BEFORE any state read in this module — including the first render at the
+// bottom of the file — so every existing restore path (loadStoredState,
+// buildFullyRestoredState, reloadStateFromBrowserStorage, account switches via
+// activateWalletDataScope, backup imports) stays synchronous and reads the
+// already-loaded data. On the first run after this update, chat-state keys
+// still in localStorage (all accounts) are migrated into IndexedDB and deleted
+// from localStorage, freeing the quota; every OTHER localStorage key
+// (settings, dock prefs, caches, nextcloud, portfolio…) stays where it is.
+// If IndexedDB is unavailable (e.g. private browsing), storage.js passes
+// through to localStorage and the legacy quota-aware persistState() fallback
+// below still applies.
+// ---------------------------------------------------------------------------
+const CHAT_STORAGE_BASE_KEYS = [STORAGE_KEY, STATE_BACKUP_KEY, MESSAGE_HISTORY_KEY];
+function isChatStorageKey(key) {
+  return CHAT_STORAGE_BASE_KEYS.some(
+    (base) => key === base || (key.startsWith(`${ACCOUNT_DATA_PREFIX}:`) && key.endsWith(`:${base}`)),
+  );
+}
+await initChatStorage({
+  shouldMigrateKey: isChatStorageKey,
+  log: (line) => { try { appendEngineLog(line); } catch { console.log(line); } },
+});
+setChatStorageFlushErrorHandler((error) => {
+  try { handleChatStorageFlushError(error); } catch (fallbackError) { console.error(fallbackError); }
+});
 
 let state = loadStoredState();
 
@@ -1565,7 +1603,7 @@ function migrateLegacyContacts(legacyContacts) {
 
 function loadStoredState() {
   try {
-    const raw = localStorage.getItem(accountScopedKey(STORAGE_KEY));
+    const raw = chatStorageGetSync(accountScopedKey(STORAGE_KEY));
     if (raw) {
       const parsed = JSON.parse(raw);
       const contacts = Array.isArray(parsed?.contacts) ? parsed.contacts.map(normalizeContact).filter((contact) => contact.address) : [];
@@ -1586,7 +1624,7 @@ function loadStoredState() {
       if (!Array.isArray(parsed)) continue;
       const migrated = migrateLegacyContacts(parsed);
       if (migrated.contacts.length > 0) {
-        localStorage.setItem(accountScopedKey(STORAGE_KEY), JSON.stringify(migrated));
+        chatStorageSetSync(accountScopedKey(STORAGE_KEY), JSON.stringify(migrated));
         return migrated;
       }
     } catch {
@@ -1599,7 +1637,7 @@ function loadStoredState() {
 
 function loadStoredMessageHistory() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(accountScopedKey(MESSAGE_HISTORY_KEY)) || "{}");
+    const parsed = JSON.parse(chatStorageGetSync(accountScopedKey(MESSAGE_HISTORY_KEY)) || "{}");
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -1637,7 +1675,7 @@ function hydrateConversationMessages(conversationEntry) {
   if (Array.isArray(history[conversationEntry.id])) candidates.push(...history[conversationEntry.id]);
 
   try {
-    const backup = JSON.parse(localStorage.getItem(accountScopedKey(STATE_BACKUP_KEY)) || "null");
+    const backup = JSON.parse(chatStorageGetSync(accountScopedKey(STATE_BACKUP_KEY)) || "null");
     const backupConversation = Array.isArray(backup?.conversations)
       ? backup.conversations.find((entry) => String(entry?.id) === String(conversationEntry.id))
       : null;
@@ -1702,12 +1740,17 @@ function reloadStateFromBrowserStorage() {
 }
 
 function persistStateWrites({ includeBackup = true } = {}) {
+  // In IndexedDB mode these set calls update the in-memory cache immediately
+  // and flush to disk on a 300ms debounce (coalescing bursts of persistState
+  // calls into one write of the latest snapshot). In localStorage-fallback
+  // mode they write synchronously and can throw QuotaExceededError, which
+  // persistState() below still handles.
   const serialized = JSON.stringify(state);
-  localStorage.setItem(accountScopedKey(STORAGE_KEY), serialized);
-  if (includeBackup) localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY), serialized);
+  chatStorageSetSync(accountScopedKey(STORAGE_KEY), serialized);
+  if (includeBackup) chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
   const history = Object.fromEntries((state.conversations || []).map((entry) => [entry.id, entry.messages || []]));
-  localStorage.setItem(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(history));
-  const verified = localStorage.getItem(accountScopedKey(STORAGE_KEY));
+  chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(history));
+  const verified = chatStorageGetSync(accountScopedKey(STORAGE_KEY));
   if (verified !== serialized) throw new Error("Local conversation storage verification failed.");
 }
 
@@ -1734,16 +1777,18 @@ function trimPhoneBackupMessages(keepPerConversation) {
 
 let storageQuotaToastShown = false;
 
-/** A full localStorage (e.g. right after a large phone-backup import) must never crash a sync —
- *  the uncaught QuotaExceededError here was aborting app startup, leaving screens unrendered.
- *  Recovery order: drop the redundant full-state backup copy (halves the footprint), then trim
- *  phone-backup messages oldest-first in stages, retrying the save after each step. */
+/** In IndexedDB mode persistStateWrites never throws (quota is device-proportional and the
+ *  write is async) — the catch blocks below only ever run in the localStorage FALLBACK mode
+ *  (IndexedDB unavailable, e.g. private browsing), where a full localStorage right after a
+ *  large phone-backup import must never crash a sync. Fallback recovery order: drop the
+ *  redundant full-state backup copy (halves the footprint), then trim phone-backup messages
+ *  oldest-first in stages, retrying the save after each step. */
 function persistState() {
   try {
     persistStateWrites();
     return;
   } catch { /* quota — reclaim space below and retry */ }
-  try { localStorage.removeItem(accountScopedKey(STATE_BACKUP_KEY)); } catch { /* ignore */ }
+  try { chatStorageRemoveSync(accountScopedKey(STATE_BACKUP_KEY)); } catch { /* ignore */ }
   for (const keep of [100, 25, 0]) {
     trimPhoneBackupMessages(keep);
     try {
@@ -1756,6 +1801,35 @@ function persistState() {
     } catch { /* still full — trim harder */ }
   }
   throw new Error("Local storage is full — could not save conversation state.");
+}
+
+let chatStorageFlushErrorNotified = false;
+
+/** Emergency path, registered with setChatStorageFlushErrorHandler at module top: a debounced
+ *  IndexedDB write FAILED after in-memory state was already updated. storage.js re-queues the
+ *  batch for the next flush; additionally push a copy into localStorage via the legacy
+ *  quota-aware trimming path so a crash right now cannot lose everything since the last
+ *  successful flush. (trimPhoneBackupMessages only mutates state here, in this failure path —
+ *  exactly like the old localStorage-quota behavior.) */
+function handleChatStorageFlushError(error) {
+  appendEngineLog(`IndexedDB save failed (${error?.message || error}) — writing localStorage fallback copy.`);
+  if (!chatStorageFlushErrorNotified) {
+    chatStorageFlushErrorNotified = true;
+    try { showCopyToast("Saving chats to IndexedDB failed — using localStorage fallback."); } catch { /* early init */ }
+  }
+  const writeLocal = (includeBackup) => {
+    const serialized = JSON.stringify(state);
+    localStorage.setItem(accountScopedKey(STORAGE_KEY), serialized);
+    if (includeBackup) localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY), serialized);
+    const history = Object.fromEntries((state.conversations || []).map((entry) => [entry.id, entry.messages || []]));
+    localStorage.setItem(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(history));
+  };
+  try { writeLocal(true); return; } catch { /* quota — trim and retry */ }
+  for (const keep of [100, 25, 0]) {
+    trimPhoneBackupMessages(keep);
+    try { writeLocal(false); return; } catch { /* still full — trim harder */ }
+  }
+  appendEngineLog("localStorage fallback copy also failed — conversation state is only in memory.");
 }
 
 function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
@@ -1775,14 +1849,14 @@ function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
   }
 
   const scopedStateKey = accountScopedKey(STORAGE_KEY, clean);
-  if (migrateLegacy && !localStorage.getItem(scopedStateKey)) {
-    const legacy = localStorage.getItem(STORAGE_KEY);
+  if (migrateLegacy && !chatStorageGetSync(scopedStateKey)) {
+    const legacy = chatStorageGetSync(STORAGE_KEY);
     if (legacy) {
-      localStorage.setItem(scopedStateKey, legacy);
-      const legacyBackup = localStorage.getItem(STATE_BACKUP_KEY);
-      const legacyHistory = localStorage.getItem(MESSAGE_HISTORY_KEY);
-      if (legacyBackup) localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY, clean), legacyBackup);
-      if (legacyHistory) localStorage.setItem(accountScopedKey(MESSAGE_HISTORY_KEY, clean), legacyHistory);
+      chatStorageSetSync(scopedStateKey, legacy);
+      const legacyBackup = chatStorageGetSync(STATE_BACKUP_KEY);
+      const legacyHistory = chatStorageGetSync(MESSAGE_HISTORY_KEY);
+      if (legacyBackup) chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY, clean), legacyBackup);
+      if (legacyHistory) chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY, clean), legacyHistory);
       appendEngineLog(`Migrated existing chats into wallet scope ${shortAddress(clean)}.`);
     }
   }
@@ -8027,12 +8101,13 @@ function appendIncomingOrReactionMessage(conversationEntry, message) {
 // which is NOT the desktop backup format. Unlike importBackupPayload (which
 // REPLACES local state), this MERGES into the existing desktop conversations:
 // find-or-create per contact address, dedupe by txid, reactions go through the
-// same reactionsByTxId store as live messages, and base64 voice bodies /
-// oversized payloads become small placeholders so a multi-megabyte archive
-// can't blow the localStorage quota.
+// same reactionsByTxId store as live messages, and base64 voice bodies become
+// small placeholders (desktop can't play the iOS Opus envelopes anyway). With
+// chat state in IndexedDB the oversize threshold is generous — it only guards
+// against pathological single messages, not the archive's total size.
 // ---------------------------------------------------------------------------
 
-const PHONE_ARCHIVE_MAX_CONTENT_CHARS = 100_000;
+const PHONE_ARCHIVE_MAX_CONTENT_CHARS = 1_000_000;
 
 // iOS deliveryStatus -> desktop MESSAGE_STATUSES. "warning" is iOS's
 // "broadcast but unverified", which is exactly the desktop BROADCAST state.
@@ -8066,8 +8141,9 @@ function phoneArchiveTimestampMs(archiveMessage) {
 
 function phoneArchiveMessageText(archiveMessage, rawContent) {
   const messageType = String(archiveMessage?.messageType || "");
-  // Voice notes carry the whole base64 Opus envelope as content — never store
-  // that in localStorage-backed state; same for any other oversized payload.
+  // Voice notes carry the whole base64 Opus envelope as content — desktop
+  // can't decode the iOS envelope, so store a placeholder; same for any
+  // pathologically oversized payload.
   if (messageType === "audio") return "🎤 Voice message (from phone backup)";
   if (rawContent.length > PHONE_ARCHIVE_MAX_CONTENT_CHARS) return "📎 Media message (from phone backup)";
   if (rawContent.trim()) return rawContent; // payments arrive as "Sent/Received X KAS" text already
@@ -8194,9 +8270,11 @@ function importPhoneChatArchive(json) {
     conversationEntry.updatedAt = Math.max(preUpdatedAt, Number(last?.updatedAt || last?.createdAt || 0));
   }
 
-  // Persist with a quota guard: even with placeholders the archive can exceed
-  // what localStorage will take. Trim only the messages imported THIS run
-  // (oldest first, per conversation) until the state fits — pre-existing
+  // Persist with a quota guard. In IndexedDB mode persistState never throws
+  // (device-proportional quota) so this whole catch is dormant; it only fires
+  // in the localStorage FALLBACK mode, where even a placeholder-reduced
+  // archive can exceed the quota. There, trim only the messages imported THIS
+  // run (oldest first, per conversation) until the state fits — pre-existing
   // desktop messages are never dropped.
   const isQuotaError = (error) =>
     error?.name === "QuotaExceededError" || error?.code === 22 || /quota/i.test(String(error?.message || ""));
@@ -9296,6 +9374,9 @@ window.addEventListener("beforeunload", () => {
   try {
     if (engine.privateKeyHex) persistTestingWallet();
     persistState();
+    // Best-effort: start the pending IndexedDB write NOW instead of waiting
+    // out the debounce the page is about to tear down.
+    flushChatStorage();
   } catch (error) { console.error(error); }
 });
 
@@ -9304,6 +9385,7 @@ document.addEventListener("visibilitychange", () => {
     try {
       if (engine.privateKeyHex) persistTestingWallet();
       persistState();
+      flushChatStorage();
     } catch (error) { console.error(error); }
     return;
   }
@@ -9439,19 +9521,22 @@ queueMicrotask(async () => {
       kind: "kachat-desktop-backup",
       version: 1,
       savedAt: new Date().toISOString(),
-      state: JSON.parse(localStorage.getItem(accountScopedKey(STORAGE_KEY)) || "null"),
-      history: JSON.parse(localStorage.getItem(accountScopedKey(MESSAGE_HISTORY_KEY)) || "null"),
+      state: JSON.parse(chatStorageGetSync(accountScopedKey(STORAGE_KEY)) || "null"),
+      history: JSON.parse(chatStorageGetSync(accountScopedKey(MESSAGE_HISTORY_KEY)) || "null"),
     }),
     importBackupPayload: (json) => {
       const parsed = JSON.parse(json);
       if (parsed?.kind !== "kachat-desktop-backup" || !parsed.state) {
         throw new Error("That file is not a KaChat desktop backup.");
       }
+      // Write-through the same storage the live persist path uses (IndexedDB
+      // cache when available, localStorage fallback otherwise), then reload
+      // synchronously from that cache.
       const serialized = JSON.stringify(parsed.state);
-      localStorage.setItem(accountScopedKey(STORAGE_KEY), serialized);
-      localStorage.setItem(accountScopedKey(STATE_BACKUP_KEY), serialized);
+      chatStorageSetSync(accountScopedKey(STORAGE_KEY), serialized);
+      chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
       if (parsed.history) {
-        localStorage.setItem(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(parsed.history));
+        chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(parsed.history));
       }
       reloadStateFromBrowserStorage();
       renderChats();
