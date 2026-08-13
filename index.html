@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=224" />
+  <link rel="stylesheet" href="./ui/styles.css?v=225" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -16,6 +16,14 @@
 </head>
 <body>
   <section class="logged-out-screen" data-logged-out-screen hidden aria-label="KaChat saved accounts">
+    <!-- App-wide settings without an account (iOS accounts-screen App Settings cog):
+         opens the same settings overlay limited to app-wide categories. -->
+    <button class="profile-gear-button logged-out-settings-gear" type="button" data-logged-out-settings aria-label="App Settings" title="App Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.369-.491l1.217.456c.355.133.75.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z"/>
+        <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+      </svg>
+    </button>
     <div class="logged-out-content">
       <span class="logged-out-logo" aria-hidden="true"><img src="./ui/assets/kachat-logo.png" alt="" /></span>
       <h1>KaChat</h1>
@@ -673,6 +681,7 @@
                     <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546"/></svg>Broadcasts</span>
                     <label class="switch-control"><input type="checkbox" data-menu-tab="broadcasts" checked><span></span></label>
                   </div>
+                  <p class="field-hint" data-child-dock-note hidden>Swap, KaPosts and Broadcasts are hidden while Child Mode is on — an adult can bring them back in Settings &gt; Security &gt; Child Mode.</p>
               </div>
             </div>
           </section>
@@ -684,9 +693,16 @@
               <div class="settings-toggle-row"><span><strong>Password for Account Login</strong><small>Require your password when signing in to a saved account.</small></span><label class="switch-control"><input type="checkbox" data-pref-password-login><span></span></label></div>
               <button class="settings-list-row" type="button" data-change-password><span class="settings-row-copy"><strong>Change Password</strong><small data-password-status>No password set</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
               <button class="settings-list-row" type="button" data-shell-action="view-recovery"><span class="settings-row-copy"><strong>View Seed Phrase</strong><small>Reveal your account's recovery phrase.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="child-mode"><span class="settings-row-copy"><strong>Child Mode</strong><small>Limit KaChat to Chats, Portfolio and Cold Storage.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
               <div class="settings-toggle-row"><span><strong>Save account on this device</strong><small>Encrypted key storage arrives in the next security phase.</small></span><label class="switch-control"><input type="checkbox" data-pref-save-account checked><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Keep me signed in</strong><small>Restore the active account when KaChat opens.</small></span><label class="switch-control"><input type="checkbox" data-pref-keep-signed-in checked><span></span></label></div>
             </div>
+          </section>
+
+          <!-- Security sub-screen: Child Mode (ui/childmode.js renders the stateful page). -->
+          <section class="settings-group" data-settings-subscreen="child-mode">
+            <p class="settings-group-label">Child Mode</p>
+            <div data-child-mode-page></div>
           </section>
 
           <section class="settings-group">
@@ -1993,7 +2009,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=203"></script>
+  <script type="module" src="./ui/app.js?v=204"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

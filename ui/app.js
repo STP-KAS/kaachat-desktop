@@ -6,6 +6,11 @@ import { initColdStorage, refreshColdStorage, resetColdStorageForAccount } from 
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
 import {
+  initChildMode, isChildModeEnabled, CHILD_HIDDEN_TABS,
+  isUserTypePending, markUserTypePending,
+  renderUserTypeGuideStep, applyUserTypeGuideChoice, renderChildModeSettingsPage,
+} from "./childmode.js";
+import {
   initChatStorage,
   setChatStorageFlushErrorHandler,
   chatStorageGetSync,
@@ -3374,6 +3379,9 @@ function restoreLastAppTab() {
 }
 
 function setActiveAppTab(tab) {
+  // Child Mode choke point: every tab switch (dock click, restore, deep link,
+  // programmatic) funnels through here, so gated tabs simply become Chats.
+  if (isChildModeEnabled() && CHILD_HIDDEN_TABS.includes(tab)) tab = "chats";
   try { localStorage.setItem(UI_SPOT_TAB_KEY, tab); } catch { /* best-effort */ }
   sidebarTabButtons.forEach((button) => {
     const active = button.dataset.appTab === tab;
@@ -3503,9 +3511,16 @@ function dockResolvedOrder() {
   return [...order, ...known.filter((t) => !order.includes(t))];
 }
 
-/** The tabs the dock actually renders, in order — every enabled tab, no cap. */
+/** The tabs the dock actually renders, in order — every enabled tab, no cap.
+ * Child Mode is applied here, DERIVED at render time and never written into the
+ * per-account dock prefs (persisting while ON would permanently bake tabs
+ * hidden — the iOS lesson), so turning it off restores the user's own layout. */
 function dockVisibleTabs() {
-  return dockResolvedOrder().filter((t) => DOCK_ALWAYS_VISIBLE.includes(t) || !isTabHidden(t));
+  const childMode = isChildModeEnabled();
+  return dockResolvedOrder().filter((t) => {
+    if (childMode && CHILD_HIDDEN_TABS.includes(t)) return false;
+    return DOCK_ALWAYS_VISIBLE.includes(t) || !isTabHidden(t);
+  });
 }
 
 function applyDockLayout() {
@@ -3521,11 +3536,19 @@ function applyDockLayout() {
     btn.hidden = !visible.includes(tab);
   }
 
-  // Menu checkboxes mirror the state.
+  // Menu checkboxes mirror the state. While Child Mode is on, the gated tabs'
+  // rows disappear from the Customize Dock page entirely (with an explanatory
+  // footer) — their underlying prefs stay untouched.
+  const childMode = isChildModeEnabled();
   MENU_TOGGLEABLE_TABS.forEach((tab) => {
     const input = document.querySelector(`[data-menu-tab="${tab}"]`);
-    if (input) input.checked = !isTabHidden(tab);
+    if (!input) return;
+    input.checked = !isTabHidden(tab);
+    const row = input.closest(".menu-tab-row");
+    if (row) row.hidden = childMode && CHILD_HIDDEN_TABS.includes(tab);
   });
+  const childDockNote = document.querySelector("[data-child-dock-note]");
+  if (childDockNote) childDockNote.hidden = !childMode;
 
   const activeBtn = tabbar.querySelector(".sidebar-tab.active");
   if (activeBtn && activeBtn.hidden) setActiveAppTab("chats");
@@ -6347,6 +6370,7 @@ document.querySelectorAll("[data-close-contact]").forEach((button) => {
 
 document.querySelectorAll("[data-open-account-view]").forEach((button) => {
   button.addEventListener("click", () => {
+    setSettingsAppOnlyMode(false);
     openAccountOverlay();
     showSettingsCategory(null); // always land on the hub, matching iOS
   });
@@ -6446,6 +6470,8 @@ function showSettingsSubscreen(name, parentIndex) {
   if (!settingsScreenEl || !settingsHubEl) return;
   const target = settingsGroupsEls.find((group) => group.dataset.settingsSubscreen === name);
   if (!target) return;
+  // The Child Mode page is stateful (set-up vs. manage) — re-render fresh on every visit.
+  if (name === "child-mode") renderChildModeSettingsPage();
   settingsSubscreenParentIndex = Number.isInteger(parentIndex) && parentIndex >= 0 ? parentIndex : null;
   settingsHubEl.hidden = true;
   settingsGroupsEls.forEach((group) => { group.hidden = group !== target; });
@@ -6474,6 +6500,33 @@ settingsScreenEl?.addEventListener("click", (event) => {
   }
 });
 showSettingsCategory(null);
+
+// ---------------------------------------------------------------------------
+// App-wide settings from the signed-out landing screen (iOS: the accounts
+// screen's App Settings cog). Same overlay, limited to the app-wide categories
+// — Customization (minus the per-account dock page), Security (incl. Child
+// Mode), Connection and Diagnostics. The overlay normally sits below the
+// logged-out screen (z 1500 vs 2000), so app-only mode also bumps it above.
+// ---------------------------------------------------------------------------
+
+const SETTINGS_APP_ONLY_CATEGORIES = new Set(["Customization", "Security", "Connection", "Diagnostics"]);
+
+function setSettingsAppOnlyMode(appOnly) {
+  settingsScreenEl?.classList.toggle("app-only", appOnly);
+  accountOverlay?.classList.toggle("over-logged-out", appOnly);
+  settingsHubEl?.querySelectorAll("[data-settings-hub-row]").forEach((row) => {
+    const label = row.querySelector(".settings-hub-label")?.textContent?.trim();
+    row.hidden = appOnly && !SETTINGS_APP_ONLY_CATEGORIES.has(label);
+  });
+  const seedRow = settingsHubEl?.querySelector("[data-settings-hub-seed]");
+  if (seedRow) seedRow.hidden = appOnly;
+}
+
+document.querySelector("[data-logged-out-settings]")?.addEventListener("click", () => {
+  setSettingsAppOnlyMode(true);
+  openAccountOverlay();
+  showSettingsCategory(null);
+});
 
 contactModal.addEventListener("click", (event) => {
   if (event.target === contactModal) closeContactModal();
@@ -8803,6 +8856,9 @@ async function commitPendingAccount(passphrase) {
     pendingNewAccount = null;
     if (createAccountModal) createAccountModal.hidden = true;
     showCopyToast("Account created");
+    // First-run experience begins: the Adult/Child question becomes owed until
+    // answered (no-op once "chosen", so existing users are never forced back).
+    markUserTypePending();
     openSetupGuide();
   } catch (error) {
     appendEngineLog(`Create account failed: ${error.message}`);
@@ -8839,6 +8895,10 @@ const setupProgressEl = document.querySelector("[data-setup-progress]");
 
 const SETUP_STEPS = [
   { icon: "👋", title: "Welcome to KaChat", body: "Let's walk through the basics so you're ready to send your first message." },
+  // Child Mode: the Adult/Child question sits at the start of the first-run
+  // experience, before language — and is unskippable until answered (see
+  // isUserTypePending gating in renderSetupStep/closeSetupGuide).
+  { icon: "🧑‍🧒", title: "Who will use KaChat?", body: "", extra: "usertype" },
   { icon: "🌐", title: "Choose Your Language", body: "Select the language you'd like to use in KaChat.", extra: "language" },
   { icon: "💲", title: "Choose Your Currency", body: "Select the currency you'd like prices displayed in.", extra: "currency" },
   { icon: "🛰️", title: "How KaChat Uses Kaspa", body: "KaChat lets you send and receive messages on the Kaspa network itself. Kaspa is required to pay fees when sending your messages. The fee you pay goes to miners which secure the network." },
@@ -8848,6 +8908,7 @@ const SETUP_STEPS = [
   { icon: "💬", title: "Starting a Conversation", body: "To chat with someone, press Create Chat and enter their Kaspa address or KNS domain. If you send a message, they will not see it unless you send a handshake first, or you both decide to message each other around the same time - doing the latter increases your privacy." },
 ];
 let setupStepIndex = 0;
+const SETUP_USER_TYPE_STEP = SETUP_STEPS.findIndex((step) => step.extra === "usertype");
 
 function wizardSetCurrency(key) {
   if (!CURRENCIES[key]) return;
@@ -8883,7 +8944,9 @@ function renderSetupExtra(kind) {
   if (!setupExtraEl) return;
   setupExtraEl.replaceChildren();
   setupExtraEl.hidden = !kind;
-  if (kind === "language") {
+  if (kind === "usertype") {
+    renderUserTypeGuideStep(setupExtraEl);
+  } else if (kind === "language") {
     setupExtraEl.appendChild(buildSetupChoiceList(Object.entries(LANGUAGES), (k) => k === selectedLanguage, wizardSetLanguage));
   } else if (kind === "currency") {
     setupExtraEl.appendChild(buildSetupChoiceList(Object.entries(CURRENCIES).map(([k, v]) => [k, v.name]), (k) => k === selectedCurrency, wizardSetCurrency));
@@ -8980,16 +9043,34 @@ function renderSetupStep() {
   renderSetupExtra(step.extra);
   if (setupNextBtn) setupNextBtn.textContent = setupStepIndex === SETUP_STEPS.length - 1 ? "Finish" : "Next";
   if (setupProgressEl) setupProgressEl.textContent = `${setupStepIndex + 1} / ${SETUP_STEPS.length}`;
+  // While the Adult/Child choice is still owed (first-run marker "pending"),
+  // the guide has no way out: Skip disappears and backdrop-close no-ops.
+  if (setupSkipBtn) setupSkipBtn.hidden = isUserTypePending();
 }
-function openSetupGuide() {
-  setupStepIndex = 0;
+// `options` may be a click event (listeners below pass one) — only the explicit
+// boot call passes { startAtUserType: true } to jump straight to the choice.
+function openSetupGuide(options = {}) {
+  setupStepIndex = options.startAtUserType === true && isUserTypePending() && SETUP_USER_TYPE_STEP >= 0
+    ? SETUP_USER_TYPE_STEP
+    : 0;
   renderSetupStep();
-  if (setupGuideModal) setupGuideModal.hidden = false;
+  if (setupGuideModal) {
+    // Presented over the signed-out screen (z 2000, same band as .modal-backdrop),
+    // DOM order already keeps the guide on top — no z bump needed.
+    setupGuideModal.hidden = false;
+  }
 }
 function closeSetupGuide() {
+  if (isUserTypePending()) return; // Adult/Child unanswered: unskippable
   if (setupGuideModal) setupGuideModal.hidden = true;
 }
-setupNextBtn?.addEventListener("click", () => {
+setupNextBtn?.addEventListener("click", async () => {
+  if (SETUP_STEPS[setupStepIndex]?.extra === "usertype") {
+    setupNextBtn.disabled = true;
+    let advance = false;
+    try { advance = await applyUserTypeGuideChoice(); } finally { setupNextBtn.disabled = false; }
+    if (!advance) return;
+  }
   if (setupStepIndex >= SETUP_STEPS.length - 1) { closeSetupGuide(); return; }
   setupStepIndex += 1;
   renderSetupStep();
@@ -9580,9 +9661,22 @@ queueMicrotask(async () => {
     importPhoneArchive: importPhoneChatArchive,
   });
 
+  initChildMode({
+    escapeHtml,
+    showToast: showCopyToast,
+    // Toggling Child Mode re-renders the dock immediately: gated tabs vanish
+    // (or return) and, if the user is sitting on a now-hidden tab, the
+    // applyDockLayout snap drops them back to Chats.
+    onChildModeChanged: () => applyDockLayout(),
+  });
+
   // Per-account dock prefs may differ from the pre-login defaults rendered at load.
   reloadDockPrefsForAccount();
   window.setTimeout(maybeShowDockWizard, 1200);
+
+  // Reload mid-setup doesn't dodge the Adult/Child question: an unanswered
+  // first-run choice re-presents the guide at that step, still unskippable.
+  if (isUserTypePending()) openSetupGuide({ startAtUserType: true });
 
   reloadStateFromBrowserStorage();
   reconcileEstablishedRelationships();

@@ -324,7 +324,7 @@ function renderSettings() {
       <div class="settings-list-card nc-connect-card">
         <label class="field-label">Server<input class="field-input" type="text" data-nc-server placeholder="cloud.example.com" autocomplete="off" spellcheck="false" /></label>
         <label class="field-label">Username<input class="field-input" type="text" data-nc-username autocomplete="off" spellcheck="false" /></label>
-        <label class="field-label">App password<input class="field-input" type="password" data-nc-password autocomplete="off" /></label>
+        <label class="field-label">App password<span class="password-field-wrap"><input class="field-input" type="password" data-nc-password autocomplete="off" /><button class="password-eye-btn" type="button" data-eye-toggle aria-label="Show password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.3 12.3C4.4 7.7 8 5.2 12 5.2s7.6 2.5 9.7 7.1a.9.9 0 0 1 0 .8c-2.1 4.6-5.7 7.1-9.7 7.1s-7.6-2.5-9.7-7.1a.9.9 0 0 1 0-.8Z"/><circle cx="12" cy="12.7" r="3.1"/></svg></button></span></label>
         <p class="field-hint">Create an app password in Nextcloud under Settings → Security → Devices &amp; sessions. No server CORS setup needed — the app's own dev server proxies Nextcloud traffic.</p>
         <p class="field-error" data-nc-connect-error hidden></p>
         <button class="primary-button" type="button" data-nc-connect>Connect</button>
