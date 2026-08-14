@@ -2144,6 +2144,15 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .composer { margin-bottom: 96px; }
   padding: 5px 8px 5px 12px;
 }
 
+/* Kaspa logo next to the top-bar total balance — matches iOS's
+   BalanceToolbarLabel (15pt logo + bold tabular-figure "x.xxxxxxxx KAS"). */
+.toolbar-balance-logo {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  display: block;
+}
+
 /* Step 41 — compact message actions and iMessage-style local selection. */
 .message-action-backdrop {
   place-items: center;
