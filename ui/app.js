@@ -1197,11 +1197,11 @@ chatInfoAliasReceivingEye?.addEventListener("click", () => revealChatInfoAlias("
 chatInfoAliasSendingEye?.addEventListener("click", () => revealChatInfoAlias("sending"));
 chatInfoAliasReceiving?.addEventListener("click", async () => {
   if (!chatInfoAliasReceiving.classList.contains("revealed")) { revealChatInfoAlias("receiving"); return; }
-  try { await navigator.clipboard.writeText(chatInfoAliasReceiving.textContent); showCopyToast("Receiving alias copied."); } catch {}
+  try { await copyTextToClipboard(chatInfoAliasReceiving.textContent); showCopyToast("Receiving alias copied."); } catch {}
 });
 chatInfoAliasSending?.addEventListener("click", async () => {
   if (!chatInfoAliasSending.classList.contains("revealed")) { revealChatInfoAlias("sending"); return; }
-  try { await navigator.clipboard.writeText(chatInfoAliasSending.textContent); showCopyToast("Sending alias copied."); } catch {}
+  try { await copyTextToClipboard(chatInfoAliasSending.textContent); showCopyToast("Sending alias copied."); } catch {}
 });
 
 function refreshChatInfoContactControls() {
@@ -2940,6 +2940,18 @@ function activeAccountMnemonic() {
 
 function activeAccountPassphrase() {
   return activeSavedAccountRecord()?.passphrase || "";
+}
+
+// Identity derivation family + chatting-chain index chosen at import (iOS
+// WalletManager.currentWalletSourceFamily / currentChattingAddressIndex).
+// Persisted on the saved-account record, so they survive reloads and are
+// honored by every path that re-derives the identity from the seed.
+function activeAccountSourceFamily() {
+  return String(activeSavedAccountRecord()?.sourceFamily || "kaspaStandard");
+}
+
+function activeChattingIndex() {
+  return Math.max(0, Math.floor(Number(activeSavedAccountRecord()?.chattingIndex || 0)));
 }
 
 function loadAllSpendingState() {
@@ -10177,10 +10189,14 @@ async function commitPendingAccount(passphrase) {
     pendingNewAccount = null;
     if (createAccountModal) createAccountModal.hidden = true;
     showCopyToast("Account created");
-    // First-run experience begins: the Adult/Child question becomes owed until
-    // answered (no-op once "chosen", so existing users are never forced back).
+    // First-run experience begins. Both markers are persisted BEFORE presenting
+    // (iOS MainTabView does the same): the in-memory "just created" trigger is
+    // lost on a page reload, so without them a reload mid-guide would be a
+    // permanent way past a mandatory run. markUserTypePending never downgrades
+    // "chosen", which is exactly why the run marker exists alongside it.
     markUserTypePending();
-    openSetupGuide();
+    markOnboardingRunPending("create");
+    openSetupGuide({ onboardingRun: true });
   } catch (error) {
     appendEngineLog(`Create account failed: ${error.message}`);
     if (createPassphraseError) { createPassphraseError.textContent = error.message; createPassphraseError.hidden = false; }
@@ -10387,8 +10403,8 @@ function renderSetupExtra(kind) {
   } else if (kind === "addresses") {
     const spendingAddr = deriveSpendingAddressAt(getActiveSpendingIndex());
     const rows = [
-      { title: "Chatting Address", value: engine.address || "—", caption: "Your public messaging identity. Fund it with a small amount to pay message fees and KNS profile creation fees — never send money here that you intend to spend." },
-      { title: "Spending Address", value: spendingAddr || "Import a recovery phrase to use spending addresses", caption: "A separate address for the Kaspa you actually spend and receive. Manage it, view its balance, send and receive from your Profile — the same recovery phrase restores it identically on any device." },
+      { title: "Chatting Address", value: engine.address || "--", caption: "Your public messaging identity. Fund it with a small amount to pay message fees and KNS profile creation fees. Never send money here that you intend to spend." },
+      { title: "Spending Address", value: spendingAddr || "Import a recovery phrase to use spending addresses", caption: "A separate address for the Kaspa you actually spend and receive. Manage it, view its balance, send and receive from your Profile. The same recovery phrase restores it identically on any device." },
     ];
     for (const r of rows) {
       const box = document.createElement("div");
@@ -10424,11 +10440,14 @@ function renderSetupStep() {
   renderSetupExtra(step.extra);
   if (setupNextBtn) setupNextBtn.textContent = setupStepIndex === SETUP_STEPS.length - 1 ? "Finish" : "Next";
   if (setupProgressEl) setupProgressEl.textContent = `${setupStepIndex + 1} / ${SETUP_STEPS.length}`;
-  // Skip exists ONLY on replays: while the Adult/Child choice is still owed OR
-  // this is an onboarding run (create or import, fresh or re-presented after a
-  // reload), the guide has no way out — every step must be advanced through to
-  // Finish. Backdrop-close no-ops the same way (see closeSetupGuide).
-  if (setupSkipBtn) setupSkipBtn.hidden = isUserTypePending() || setupGuideIsOnboardingRun;
+  // Skip exists ONLY on replays (Profile > Help). EVERY account-onboarding run
+  // — create or import, fresh or re-presented after a page reload — is fully
+  // unskippable: every step must be advanced through to Finish. Decided purely
+  // by the presenter-supplied context, NEVER by a persisted marker's state: a
+  // device that already answered Adult/Child for a prior account would look
+  // like a replay to the marker and hand an onboarding run a way out.
+  // Backdrop-close no-ops the same way (see closeSetupGuide).
+  if (setupSkipBtn) setupSkipBtn.hidden = setupGuideIsOnboardingRun;
 }
 // `options` may be a click event (listeners below pass one) — only explicit
 // presenter calls pass { onboardingRun, importRun, startAtUserType }. The
@@ -10448,16 +10467,19 @@ function openSetupGuide(options = {}) {
   }
 }
 function closeSetupGuide({ completed = false } = {}) {
+  // Onboarding runs only ever end via Finish on the last step: no Skip, no
+  // backdrop dismissal, nothing in between. Checked BEFORE the completed
+  // branch clears the context so a mid-run backdrop click stays a no-op.
+  if (!completed && setupGuideIsOnboardingRun) return;
   if (completed) {
     // Finish on the last step: the onboarding run is done — a completed run
-    // must not re-present on the next launch.
+    // must not re-present on the next load.
     clearOnboardingRunPending();
     setupGuideIsOnboardingRun = false;
     setupGuideIsImportRun = false;
   }
-  if (isUserTypePending()) return; // Adult/Child unanswered: unskippable
-  if (setupGuideIsOnboardingRun) return; // onboarding runs only end via Finish
   if (setupGuideModal) setupGuideModal.hidden = true;
+  closeChattingAddressPicker();
 }
 setupNextBtn?.addEventListener("click", async () => {
   if (SETUP_STEPS[setupStepIndex]?.extra === "usertype") {
@@ -10473,6 +10495,310 @@ setupNextBtn?.addEventListener("click", async () => {
 setupSkipBtn?.addEventListener("click", () => closeSetupGuide());
 setupGuideModal?.addEventListener("click", (event) => { if (event.target === setupGuideModal) closeSetupGuide(); });
 document.querySelectorAll("[data-open-setup-guide]").forEach((b) => b.addEventListener("click", () => openSetupGuide()));
+
+// --- "Change Chatting Address" picker (iOS ChattingAddressPickerView) --------
+//
+// Reached only from the setup guide's funding step on IMPORT onboarding runs.
+// Scans the identity chain of the account's own source family (standard,
+// legacy-972, OneKey) in batches of 50, deriving each batch off a single master
+// key, then checking the whole batch for KAS balance (ONE pooled
+// getUtxosByAddresses call) and KNS domains (engine/kns.js's cached, paced
+// batch helper — never 50 raw requests). Only interesting slots are listed:
+// a balance, at least one domain, index 0, or the current index.
+const CHATTING_PICKER_BATCH = 50;
+const chattingPickerScreen = document.querySelector("[data-chatting-picker-screen]");
+const chattingPickerListEl = document.querySelector("[data-chatting-picker-list]");
+const chattingPickerFooterEl = document.querySelector("[data-chatting-picker-footer]");
+const chattingPickerErrorEl = document.querySelector("[data-chatting-picker-error]");
+const chattingPickerDetailScreen = document.querySelector("[data-chatting-picker-detail]");
+const chattingPickerDetailBody = document.querySelector("[data-chatting-picker-detail-body]");
+const chattingPickerSetBtn = document.querySelector("[data-chatting-picker-set]");
+const chattingPickerConfirmModal = document.querySelector("[data-chatting-picker-confirm]");
+
+let chattingPickerCandidates = [];
+let chattingPickerScanned = 0;
+let chattingPickerScanning = false;
+// Bumped on every open/close so a batch still in flight when the screen goes
+// away can never write into the next session's list.
+let chattingPickerToken = 0;
+let chattingPickerDetailIndex = null;
+let chattingPickerSwitching = false;
+
+function setChattingPickerError(message) {
+  if (!chattingPickerErrorEl) return;
+  chattingPickerErrorEl.textContent = message || "";
+  chattingPickerErrorEl.hidden = !message;
+}
+
+function chattingPickerCandidateAt(index) {
+  return chattingPickerCandidates.find((entry) => entry.index === index) || null;
+}
+
+function visibleChattingPickerCandidates() {
+  const current = activeChattingIndex();
+  return chattingPickerCandidates.filter((entry) =>
+    entry.balanceSompi > 0n || entry.domains.length > 0 || entry.index === 0 || entry.index === current);
+}
+
+function renderChattingPickerFooter() {
+  if (!chattingPickerFooterEl) return;
+  if (chattingPickerScanning) {
+    const from = escapeHtml(String(chattingPickerScanned + 1));
+    const to = escapeHtml(String(chattingPickerScanned + CHATTING_PICKER_BATCH));
+    chattingPickerFooterEl.innerHTML = `<span>Scanning addresses ${from} to ${to}…</span>`;
+    return;
+  }
+  if (!chattingPickerScanned) { chattingPickerFooterEl.replaceChildren(); return; }
+  chattingPickerFooterEl.innerHTML = `<span>Scanned the first ${escapeHtml(String(chattingPickerScanned))} addresses.</span>`
+    + `<button type="button" class="chatting-picker-scan-more" data-chatting-picker-scan-more>Scan Further</button>`;
+}
+
+function renderChattingPickerList() {
+  if (!chattingPickerListEl) return;
+  const current = activeChattingIndex();
+  const rows = visibleChattingPickerCandidates();
+  if (!rows.length) {
+    chattingPickerListEl.innerHTML = chattingPickerScanning
+      ? ""
+      : '<div class="manage-address-empty">No addresses with a balance or domains on this seed yet.</div>';
+    renderChattingPickerFooter();
+    return;
+  }
+  chattingPickerListEl.innerHTML = rows.map((entry) => {
+    const pillText = entry.domains.length === 1
+      ? entry.domains[0].fullName
+      : entry.domains.length > 1 ? `${entry.domains.length} domains` : "";
+    const pill = pillText ? `<span class="chatting-picker-domain-pill">${escapeHtml(pillText)}</span>` : "";
+    const badge = entry.index === current
+      ? '<span class="chatting-picker-row-badge is-current">Current</span>'
+      : entry.index === 0 ? '<span class="chatting-picker-row-badge">Default</span>' : "";
+    return `<button type="button" class="chatting-picker-row${entry.index === current ? " current" : ""}" data-chatting-picker-open="${escapeHtml(String(entry.index))}">`
+      + `<span class="chatting-picker-row-index">#${escapeHtml(String(entry.index))}</span>`
+      + `<span class="chatting-picker-row-copy">`
+      + `<span class="chatting-picker-row-address">${escapeHtml(shortAddress(entry.address))}</span>`
+      + `<span class="chatting-picker-row-meta"><span>${escapeHtml(formatSompiForNotification(entry.balanceSompi))} KAS</span>${pill}</span>`
+      + `</span>${badge}`
+      + `<svg class="chatting-picker-row-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>`
+      + `</button>`;
+  }).join("");
+  renderChattingPickerFooter();
+}
+
+async function scanChattingAddressBatch() {
+  if (chattingPickerScanning) return;
+  const mnemonic = activeAccountMnemonic();
+  if (!mnemonic) {
+    setChattingPickerError("This account has no recovery phrase, so its chatting address can't be changed.");
+    return;
+  }
+  const token = chattingPickerToken;
+  const start = chattingPickerScanned;
+  const family = activeAccountSourceFamily();
+  const passphrase = activeAccountPassphrase();
+  chattingPickerScanning = true;
+  setChattingPickerError("");
+  renderChattingPickerList();
+  try {
+    let derived = [];
+    try {
+      derived = await engine.deriveIdentityAddressRange(mnemonic, passphrase, { family, start, count: CHATTING_PICKER_BATCH });
+    } catch (error) {
+      appendEngineLog(`Chatting address scan failed: ${error.message}`);
+    }
+    if (token !== chattingPickerToken) return;
+    if (!derived.length) {
+      setChattingPickerError("Could not derive addresses from this seed. Please try again.");
+      return;
+    }
+    const addresses = derived.map((entry) => entry.address);
+
+    // One batched balance call for the whole batch; a network failure just
+    // leaves this batch's balances at zero rather than sinking the scan.
+    const balances = new Map();
+    try {
+      await engine.connect();
+      const response = await engine.withRpc(
+        (rpc) => rpc.getUtxosByAddresses(addresses),
+        { retries: 1, label: "Chatting address scan" },
+      );
+      for (const entry of response?.entries || []) {
+        const address = String(entry.address ?? entry.entry?.address ?? "");
+        if (!address) continue;
+        balances.set(address, (balances.get(address) || 0n) + BigInt(entry.amount ?? entry.entry?.amount ?? 0));
+      }
+    } catch { /* balances stay at zero for this batch */ }
+
+    try { await engine.refreshKnsIfNeeded?.(addresses); } catch { /* fall back to whatever is cached */ }
+    if (token !== chattingPickerToken) return;
+
+    for (const entry of derived) {
+      const info = engine.peekKnsAddressInfo?.(entry.address) || null;
+      chattingPickerCandidates.push({
+        index: entry.index,
+        address: entry.address,
+        balanceSompi: balances.get(entry.address) || 0n,
+        domains: Array.isArray(info?.allDomains) ? info.allDomains : [],
+        primaryDomain: info?.primaryDomain || null,
+      });
+    }
+    chattingPickerScanned = start + CHATTING_PICKER_BATCH;
+  } finally {
+    if (token === chattingPickerToken) {
+      chattingPickerScanning = false;
+      renderChattingPickerList();
+    }
+  }
+}
+
+function openChattingAddressPicker() {
+  if (!chattingPickerScreen) return;
+  if (!activeAccountMnemonic()) {
+    showCopyToast("This account has no recovery phrase, so its chatting address can't be changed.");
+    return;
+  }
+  chattingPickerToken += 1;
+  chattingPickerCandidates = [];
+  chattingPickerScanned = 0;
+  chattingPickerScanning = false;
+  chattingPickerDetailIndex = null;
+  setChattingPickerError("");
+  renderChattingPickerList();
+  chattingPickerScreen.hidden = false;
+  void scanChattingAddressBatch();
+}
+
+function closeChattingPickerDetail() {
+  chattingPickerDetailIndex = null;
+  if (chattingPickerConfirmModal) chattingPickerConfirmModal.hidden = true;
+  if (chattingPickerDetailScreen) chattingPickerDetailScreen.hidden = true;
+}
+
+function closeChattingAddressPicker() {
+  chattingPickerToken += 1;
+  chattingPickerScanning = false;
+  closeChattingPickerDetail();
+  if (chattingPickerScreen) chattingPickerScreen.hidden = true;
+}
+
+function renderChattingPickerDetail() {
+  if (!chattingPickerDetailBody) return;
+  const candidate = chattingPickerCandidateAt(chattingPickerDetailIndex);
+  if (!candidate) { chattingPickerDetailBody.replaceChildren(); return; }
+  const isCurrent = candidate.index === activeChattingIndex();
+  const domains = candidate.domains;
+  const domainsHtml = domains.length
+    ? `<div class="chatting-picker-detail-domains"><strong>KNS Domains (${escapeHtml(String(domains.length))})</strong>`
+      + domains.map((domain) => {
+        const isPrimary = candidate.primaryDomain
+          && String(domain.fullName).toLowerCase() === String(candidate.primaryDomain).toLowerCase();
+        return `<div class="chatting-picker-detail-domain"><span>${escapeHtml(domain.fullName)}</span>${isPrimary ? "<em>Primary</em>" : ""}</div>`;
+      }).join("")
+      + `</div>`
+    : "";
+  chattingPickerDetailBody.innerHTML = `
+    <p class="chatting-picker-detail-heading">Address #${escapeHtml(String(candidate.index))}</p>
+    <button type="button" class="chatting-picker-detail-address" data-chatting-picker-copy>${escapeHtml(candidate.address)}</button>
+    <p class="chatting-picker-detail-hint">Click the address to copy it.</p>
+    <div class="chatting-picker-detail-stat"><span>Balance</span><span>${escapeHtml(formatSompiForNotification(candidate.balanceSompi))} KAS</span></div>
+    ${domainsHtml}`;
+  if (chattingPickerSetBtn) {
+    chattingPickerSetBtn.disabled = isCurrent || chattingPickerSwitching;
+    chattingPickerSetBtn.textContent = chattingPickerSwitching
+      ? "Switching…"
+      : isCurrent ? "Current Chatting Address" : "Set as Chatting Address";
+  }
+}
+
+function openChattingPickerDetail(index) {
+  if (!chattingPickerDetailScreen || !chattingPickerCandidateAt(index)) return;
+  chattingPickerDetailIndex = index;
+  renderChattingPickerDetail();
+  chattingPickerDetailScreen.hidden = false;
+}
+
+// The clean identity switch (iOS WalletManager.setChattingAddress): the same
+// seed, re-derived within its own source family at the chosen index, funnelled
+// through the ordinary import path so every consumer (data scope, saved
+// account record, subscriptions, sync) switches exactly like an account import
+// does. Nothing is deleted — the old address's chats stay in their own scope.
+async function performChattingAddressSwitch() {
+  const candidate = chattingPickerCandidateAt(chattingPickerDetailIndex);
+  if (!candidate || chattingPickerSwitching) return;
+  if (candidate.index === activeChattingIndex()) return;
+  const record = activeSavedAccountRecord();
+  const mnemonic = String(record?.mnemonic || "");
+  if (!mnemonic) { showCopyToast("This account has no recovery phrase."); return; }
+  // Captured BEFORE the import moves engine.address: the index moves WITHIN
+  // the account's existing family, and the name/passphrase belong to the seed.
+  const family = activeAccountSourceFamily();
+  const passphrase = String(record?.passphrase || "");
+  const name = String(activeAccountMetadata()?.name || record?.name || "My Account");
+  const previousAddress = String(engine.address || "");
+  chattingPickerSwitching = true;
+  renderChattingPickerDetail();
+  try {
+    await importAndEnterAccount({
+      name,
+      recoveryPhrase: mnemonic,
+      passphrase,
+      family,
+      chattingIndex: candidate.index,
+      resetState: false,
+    });
+    // The old identity's saved-account row is stale the moment the switch
+    // lands — the account IS this seed, now living at the new address. Its own
+    // chat scope is deliberately left in place.
+    if (previousAddress && previousAddress !== engine.address) {
+      persistSavedAccounts(loadSavedAccounts().filter((entry) => entry.address !== previousAddress));
+    }
+    chattingPickerSwitching = false;
+    closeChattingAddressPicker();
+    showCopyToast("Chatting address updated");
+    // Back on the funding step, which re-renders with the new address.
+    if (setupGuideModal && !setupGuideModal.hidden) renderSetupStep();
+  } catch (error) {
+    appendEngineLog(`Chatting address switch failed: ${error.message}`);
+    showCopyToast(error.message);
+    chattingPickerSwitching = false;
+    renderChattingPickerDetail();
+  }
+}
+
+chattingPickerListEl?.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-chatting-picker-open]");
+  if (!row) return;
+  openChattingPickerDetail(Math.max(0, Math.floor(Number(row.dataset.chattingPickerOpen) || 0)));
+});
+chattingPickerFooterEl?.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-chatting-picker-scan-more]")) return;
+  void scanChattingAddressBatch();
+});
+chattingPickerDetailBody?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-chatting-picker-copy]");
+  if (!button) return;
+  try { await copyTextToClipboard(button.textContent); showCopyToast("Address copied to clipboard."); }
+  catch (error) { appendEngineLog(error.message); }
+});
+document.querySelector("[data-close-chatting-picker]")?.addEventListener("click", () => closeChattingAddressPicker());
+document.querySelector("[data-close-chatting-picker-detail]")?.addEventListener("click", () => closeChattingPickerDetail());
+chattingPickerSetBtn?.addEventListener("click", () => {
+  const candidate = chattingPickerCandidateAt(chattingPickerDetailIndex);
+  if (!candidate || chattingPickerSwitching || candidate.index === activeChattingIndex()) return;
+  // Existing conversations on the current identity: confirm first. Nothing is
+  // deleted either way — the old history simply stays with the old address.
+  if (state.conversations.length > 0) {
+    if (chattingPickerConfirmModal) chattingPickerConfirmModal.hidden = false;
+    return;
+  }
+  void performChattingAddressSwitch();
+});
+document.querySelector("[data-chatting-picker-confirm-cancel]")?.addEventListener("click", () => {
+  if (chattingPickerConfirmModal) chattingPickerConfirmModal.hidden = true;
+});
+document.querySelector("[data-chatting-picker-confirm-switch]")?.addEventListener("click", () => {
+  if (chattingPickerConfirmModal) chattingPickerConfirmModal.hidden = true;
+  void performChattingAddressSwitch();
+});
 
 const importAccountModal = document.querySelector("[data-import-account-modal]");
 const importNameInput = document.querySelector("[data-import-name]");
@@ -10582,7 +10908,11 @@ document.querySelector("[data-import-source-continue]")?.addEventListener("click
   queueMicrotask(() => importPhraseInput?.focus());
 });
 
-async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "", family = "kaspaStandard", chattingIndex = 0 }) {
+// `resetState: false` is used only by the chatting-address switch: that is a
+// clean identity SELECTION on a seed the app already holds, not a new import,
+// so whatever chats the target address already has in its own storage scope
+// stay put (activateWalletDataScope has just restored them).
+async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "", family = "kaspaStandard", chattingIndex = 0, resetState = true }) {
   if (!engine.kaspa) await ensureRuntimes();
   const cleanName = String(name || "").trim();
   const cleanPhrase = String(recoveryPhrase || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -10609,8 +10939,10 @@ async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "", fa
   localStorage.setItem(ACCOUNT_SHELL_META_KEY, JSON.stringify(metadata));
 
   activateWalletDataScope(wallet.address, { migrateLegacy: false });
-  state = { contacts: [], conversations: [] };
-  persistState();
+  if (resetState) {
+    state = { contacts: [], conversations: [] };
+    persistState();
+  }
   persistTestingWallet({
     mnemonic: wallet.mnemonic,
     passphrase,
@@ -10676,8 +11008,10 @@ importPassphraseToggle?.addEventListener("click", () => {
   importPassphraseToggle.textContent = show ? "Hide" : "Show";
 });
 
-// STEP 2 → enter app: import with the chosen passphrase ("" when skipped). Import
-// never shows the Welcome Guide (only brand-new accounts do).
+// STEP 2 → enter app: import with the chosen passphrase ("" when skipped), then
+// run the setup guide exactly like a create does (iOS ImportWalletView also
+// sets justCreatedNewWallet) — an unskippable onboarding run, flagged as an
+// IMPORT run so the funding step offers "Change Chatting Address".
 async function commitImport(passphrase) {
   if (!pendingImport) return;
   const buttons = [importWithPassphraseBtn, importSkipPassphraseBtn];
@@ -10688,6 +11022,9 @@ async function commitImport(passphrase) {
     pendingImport = null;
     if (importAccountModal) importAccountModal.hidden = true;
     showCopyToast("Account imported");
+    markUserTypePending();
+    markOnboardingRunPending("import");
+    openSetupGuide({ onboardingRun: true, importRun: true });
   } catch (error) {
     appendEngineLog(`Import account failed: ${error.message}`);
     if (importPassphraseError) { importPassphraseError.textContent = error.message; importPassphraseError.hidden = false; }
@@ -11169,9 +11506,21 @@ queueMicrotask(async () => {
   reloadDockPrefsForAccount();
   window.setTimeout(maybeShowDockWizard, 1200);
 
-  // Reload mid-setup doesn't dodge the Adult/Child question: an unanswered
-  // first-run choice re-presents the guide at that step, still unskippable.
-  if (isUserTypePending()) openSetupGuide({ startAtUserType: true });
+  // A page reload mid-setup doesn't dodge an onboarding run. Two persisted
+  // markers drive the re-present, and BOTH re-present as an onboarding run
+  // (unskippable), because that is what was interrupted:
+  //  - Adult/Child still unanswered -> resume straight at that step;
+  //  - otherwise a run marker means the run was interrupted after the
+  //    Adult/Child question was already settled (e.g. an import on a device
+  //    that answered it for a prior account) -> replay from the top.
+  // The stored run kind keeps an interrupted IMPORT run's import-only
+  // affordances (the funding step's "Change Chatting Address" picker).
+  const pendingRunKind = pendingOnboardingRunKind();
+  if (isUserTypePending()) {
+    openSetupGuide({ onboardingRun: true, importRun: pendingRunKind === "import", startAtUserType: true });
+  } else if (isOnboardingRunPending()) {
+    openSetupGuide({ onboardingRun: true, importRun: pendingRunKind === "import" });
+  }
 
   reloadStateFromBrowserStorage();
   reconcileEstablishedRelationships();

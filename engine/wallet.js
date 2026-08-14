@@ -163,6 +163,36 @@ export async function importMnemonicWithFamily(kaspa, phrase, passphrase = "", {
   };
 }
 
+// Batch identity derivation for the chatting-address picker (iOS
+// WalletManager.chattingScanBase + scanChattingAddressCandidates): the seed →
+// PBKDF2 → master XPrv work dominates, so it is done ONCE for the whole range
+// and only the final per-index step repeats — the same reasoning as iOS's
+// shared base node. Returns [{ index, address }] in index order; indices that
+// fail to derive are skipped rather than aborting the batch.
+export async function deriveIdentityAddressRange(kaspa, phrase, passphrase = "", { family = "kaspaStandard", start = 0, count = 50 } = {}) {
+  if (typeof kaspa.Mnemonic !== "function" || typeof kaspa.XPrv !== "function") {
+    throw new Error("This Rusty Kaspa build does not expose mnemonic wallet support.");
+  }
+  const cleanPhrase = String(phrase || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!cleanPhrase) throw new Error("A recovery phrase is required to scan chatting addresses.");
+  const cleanFamily = normalizeSourceFamily(family);
+  const first = Math.max(0, Math.floor(Number(start) || 0));
+  const total = Math.max(1, Math.floor(Number(count) || 1));
+  const mnemonic = new kaspa.Mnemonic(cleanPhrase);
+  const master = new kaspa.XPrv(mnemonic.toSeed(String(passphrase || "")));
+  const results = [];
+  for (let index = first; index < first + total; index += 1) {
+    try {
+      let privateKeyHex = master.derivePath(identityDerivationPath(cleanFamily, index)).toPrivateKey().toString();
+      if (cleanFamily === "oneKey") privateKeyHex = await oneKeyTweakPrivateKeyHex(kaspa, privateKeyHex);
+      results.push({ index, address: importPrivateKey(kaspa, privateKeyHex).address });
+    } catch {
+      // A single unusable index must not sink the whole batch.
+    }
+  }
+  return results;
+}
+
 // Spending-address chain: a second BIP44 *account* branch (account index 1') off
 // the same seed, so it's derivable from the recovery phrase and matches iOS
 // (WalletManager+SpendingAddresses) and Android (WalletManager.deriveSpendingAddress)

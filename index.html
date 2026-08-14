@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=226" />
+  <link rel="stylesheet" href="./ui/styles.css?v=227" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -1837,6 +1837,60 @@
     </div>
   </div>
 
+  <!-- "Change Chatting Address" scanner (iOS ChattingAddressPickerView), opened
+       from the setup guide's funding step on IMPORT onboarding runs only.
+       Layered above the guide's .modal-backdrop (z 2000) so it is reachable
+       from inside the wizard. -->
+  <div class="chatting-address-screen manage-address-screen chatting-picker-screen" data-chatting-picker-screen hidden role="dialog" aria-modal="true" aria-label="Chatting Address">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-chatting-picker aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Chatting Address</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <h3 class="chatting-picker-title">Choose Your Chatting Address</h3>
+      <p class="spending-manage-subtitle">If this seed already holds your identity at a different address, a KNS domain or a funded chatting balance, pick it here. Only addresses with a balance or domains are shown.</p>
+      <div class="manage-address-body">
+        <div class="manage-address-list chatting-picker-list" data-chatting-picker-list></div>
+        <p class="field-error chatting-picker-error" data-chatting-picker-error hidden></p>
+        <div class="chatting-picker-footer" data-chatting-picker-footer></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chatting-address-screen manage-address-screen chatting-picker-detail-screen" data-chatting-picker-detail hidden role="dialog" aria-modal="true" aria-label="Chatting Address Detail">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-chatting-picker-detail aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Chatting Address</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <div class="manage-address-body">
+        <div class="chatting-picker-detail-body" data-chatting-picker-detail-body></div>
+      </div>
+      <div class="manage-address-actions">
+        <button class="primary-button full" type="button" data-chatting-picker-set>Set as Chatting Address</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop chatting-picker-confirm-backdrop" data-chatting-picker-confirm hidden>
+    <section class="contact-modal" role="dialog" aria-modal="true" aria-label="Switch Chatting Address">
+      <div class="modal-header">
+        <div><p class="modal-kicker">This seed already has chats</p><h2>Switch Chatting Address?</h2></div>
+      </div>
+      <p class="field-hint">This seed already has conversations on the current chatting address. Switching starts fresh with the new address. Your existing conversations stay with the old address and are not deleted.</p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-chatting-picker-confirm-cancel>Cancel</button>
+        <button class="primary-button" type="button" data-chatting-picker-confirm-switch>Switch</button>
+      </div>
+    </section>
+  </div>
+
   <div class="modal-backdrop" data-kns-transfer-modal hidden>
     <section class="contact-modal send-kaspa-modal" role="dialog" aria-modal="true" aria-label="Send KNS Domain">
       <div class="modal-header">
@@ -2096,7 +2150,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=205"></script>
+  <script type="module" src="./ui/app.js?v=206"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

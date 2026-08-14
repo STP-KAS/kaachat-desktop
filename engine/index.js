@@ -1,6 +1,6 @@
 import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
-import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
+import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
 import { getBalance, sendKaspa, estimateOnchainFee } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
@@ -464,6 +464,13 @@ export class KaspaEngine {
   async deriveIdentityCandidate(phrase, passphrase = "", { family = "kaspaStandard", index = 0 } = {}) {
     this.requireSdk();
     return importMnemonicWithFamily(this.kaspa, phrase, passphrase, { family, index });
+  }
+
+  // One batch of identity addresses for the chatting-address picker, derived
+  // off a single master key — never touches the engine's active wallet.
+  async deriveIdentityAddressRange(phrase, passphrase = "", options = {}) {
+    this.requireSdk();
+    return deriveIdentityAddressRange(this.kaspa, phrase, passphrase, options);
   }
 
   importPrivateKey(hex) {

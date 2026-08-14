@@ -246,7 +246,7 @@ export function renderUserTypeGuideStep(container) {
     <div class="setup-child-password">
       ${passwordFieldHtml("guide-password", "Password")}
       ${passwordFieldHtml("guide-confirm", "Confirm password")}
-      <p class="field-hint">4 digits, 8 digits, or anything you like — just don't forget it. It's needed to turn Child Mode off.</p>
+      <p class="field-hint">4 digits, 8 digits, or anything you like. Just don't forget it, it's needed to turn Child Mode off.</p>
     </div>` : ""}
     <p class="field-error" data-cm-error="guide" ${guideError ? "" : "hidden"}></p>`;
   setGuideError(guideError);

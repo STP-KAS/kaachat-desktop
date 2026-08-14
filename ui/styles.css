@@ -6227,3 +6227,137 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
 /* Account-scoped rows hidden while settings is opened without an account. */
 .settings-screen.app-only [data-settings-open-subscreen="dock"],
 .settings-screen.app-only [data-shell-action="view-recovery"] { display: none; }
+
+/* ---- Chatting-address picker (iOS ChattingAddressPickerView) ----
+   Opened from the setup guide's funding step on import onboarding runs. The
+   guide is a .modal-backdrop (z 2000), so these screens sit above that band;
+   the confirm dialog sits above them in turn. */
+[data-chatting-picker-screen] { z-index: 2100; }
+[data-chatting-picker-detail] { z-index: 2120; }
+.chatting-picker-confirm-backdrop { z-index: 2140; }
+
+.chatting-picker-title {
+  margin: 0;
+  padding: 4px 20px 6px;
+  font-size: 18px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.chatting-picker-error { padding: 0 20px; }
+.chatting-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--card-border, var(--line));
+  border-radius: 14px;
+  background: var(--surface-1, rgba(255, 255, 255, .04));
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.chatting-picker-row:hover { background: var(--surface-2, rgba(255, 255, 255, .05)); }
+.chatting-picker-row.current { border-color: color-mix(in srgb, var(--kaspa, #62f4d0) 60%, transparent); }
+.chatting-picker-row-index {
+  flex: 0 0 auto;
+  min-width: 34px;
+  font-weight: 700;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--kaspa-ink, var(--kaspa));
+}
+.chatting-picker-row-copy { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.chatting-picker-row-address {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chatting-picker-row-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.chatting-picker-domain-pill {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--kaspa, #62f4d0);
+  color: #041014;
+  font-size: 10.5px;
+  font-weight: 700;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chatting-picker-row-badge { flex: 0 0 auto; font-size: 10.5px; font-weight: 700; color: var(--muted); }
+.chatting-picker-row-badge.is-current { color: var(--kaspa-ink, var(--kaspa)); }
+.chatting-picker-row-chevron { flex: 0 0 auto; width: 16px; height: 16px; fill: none; stroke: var(--muted); stroke-width: 2; }
+.chatting-picker-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: center;
+}
+.chatting-picker-scan-more {
+  border: 1px solid var(--card-border, var(--line));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kaspa-ink, var(--kaspa));
+  font-weight: 650;
+  font-size: 13px;
+  padding: 7px 16px;
+  cursor: pointer;
+}
+.chatting-picker-scan-more:hover { background: var(--surface-2, rgba(255, 255, 255, .05)); }
+.chatting-picker-detail-body { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 8px; }
+.chatting-picker-detail-heading { margin: 0; font-size: 15px; font-weight: 700; text-align: center; }
+.chatting-picker-detail-address {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--card-border, var(--line));
+  border-radius: 12px;
+  background: var(--surface-1, rgba(255, 255, 255, .04));
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: break-all;
+  text-align: center;
+  cursor: pointer;
+}
+.chatting-picker-detail-hint { margin: 0; font-size: 11.5px; color: var(--muted); text-align: center; }
+.chatting-picker-detail-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--card-border, var(--line));
+  border-radius: 12px;
+  background: var(--surface-1, rgba(255, 255, 255, .04));
+  font-size: 14px;
+}
+.chatting-picker-detail-stat span:last-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.chatting-picker-detail-domains { display: flex; flex-direction: column; gap: 8px; }
+.chatting-picker-detail-domains > strong { font-size: 14px; }
+.chatting-picker-detail-domain {
+  padding: 10px 12px;
+  border: 1px solid var(--card-border, var(--line));
+  border-radius: 12px;
+  background: var(--surface-1, rgba(255, 255, 255, .04));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+}
+.chatting-picker-detail-domain em {
+  font-style: normal;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--kaspa-ink, var(--kaspa));
+}
