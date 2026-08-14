@@ -142,6 +142,18 @@ async function kapostGet(path, query = {}) {
   }
 }
 
+/**
+ * The opaque cursor for the NEXT page, or null when the server says this was the last one.
+ * The K indexer answers every list endpoint with `{hasMore, nextCursor, prevCursor}` where
+ * nextCursor is "<timestampMs>_<rowid>" of the last row it returned — feed it back as
+ * `before` to continue. Callers must treat it as opaque.
+ */
+export function nextPageCursor(pagination) {
+  if (!pagination || pagination.hasMore !== true) return null;
+  const cursor = pagination.nextCursor;
+  return cursor ? String(cursor) : null;
+}
+
 /** Decoded post content (base64 -> UTF-8), or null when it can't decode. */
 export function decodePostContent(post) {
   return base64ToUtf8(post?.postContent);
@@ -207,15 +219,21 @@ export async function fetchKaPostNotifications({ engine, limit = 100, before = n
   const json = await kapostGet("get-notifications", {
     requesterPubkey: requesterPubkeyFor(engine), limit, before,
   });
-  return Array.isArray(json?.notifications) ? json.notifications : [];
+  return {
+    notifications: Array.isArray(json?.notifications) ? json.notifications : [],
+    pagination: json?.pagination || null,
+  };
 }
 
 /** Per-post actor lists (KaChat indexer fork) — works for ANY post. */
-export async function fetchPostEngagement({ engine, postId, type = "all", limit = 100 } = {}) {
+export async function fetchPostEngagement({ engine, postId, type = "all", limit = 100, before = null } = {}) {
   const json = await kapostGet("get-post-engagement", {
-    postId, type, requesterPubkey: requesterPubkeyFor(engine), limit,
+    postId, type, requesterPubkey: requesterPubkeyFor(engine), limit, before,
   });
-  return Array.isArray(json?.engagement) ? json.engagement : [];
+  return {
+    engagement: Array.isArray(json?.engagement) ? json.engagement : [],
+    pagination: json?.pagination || null,
+  };
 }
 
 /** Who `pubkey` follows (followers=false) or who follows them (followers=true). The list

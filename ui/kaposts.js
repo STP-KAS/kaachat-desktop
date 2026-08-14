@@ -16,6 +16,7 @@ import {
   fetchUserPosts,
   fetchUserReplies,
   decodePostContent,
+  nextPageCursor,
   stripKaChatMarker,
   kaspaAddressFromPubkey,
   requesterPubkeyFor,
@@ -56,6 +57,15 @@ let replyTargetId = null; // in-thread: which comment the reply bar targets (nul
 let composerQuoteTarget = null; // post being quoted, when the composer is a quote composer
 let countdownTicker = null;
 let savedFeedScroll = 0;
+
+// Endless-scroll state (see the "Endless scrolling" section below)
+let feedPager = null;
+let feedGeneration = 0;   // bumped on every reload/tab switch/account reset — stale-response guard
+let threadGeneration = 0;
+let panelGeneration = 0;
+let lastFeedLoadAt = 0;
+let renderedFeedIds = new Set(); // what the feed DOM currently holds, so appends never duplicate
+const threadPagers = new Map();  // post id -> pager (a nested thread keeps its own cursor)
 
 function kapostsScrollEl() {
   return document.querySelector(".kaposts-content");
@@ -129,24 +139,216 @@ function posterAvatarHtml(address) {
   return `<span class="kaposts-avatar kaposts-avatar-fallback" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.118a7.5 7.5 0 0 1 15 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.5-1.632Z"/></svg></span>`;
 }
 
+/**
+ * KNS names/avatars for a batch of freshly appended rows. Goes through the engine's
+ * refreshKnsIfNeeded — ONE pass that dedupes, skips addresses already cached and honours
+ * the per-address backoff — never a request per post. Re-renders only when it actually
+ * fetched something (the caller's render reads the warm cache synchronously via peek*).
+ */
 let knsRefreshInFlight = false;
+async function resolvePosterIdentities(addresses, onResolved) {
+  if (!deps?.engine?.refreshKnsIfNeeded) return;
+  const unique = [...new Set((addresses || []).filter(Boolean))].slice(0, 60);
+  if (unique.length === 0) return;
+  const fetched = await deps.engine.refreshKnsIfNeeded(unique).catch(() => 0);
+  if (fetched) onResolved?.();
+}
+
 async function refreshVisiblePosterNames() {
   if (knsRefreshInFlight) return;
   knsRefreshInFlight = true;
   try {
-    const addresses = [...new Set(visibleFeedPosts().slice(0, 30).map((p) => p.posterAddress))];
-    let changed = false;
-    for (const address of addresses) {
-      const before = deps.engine.peekKnsAddressInfo?.(address)?.explicitPrimaryDomain || null;
-      await deps.engine.fetchKnsAddressInfo?.(address).catch(() => null);
-      await deps.engine.fetchKnsAddressProfile?.(address).catch(() => null);
-      const after = deps.engine.peekKnsAddressInfo?.(address)?.explicitPrimaryDomain || null;
-      if (before !== after) changed = true;
-    }
-    if (changed) renderFeed();
+    await resolvePosterIdentities(visibleFeedPosts().slice(0, 30).map((p) => p.posterAddress), () => renderFeed());
   } finally {
     knsRefreshInFlight = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Endless scrolling (shared paginator)
+// ---------------------------------------------------------------------------
+//
+// Every KaPosts list is server-paginated with an opaque cursor ({hasMore, nextCursor}) but
+// CLIENT-FILTERED afterwards: engine/kaposts.js keeps only KaChat-marked content, then muted
+// and blocked authors drop out here, then the Following tab intersects with the local follow
+// list and the profile Posts tab drops replies. A 50-row page can therefore yield ZERO
+// visible rows, so "one fetch per sentinel hit" would either stall forever or thrash. Instead
+// runPager keeps pulling pages until it has PAGER_TARGET_ROWS NEW VISIBLE rows or the server
+// runs out — capped at PAGER_MAX_REQUESTS requests per trigger so one scroll can never
+// stampede the indexer.
+
+const PAGER_PAGE_SIZE = 50;
+const PAGER_THREAD_PAGE_SIZE = 100;
+const PAGER_TARGET_ROWS = 18;
+const PAGER_MAX_REQUESTS = 5;
+const PAGER_MAX_UNPRODUCTIVE = 3; // consecutive all-filtered triggers before we ask for a tap
+const FEED_FRESH_MS = 90_000;
+
+function makePager({ pageSize = PAGER_PAGE_SIZE, target = PAGER_TARGET_ROWS } = {}) {
+  return {
+    cursor: null,
+    hasMore: true,
+    loading: false,
+    error: null,
+    stalled: false,
+    unproductive: 0,
+    seen: new Set(), // raw server ids already absorbed — dedupe across pages
+    pageSize,
+    target,
+  };
+}
+
+/** Primes a pager from the surface's FIRST page (the one the open/refresh path fetched). */
+function seedPager(pager, rawItems, pagination, idOf = (item) => item?.id) {
+  if (!pager) return;
+  pager.seen = new Set();
+  for (const item of rawItems || []) {
+    const id = idOf(item);
+    if (id) pager.seen.add(String(id));
+  }
+  pager.cursor = nextPageCursor(pagination);
+  pager.hasMore = Boolean(pager.cursor);
+  pager.loading = false;
+  pager.error = null;
+  pager.stalled = false;
+  pager.unproductive = 0;
+}
+
+/**
+ * The filter-shrinkage loop. `fetchPage(before, limit)` returns {items, pagination};
+ * `absorb(freshItems)` merges them into the surface's model, paints them and returns how many
+ * VISIBLE rows that produced; `isStale()` reports whether the surface has moved on (tab
+ * switch, panel close, thread pop, account change) — a stale response is dropped whole and
+ * the cursor is left untouched, so the surface that comes back is never fed the old list's
+ * rows. Exactly one run per pager at a time.
+ */
+async function runPager(pager, { fetchPage, absorb, isStale, onUpdate, idOf = (item) => item?.id }) {
+  if (!pager || pager.loading || pager.stalled || !pager.hasMore || pager.error) return;
+  pager.loading = true;
+  onUpdate?.();
+  let addedVisible = 0;
+  let requests = 0;
+  try {
+    while (pager.hasMore && addedVisible < pager.target && requests < PAGER_MAX_REQUESTS) {
+      requests += 1;
+      const cursor = pager.cursor;
+      const page = await fetchPage(cursor, pager.pageSize);
+      if (isStale()) return; // drop the response AND keep the cursor where it was
+      const items = Array.isArray(page?.items) ? page.items : [];
+      const fresh = [];
+      for (const item of items) {
+        const id = idOf(item);
+        if (!id) continue;
+        const key = String(id);
+        if (pager.seen.has(key)) continue;
+        pager.seen.add(key);
+        fresh.push(item);
+      }
+      const next = nextPageCursor(page?.pagination);
+      pager.cursor = next;
+      // Stop when the server runs out, repeats its cursor, or hands back a page we have
+      // already absorbed in full — an indexer that silently ignored `before` would
+      // otherwise re-serve page one forever.
+      pager.hasMore = Boolean(next) && next !== cursor && !(items.length > 0 && fresh.length === 0);
+      addedVisible += absorb(fresh) || 0;
+    }
+  } catch (error) {
+    if (!isStale()) pager.error = error?.message || "Could not load more posts.";
+    deps.appendEngineLog?.(`KaPosts load-more failed: ${error?.message || error}`);
+  } finally {
+    pager.loading = false;
+    if (!isStale()) {
+      // Nothing visible came back but the server still has rows: allow a few more automatic
+      // sweeps, then fall back to an explicit "Load more" so we never spin on a feed whose
+      // every page is filtered away.
+      pager.unproductive = addedVisible > 0 ? 0 : pager.unproductive + 1;
+      pager.stalled = pager.hasMore && !pager.error && pager.unproductive >= PAGER_MAX_UNPRODUCTIVE;
+      onUpdate?.();
+    }
+  }
+}
+
+// --- sentinel + IntersectionObserver lifecycle -----------------------------
+
+const pagerObservers = new Map(); // sentinel key -> IntersectionObserver
+const pagerLoaders = new Map();   // sentinel key -> { pager, load } (for the retry button)
+
+/** Nearest scrolling ancestor, so rootMargin prefetch works inside .kaposts-panel-body too. */
+function scrollRootFor(element) {
+  let node = element?.parentElement;
+  while (node && node !== document.body) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function clearPagerSentinel(key) {
+  pagerObservers.get(key)?.disconnect();
+  pagerObservers.delete(key);
+  pagerLoaders.delete(key);
+}
+
+function clearPanelPagerSentinels() {
+  for (const key of ["profile-posts", "profile-replies", "notifications", "engagement"]) {
+    clearPagerSentinel(key);
+  }
+}
+
+function clearAllPagerSentinels() {
+  for (const observer of pagerObservers.values()) observer.disconnect();
+  pagerObservers.clear();
+  pagerLoaders.clear();
+}
+
+function pagerFooterHtml(pager, key) {
+  if (pager.loading) {
+    return `<span class="kaposts-pager-spinner" aria-hidden="true"></span><span>Loading more…</span>`;
+  }
+  if (pager.error) {
+    return `<span class="kaposts-pager-error">${deps.escapeHtml(pager.error)}</span>
+            <button type="button" data-kaposts-pager-retry="${deps.escapeHtml(key)}">Retry</button>`;
+  }
+  if (pager.stalled) {
+    return `<button type="button" data-kaposts-pager-retry="${deps.escapeHtml(key)}">Load more</button>`;
+  }
+  return "";
+}
+
+/**
+ * (Re)places the bottom sentinel for `key` inside `container` and re-arms its observer.
+ * Called at the END of every render of that surface — because the module rewrites list
+ * innerHTML, the previous sentinel node is detached, and re-arming here (after an explicit
+ * disconnect) is what keeps observers from leaking across views. Once the surface reports
+ * end-of-list the sentinel is removed and nothing is observed at all.
+ */
+function mountPagerSentinel(key, container, pager, load) {
+  clearPagerSentinel(key);
+  container?.querySelector?.(`[data-kaposts-sentinel="${key}"]`)?.remove();
+  if (!container || !pager) return;
+  if (!pager.hasMore && !pager.loading && !pager.error) return; // end reached — stop observing
+  const sentinel = document.createElement("div");
+  sentinel.className = "kaposts-pager";
+  sentinel.dataset.kapostsSentinel = key;
+  sentinel.innerHTML = pagerFooterHtml(pager, key);
+  container.appendChild(sentinel);
+  pagerLoaders.set(key, { pager, load });
+  if (pager.loading || pager.error || pager.stalled) return; // busy or waiting on the user
+  const observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) load();
+  }, { root: scrollRootFor(sentinel), rootMargin: "0px 0px 600px 0px" });
+  observer.observe(sentinel);
+  pagerObservers.set(key, observer);
+}
+
+function retryPager(key) {
+  const entry = pagerLoaders.get(key);
+  if (!entry) return;
+  entry.pager.error = null;
+  entry.pager.stalled = false;
+  entry.pager.unproductive = 0;
+  entry.load();
 }
 
 // ---------------------------------------------------------------------------
@@ -186,28 +388,68 @@ function mapRemotePost(post) {
   };
 }
 
+function fetchFeedPage(before, limit = PAGER_PAGE_SIZE) {
+  const args = { engine: deps.engine, limit, before };
+  // "Popular" is the global feed re-sorted client-side, so it pages the same endpoint.
+  return activeFeedTab === "following" ? fetchFollowingFeed(args) : fetchGlobalFeed(args);
+}
+
+/** Page one. Resets the endless-scroll window: new cursor, cleared end-reached, top of list. */
 async function loadFeed() {
   // The KaPosts tab can be clicked before initKaPosts has run (startup awaits storage/engine
   // first) — deps is still null then, and every deps.* access below would throw.
   if (!deps) return;
-  if (feedLoading) return;
+  const generation = ++feedGeneration; // any in-flight page from the previous tab is now stale
+  clearPagerSentinel("feed");
+  feedPager = makePager();
   feedLoading = true;
   feedError = null;
   renderStatus();
   try {
-    const result = activeFeedTab === "following"
-      ? await fetchFollowingFeed({ engine: deps.engine })
-      : await fetchGlobalFeed({ engine: deps.engine });
+    const result = await fetchFeedPage(null);
+    if (generation !== feedGeneration) return;
     remotePosts = result.posts.map(mapRemotePost).filter(Boolean);
+    seedPager(feedPager, result.posts, result.pagination);
   } catch (error) {
+    if (generation !== feedGeneration) return;
     feedError = error?.message || "Could not load the feed.";
+    feedPager.hasMore = false;
     deps.appendEngineLog?.(`KaPosts feed load failed: ${feedError}`);
   } finally {
-    feedLoading = false;
-    renderStatus();
-    renderFeed();
-    refreshVisiblePosterNames();
+    if (generation === feedGeneration) {
+      feedLoading = false;
+      lastFeedLoadAt = Date.now();
+      renderStatus();
+      renderFeed({ resetScroll: true });
+      refreshVisiblePosterNames();
+    }
   }
+}
+
+/** Sentinel hit at the bottom of the feed — keeps paging until ~a screenful is visible. */
+function loadMoreFeed() {
+  if (!deps || !feedPager) return;
+  const generation = feedGeneration;
+  const pager = feedPager; // a tab switch swaps the module-level one out from under us
+  return runPager(pager, {
+    fetchPage: async (before, limit) => {
+      const result = await fetchFeedPage(before, limit);
+      return { items: result.posts, pagination: result.pagination };
+    },
+    absorb: (fresh) => {
+      const mapped = fresh.map(mapRemotePost).filter(Boolean);
+      const known = new Set(remotePosts.map((post) => post.remoteId));
+      const added = mapped.filter((post) => post.remoteId && !known.has(post.remoteId));
+      remotePosts = [...remotePosts, ...added];
+      const rendered = appendFeedRows(); // mute/block + Following-list filtering happens here
+      resolvePosterIdentities(added.map((post) => post.posterAddress), () => renderFeed());
+      return rendered;
+    },
+    isStale: () => generation !== feedGeneration,
+    onUpdate: () => {
+      if (generation === feedGeneration) mountPagerSentinel("feed", feedEl, pager, loadMoreFeed);
+    },
+  });
 }
 
 function visibleFeedPosts() {
@@ -447,10 +689,22 @@ function postCellHtml(post, { inThread = false, isRoot = false, replyInline = fa
     </article>`;
 }
 
-function renderFeed() {
+function engagementScore(post) {
+  return (post.likes || 0) + (post.reposts || 0) + (post.dislikes || 0);
+}
+
+/**
+ * Full repaint. Keeps the scroll position by default — a like or a countdown tick calls
+ * renderAll(), and with hundreds of paged-in rows a rewrite that jumped to the top would be
+ * unusable. Only page-one loads pass resetScroll.
+ */
+function renderFeed({ resetScroll = false } = {}) {
   if (!feedEl) return;
+  const scroller = kapostsScrollEl();
+  const previousTop = scroller?.scrollTop || 0;
   const posts = visibleFeedPosts();
   if (posts.length === 0 && !feedLoading && !feedError) {
+    renderedFeedIds = new Set();
     feedEl.innerHTML = `
       <div class="no-results-card">
         <strong>${activeFeedTab === "following" ? "Nothing here yet" : "No posts yet"}</strong>
@@ -458,9 +712,37 @@ function renderFeed() {
           ? "Follow people from their posts and their content shows up here."
           : "Be the first to post something on the Kaspa network."}</span>
       </div>`;
-    return;
+  } else {
+    renderedFeedIds = new Set(posts.map((post) => post.id));
+    feedEl.innerHTML = posts.map((post) => postCellHtml(post)).join("");
   }
-  feedEl.innerHTML = posts.map((post) => postCellHtml(post)).join("");
+  // While page one is in flight the status line owns the loading state — no sentinel yet, or
+  // it would fire a second request for the same page.
+  mountPagerSentinel("feed", feedEl, feedLoading ? null : feedPager, loadMoreFeed);
+  if (scroller) scroller.scrollTop = resetScroll ? 0 : previousTop;
+}
+
+/**
+ * Appends only the rows the DOM does not have yet, above the sentinel — never a rebuild, so
+ * the scroll position is untouched. Returns how many rows actually landed (0 when the whole
+ * page was muted/blocked/unfollowed away, which is what drives the shrinkage loop).
+ */
+function appendFeedRows() {
+  if (!feedEl) return 0;
+  const posts = visibleFeedPosts().filter((post) => !renderedFeedIds.has(post.id));
+  if (posts.length === 0) return 0;
+  if (renderedFeedIds.size === 0) { renderFeed(); return posts.length; } // replaces the empty card
+  // Popular sorts client-side over the loaded window; a batch is ranked within itself and
+  // parked below what is already on screen (a refresh re-sorts everything).
+  const ordered = activeFeedTab === "popular"
+    ? [...posts].sort((a, b) => engagementScore(b) - engagementScore(a))
+    : posts;
+  const html = ordered.map((post) => postCellHtml(post)).join("");
+  const sentinel = feedEl.querySelector('[data-kaposts-sentinel="feed"]');
+  if (sentinel) sentinel.insertAdjacentHTML("beforebegin", html);
+  else feedEl.insertAdjacentHTML("beforeend", html);
+  for (const post of ordered) renderedFeedIds.add(post.id);
+  return ordered.length;
 }
 
 function updateReplyContext() {
@@ -481,8 +763,11 @@ function renderThread() {
   if (threadEl) threadEl.hidden = !showThread;
   if (feedEl) feedEl.hidden = showThread || Boolean(activePanel);
   if (tabsEl) tabsEl.hidden = showThread || Boolean(activePanel);
+  if (!showThread) clearPagerSentinel("thread");
   if (!post || !threadRootEl) return;
   if (replyTargetId && !findPost(replyTargetId)) replyTargetId = null;
+  const scroller = kapostsScrollEl();
+  const previousTop = scroller?.scrollTop || 0;
   const comments = post.comments.filter((c) => !isHiddenAuthor(c.posterAddress));
   updateReplyContext();
   if (threadRootEl) {
@@ -499,6 +784,11 @@ function renderThread() {
               : ""}
           </div>`).join("")}
       </div>`;
+    const pager = threadPagers.get(post.id);
+    mountPagerSentinel("thread", threadRepliesEl, pager, () => loadMoreThreadReplies(post.id));
+    // The replies list is rebuilt whole (comment counts and countdowns live in every row),
+    // so hold the scroll position explicitly or paging in older replies would jump the view.
+    if (scroller) scroller.scrollTop = previousTop;
   }
 }
 
@@ -690,17 +980,59 @@ async function openThread(post) {
   threadStack.push(post.id);
   renderThread();
   if (!post.remoteId) return;
+  const generation = ++threadGeneration;
+  const pager = makePager({ pageSize: PAGER_THREAD_PAGE_SIZE });
+  threadPagers.set(post.id, pager);
   try {
-    const result = await fetchReplies({ engine: deps.engine, postId: post.remoteId });
+    const result = await fetchReplies({ engine: deps.engine, postId: post.remoteId, limit: PAGER_THREAD_PAGE_SIZE });
+    if (generation !== threadGeneration) return;
     const replies = result.posts.map(mapRemotePost).filter(Boolean);
+    seedPager(pager, result.posts, result.pagination);
     mutatePost(post.id, (p) => {
       const localOnly = p.comments.filter((c) => !c.remoteId || !replies.some((r) => r.remoteId === c.remoteId));
       p.comments = [...replies, ...localOnly];
     });
     renderThread();
+    resolvePosterIdentities(replies.map((reply) => reply.posterAddress), () => {
+      if (threadStack[threadStack.length - 1] === post.id) renderThread();
+    });
   } catch (error) {
+    if (generation !== threadGeneration) return;
+    pager.hasMore = false;
     deps.appendEngineLog?.(`KaPost replies load failed: ${error.message}`);
+    renderThread();
   }
+}
+
+/** Sentinel hit under a thread's comments — pages older replies in. */
+function loadMoreThreadReplies(postId) {
+  const post = findPost(postId);
+  const pager = threadPagers.get(postId);
+  if (!post?.remoteId || !pager) return;
+  const generation = threadGeneration;
+  return runPager(pager, {
+    fetchPage: async (before, limit) => {
+      const result = await fetchReplies({ engine: deps.engine, postId: post.remoteId, limit, before });
+      return { items: result.posts, pagination: result.pagination };
+    },
+    absorb: (fresh) => {
+      const mapped = fresh.map(mapRemotePost).filter(Boolean);
+      let added = 0;
+      mutatePost(postId, (p) => {
+        const known = new Set(p.comments.map((c) => c.remoteId).filter(Boolean));
+        const rows = mapped.filter((reply) => reply.remoteId && !known.has(reply.remoteId));
+        p.comments = [...p.comments, ...rows];
+        added = rows.filter((reply) => !isHiddenAuthor(reply.posterAddress)).length;
+      });
+      renderThread();
+      resolvePosterIdentities(mapped.map((reply) => reply.posterAddress), () => {
+        if (threadStack[threadStack.length - 1] === postId) renderThread();
+      });
+      return added;
+    },
+    isStale: () => generation !== threadGeneration || threadStack[threadStack.length - 1] !== postId,
+    onUpdate: () => renderThread(),
+  });
 }
 
 async function submitReply(parent, text) {
@@ -799,6 +1131,8 @@ function syncRailActive() {
 
 function closePanel() {
   activePanel = null;
+  panelGeneration += 1; // any page still in flight for the panel we just left is now stale
+  clearPanelPagerSentinels();
   renderPanel();
   syncRailActive();
   restoreFeedScroll();
@@ -809,8 +1143,13 @@ function renderPanel() {
   if (panelEl) panelEl.hidden = !show;
   if (feedEl) feedEl.hidden = show || threadStack.length > 0;
   if (tabsEl) tabsEl.hidden = show || threadStack.length > 0;
+  if (!show) clearPanelPagerSentinels();
   if (!show || !panelBodyEl) return;
   const panel = activePanel;
+  // Panels rebuild their body wholesale (hero, tab bar and rows share one template), so the
+  // scroll position has to be carried over by hand when a page of rows lands.
+  const previousTop = panelBodyEl.scrollTop || 0;
+  const restorePanelScroll = () => { panelBodyEl.scrollTop = previousTop; };
   const titles = {
     profile: "Profile", notifications: "Notifications", engagement: "Post Activity",
     bookmarks: "Bookmarks", muted: "Muted", blocked: "Blocked", menu: "KaPosts",
@@ -843,17 +1182,29 @@ function renderPanel() {
         <button class="kaposts-feed-tab${panel.tab !== "replies" ? " active" : ""}" type="button" data-kaposts-profile-tab="posts">Posts</button>
         <button class="kaposts-feed-tab${panel.tab === "replies" ? " active" : ""}" type="button" data-kaposts-profile-tab="replies">Replies</button>
       </div>
-      ${panel.loading && feedItems.length === 0
-        ? `<div class="kaposts-feed-status">Loading…</div>`
-        : feedItems.length === 0
-          ? `<div class="no-results-card"><strong>${panel.tab === "replies" ? "No replies yet" : "No posts yet"}</strong></div>`
-          : feedItems.map((post) => postCellHtml(post, { inThread: true })).join("")}`;
+      <div class="kaposts-panel-list" data-kaposts-panel-list>
+        ${panel.loading && feedItems.length === 0
+          ? `<div class="kaposts-feed-status">Loading…</div>`
+          : feedItems.length === 0
+            ? `<div class="no-results-card"><strong>${panel.tab === "replies" ? "No replies yet" : "No posts yet"}</strong></div>`
+            : feedItems.map((post) => postCellHtml(post, { inThread: true })).join("")}
+      </div>`;
+    const profileTab = panel.tab === "replies" ? "replies" : "posts";
+    mountPagerSentinel(
+      `profile-${profileTab}`,
+      panelBodyEl.querySelector("[data-kaposts-panel-list]"),
+      panel.loading ? null : panel.pagers?.[profileTab], // the first page owns the Loading… state
+      () => loadMoreProfile(profileTab),
+    );
+    clearPagerSentinel(profileTab === "posts" ? "profile-replies" : "profile-posts");
+    restorePanelScroll();
     return;
   }
 
   if (panel.type === "notifications") {
     const items = panel.items || [];
-    panelBodyEl.innerHTML = panel.loading && items.length === 0
+    panelBodyEl.innerHTML = `<div class="kaposts-panel-list" data-kaposts-panel-list>${
+      panel.loading && items.length === 0
       ? `<div class="kaposts-feed-status">Loading…</div>`
       : items.length === 0
         ? `<div class="no-results-card"><strong>Nothing yet</strong><span>When someone likes, replies to or shares your posts, it shows up here.</span></div>`
@@ -866,7 +1217,15 @@ function renderPanel() {
                 <span class="kaposts-cell-time">${deps.escapeHtml(formatRelativeTime(item.timestamp))}</span>
               </div>
               <a class="kaposts-view-link" href="${deps.escapeHtml(deps.explorerTxUrl(item.id))}" target="_blank" rel="noopener">View</a>
-            </div>`).join("");
+            </div>`).join("")
+    }</div>`;
+    mountPagerSentinel(
+      "notifications",
+      panelBodyEl.querySelector("[data-kaposts-panel-list]"),
+      panel.loading ? null : panel.pager,
+      loadMoreNotifications,
+    );
+    restorePanelScroll();
     return;
   }
 
@@ -885,29 +1244,45 @@ function renderPanel() {
           return `<button class="kaposts-feed-tab${tab === key ? " active" : ""}" type="button" data-kaposts-engagement-tab="${key}">${tabLabel(key, label)}</button>`;
         }).join("")}
       </div>
-      ${panel.loading
-        ? `<div class="kaposts-feed-status">Loading…</div>`
-        : rows.length === 0
-          ? `<div class="no-results-card"><strong>Nothing here yet</strong><span>When someone engages with this post, they'll show up here.</span></div>`
-          : rows.map((entry) => `
-              <div class="kaposts-notification-row">
-                ${posterAvatarHtml(entry.actorAddress)}
-                <div class="kaposts-notification-main">
-                  <span><strong>${deps.escapeHtml(posterName(entry.actorAddress))}</strong></span>
-                  <span class="kaposts-cell-time">${deps.escapeHtml(formatRelativeTime(entry.timestamp))}</span>
-                </div>
-                <a class="kaposts-view-link" href="${deps.escapeHtml(deps.explorerTxUrl(entry.actionTxId))}" target="_blank" rel="noopener">View</a>
-              </div>`).join("")}
+      <div class="kaposts-panel-list" data-kaposts-panel-list>
+        ${panel.loading
+          ? `<div class="kaposts-feed-status">Loading…</div>`
+          : rows.length === 0
+            ? `<div class="no-results-card"><strong>Nothing here yet</strong><span>When someone engages with this post, they'll show up here.</span></div>`
+            : rows.map((entry) => `
+                <div class="kaposts-notification-row">
+                  ${posterAvatarHtml(entry.actorAddress)}
+                  <div class="kaposts-notification-main">
+                    <span><strong>${deps.escapeHtml(posterName(entry.actorAddress))}</strong></span>
+                    <span class="kaposts-cell-time">${deps.escapeHtml(formatRelativeTime(entry.timestamp))}</span>
+                  </div>
+                  <a class="kaposts-view-link" href="${deps.escapeHtml(deps.explorerTxUrl(entry.actionTxId))}" target="_blank" rel="noopener">View</a>
+                </div>`).join("")}
+      </div>
       ${panel.postTxId ? `<a class="kaposts-view-link kaposts-post-tx-link" href="${deps.escapeHtml(deps.explorerTxUrl(panel.postTxId))}" target="_blank" rel="noopener">View Post Transaction in Explorer</a>` : ""}`;
+    mountPagerSentinel(
+      "engagement",
+      panelBodyEl.querySelector("[data-kaposts-panel-list]"),
+      panel.loading ? null : panel.pager,
+      loadMoreEngagement,
+    );
+    restorePanelScroll();
     return;
   }
 
   if (panel.type === "list") {
+    // Bookmarks/Muted/Blocked are pure client-side lists (see the note on openBookmarks-style
+    // panels below) — nothing to page, so no sentinel may survive here.
+    clearPanelPagerSentinels();
     if (panel.kind === "bookmarks") {
+      // Bookmarks are a local flag on already-loaded posts — the indexer has no bookmark
+      // endpoint and no cursor to follow, so this list grows as the feed pages in rather
+      // than paging itself.
       const bookmarks = allPostLists().filter((p) => p.bookmarkedByMe && !isHiddenAuthor(p.posterAddress));
       panelBodyEl.innerHTML = bookmarks.length === 0
         ? `<div class="no-results-card"><strong>No bookmarks yet</strong><span>Bookmark posts from their ⋯ menu to find them here.</span></div>`
         : bookmarks.map((post) => postCellHtml(post, { inThread: true })).join("");
+      restorePanelScroll();
       return;
     }
     const addresses = panel.kind === "muted" ? prefs.muted : prefs.blocked;
@@ -921,37 +1296,93 @@ function renderPanel() {
               ${panel.kind === "muted" ? "Unmute" : "Unblock"}
             </button>
           </div>`).join("");
+    restorePanelScroll();
   }
 }
 
 async function openPosterProfile(address, pubkey) {
   rememberFeedScroll();
-  activePanel = { type: "profile", address, pubkey, tab: "posts", posts: [], replies: [], details: null, loading: true };
+  panelGeneration += 1;
+  clearPanelPagerSentinels();
+  const generation = panelGeneration;
+  activePanel = {
+    type: "profile", address, pubkey, tab: "posts", posts: [], replies: [], details: null, loading: true,
+    pagers: { posts: makePager(), replies: makePager() },
+  };
+  const panel = activePanel;
   renderPanel();
   syncRailActive();
   deps.engine.fetchKnsAddressInfo?.(address).catch(() => null)
     .then(() => deps.engine.fetchKnsAddressProfile?.(address).catch(() => null))
-    .then(() => { if (activePanel?.type === "profile" && activePanel.address === address) renderPanel(); });
-  if (!pubkey) { activePanel.loading = false; renderPanel(); return; }
+    .then(() => { if (activePanel === panel) renderPanel(); });
+  if (!pubkey) {
+    panel.loading = false;
+    panel.pagers.posts.hasMore = false;
+    panel.pagers.replies.hasMore = false;
+    renderPanel();
+    return;
+  }
   try {
     const [details, content, repliesContent] = await Promise.all([
       fetchKaPostUserDetails({ engine: deps.engine, pubkey }).catch(() => null),
-      fetchUserPosts({ engine: deps.engine, pubkey }),
+      fetchUserPosts({ engine: deps.engine, pubkey, limit: PAGER_PAGE_SIZE }),
       // Separate endpoint — get-posts never returns replies (see fetchUserPosts' note). A
       // replies failure must not blank the Posts tab.
-      fetchUserReplies({ engine: deps.engine, pubkey }).catch(() => ({ posts: [] })),
+      fetchUserReplies({ engine: deps.engine, pubkey, limit: PAGER_PAGE_SIZE })
+        .catch(() => ({ posts: [], pagination: null })),
     ]);
-    if (activePanel?.type !== "profile" || activePanel.address !== address) return;
+    if (activePanel !== panel || generation !== panelGeneration) return;
     const mapped = content.posts.map(mapRemotePost).filter(Boolean);
-    activePanel.posts = mapped.filter((p) => !p.parentRemoteId);
-    activePanel.replies = repliesContent.posts.map(mapRemotePost).filter(Boolean);
-    activePanel.details = details;
-    activePanel.loading = false;
+    panel.posts = mapped.filter((p) => !p.parentRemoteId);
+    panel.replies = repliesContent.posts.map(mapRemotePost).filter(Boolean);
+    panel.details = details;
+    panel.loading = false;
+    seedPager(panel.pagers.posts, content.posts, content.pagination);
+    seedPager(panel.pagers.replies, repliesContent.posts, repliesContent.pagination);
     renderPanel();
+    resolvePosterIdentities([address], () => { if (activePanel === panel) renderPanel(); });
   } catch (error) {
     deps.appendEngineLog?.(`KaPost profile load failed: ${error.message}`);
-    if (activePanel?.type === "profile") { activePanel.loading = false; renderPanel(); }
+    if (activePanel === panel) {
+      panel.loading = false;
+      panel.pagers.posts.hasMore = false;
+      panel.pagers.replies.hasMore = false;
+      renderPanel();
+    }
   }
+}
+
+/** Sentinel hit under a profile's Posts or Replies tab (own profile and other users' alike). */
+function loadMoreProfile(tab) {
+  const panel = activePanel;
+  if (panel?.type !== "profile" || !panel.pubkey) return;
+  const pager = panel.pagers?.[tab];
+  if (!pager) return;
+  const generation = panelGeneration;
+  const listKey = tab === "replies" ? "replies" : "posts";
+  return runPager(pager, {
+    fetchPage: async (before, limit) => {
+      const result = tab === "replies"
+        ? await fetchUserReplies({ engine: deps.engine, pubkey: panel.pubkey, limit, before })
+        : await fetchUserPosts({ engine: deps.engine, pubkey: panel.pubkey, limit, before });
+      return { items: result.posts, pagination: result.pagination };
+    },
+    absorb: (fresh) => {
+      const mapped = fresh.map(mapRemotePost).filter(Boolean);
+      // get-posts is hard-filtered to posts/quotes server-side, but a stray reply would
+      // belong on the other tab — the Posts tab shows top-level content only.
+      const rows = tab === "replies" ? mapped : mapped.filter((post) => !post.parentRemoteId);
+      const known = new Set((panel[listKey] || []).map((post) => post.id));
+      const added = rows.filter((post) => !known.has(post.id));
+      panel[listKey] = [...(panel[listKey] || []), ...added];
+      renderPanel();
+      return added.length;
+    },
+    isStale: () => generation !== panelGeneration
+      || activePanel !== panel
+      || (panel.tab === "replies" ? "replies" : "posts") !== tab,
+    onUpdate: () => renderPanel(),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -990,7 +1421,7 @@ async function pollKaPostNotificationsForPings() {
   if (!deps?.engine?.address) return;
   if (deps.kaPostsSuppressed?.()) return;
   let raw;
-  try { raw = await fetchKaPostNotifications({ engine: deps.engine }); } catch { return; }
+  try { raw = (await fetchKaPostNotifications({ engine: deps.engine })).notifications; } catch { return; }
   if (!Array.isArray(raw) || !raw.length) return;
 
   const my = deps.engine.address;
@@ -1030,63 +1461,119 @@ function startKaPostsNotificationPolling() {
   window.setTimeout(pollKaPostNotificationsForPings, 10_000);
 }
 
+/** One indexer notification -> one panel row, or null when it must not be shown. */
+function mapNotificationRow(n) {
+  const actorAddress = kaspaAddressFromPubkey(deps.engine, n.userPublicKey);
+  if (!actorAddress || actorAddress === deps.engine.address || isHiddenAuthor(actorAddress)) return null;
+  const text = stripKaChatMarker(n.postContent ? (decodePostContent({ postContent: n.postContent }) || "") : "").trim();
+  let action = "interacted with your post";
+  let targetTxId = n.contentId || null;
+  if (n.contentType === "vote") action = n.voteType === "downvote" ? "disliked your post" : "liked your post";
+  else if (n.contentType === "reply") { action = "replied to your post"; targetTxId = n.id; }
+  else if (n.contentType === "quote") {
+    action = text ? "quoted your post" : "reposted your post";
+    targetTxId = text ? n.id : n.contentId;
+  } else if (n.contentType === "follow") { action = "followed you"; targetTxId = null; }
+  return { id: n.id, actorAddress, action, snippet: text || null, timestamp: Number(n.timestamp) || Date.now(), targetTxId };
+}
+
 async function openNotificationsPanel() {
   rememberFeedScroll();
-  activePanel = { type: "notifications", items: [], loading: true };
+  panelGeneration += 1;
+  clearPanelPagerSentinels();
+  const generation = panelGeneration;
+  activePanel = { type: "notifications", items: [], loading: true, pager: makePager({ pageSize: PAGER_THREAD_PAGE_SIZE }) };
+  const panel = activePanel;
   renderPanel();
   syncRailActive();
   try {
-    const raw = await fetchKaPostNotifications({ engine: deps.engine });
-    if (activePanel?.type !== "notifications") return;
-    const my = deps.engine.address;
-    activePanel.items = raw.map((n) => {
-      const actorAddress = kaspaAddressFromPubkey(deps.engine, n.userPublicKey);
-      if (!actorAddress || actorAddress === my || isHiddenAuthor(actorAddress)) return null;
-      const text = stripKaChatMarker(n.postContent ? (decodePostContent({ postContent: n.postContent }) || "") : "").trim();
-      let action = "interacted with your post";
-      let targetTxId = n.contentId || null;
-      if (n.contentType === "vote") action = n.voteType === "downvote" ? "disliked your post" : "liked your post";
-      else if (n.contentType === "reply") { action = "replied to your post"; targetTxId = n.id; }
-      else if (n.contentType === "quote") {
-        action = text ? "quoted your post" : "reposted your post";
-        targetTxId = text ? n.id : n.contentId;
-      } else if (n.contentType === "follow") { action = "followed you"; targetTxId = null; }
-      return { id: n.id, actorAddress, action, snippet: text || null, timestamp: Number(n.timestamp) || Date.now(), targetTxId };
-    }).filter(Boolean);
-    activePanel.loading = false;
+    const page = await fetchKaPostNotifications({ engine: deps.engine, limit: PAGER_THREAD_PAGE_SIZE });
+    if (activePanel !== panel || generation !== panelGeneration) return;
+    panel.items = page.notifications.map(mapNotificationRow).filter(Boolean);
+    panel.loading = false;
+    seedPager(panel.pager, page.notifications, page.pagination);
     renderPanel();
-    const addresses = [...new Set(activePanel.items.map((i) => i.actorAddress))].slice(0, 20);
-    for (const address of addresses) {
-      await deps.engine.fetchKnsAddressInfo?.(address).catch(() => null);
-      await deps.engine.fetchKnsAddressProfile?.(address).catch(() => null);
-    }
-    if (activePanel?.type === "notifications") renderPanel();
+    resolvePosterIdentities(panel.items.map((item) => item.actorAddress), () => {
+      if (activePanel === panel) renderPanel();
+    });
   } catch (error) {
     deps.appendEngineLog?.(`KaPost notifications load failed: ${error.message}`);
-    if (activePanel?.type === "notifications") { activePanel.loading = false; renderPanel(); }
+    if (activePanel === panel) { panel.loading = false; panel.pager.hasMore = false; renderPanel(); }
   }
 }
 
+/** Sentinel hit at the bottom of the notifications panel. */
+function loadMoreNotifications() {
+  const panel = activePanel;
+  if (panel?.type !== "notifications" || !panel.pager) return;
+  const generation = panelGeneration;
+  return runPager(panel.pager, {
+    fetchPage: async (before, limit) => {
+      const page = await fetchKaPostNotifications({ engine: deps.engine, limit, before });
+      return { items: page.notifications, pagination: page.pagination };
+    },
+    absorb: (fresh) => {
+      // Own actions and muted/blocked actors drop out here — that filtering is why the
+      // shrinkage loop keeps pulling instead of settling for one page.
+      const rows = fresh.map(mapNotificationRow).filter(Boolean);
+      panel.items = [...panel.items, ...rows];
+      renderPanel();
+      resolvePosterIdentities(rows.map((item) => item.actorAddress), () => {
+        if (activePanel === panel) renderPanel();
+      });
+      return rows.length;
+    },
+    isStale: () => generation !== panelGeneration || activePanel !== panel,
+    onUpdate: () => renderPanel(),
+  });
+}
+
+/** Distributes engagement rows into the four tab lists; returns how many landed per tab. */
+function absorbEngagementRows(lists, rows) {
+  const counts = { likes: 0, dislikes: 0, reposts: 0, quotes: 0 };
+  for (const row of rows || []) {
+    const actorAddress = kaspaAddressFromPubkey(deps.engine, row.actorPubkey);
+    if (!actorAddress) continue;
+    const entry = { actionTxId: row.actionTxId, actorAddress, timestamp: Number(row.timestamp) || Date.now() };
+    const bucket = row.kind === "upvote" ? "likes"
+      : row.kind === "downvote" ? "dislikes"
+        : row.kind === "repost" ? "reposts"
+          : row.kind === "quote" ? "quotes" : null;
+    if (!bucket) continue;
+    lists[bucket].push(entry);
+    counts[bucket] += 1;
+  }
+  return counts;
+}
+
 async function openEngagementPanel(post) {
-  activePanel = { type: "engagement", postId: post.id, postTxId: post.remoteId, tab: "likes", lists: null, loading: true };
+  panelGeneration += 1;
+  clearPanelPagerSentinels();
+  const generation = panelGeneration;
+  activePanel = {
+    type: "engagement", postId: post.id, postTxId: post.remoteId, tab: "likes", lists: null, loading: true,
+    pager: makePager({ pageSize: PAGER_THREAD_PAGE_SIZE }),
+  };
+  const panel = activePanel;
   renderPanel();
   const lists = { likes: [], dislikes: [], reposts: [], quotes: [] };
   try {
-    const rows = await fetchPostEngagement({ engine: deps.engine, postId: post.remoteId });
-    for (const row of rows) {
-      const actorAddress = kaspaAddressFromPubkey(deps.engine, row.actorPubkey);
-      if (!actorAddress) continue;
-      const entry = { actionTxId: row.actionTxId, actorAddress, timestamp: Number(row.timestamp) || Date.now() };
-      if (row.kind === "upvote") lists.likes.push(entry);
-      else if (row.kind === "downvote") lists.dislikes.push(entry);
-      else if (row.kind === "repost") lists.reposts.push(entry);
-      else if (row.kind === "quote") lists.quotes.push(entry);
-    }
+    const page = await fetchPostEngagement({
+      engine: deps.engine, postId: post.remoteId, limit: PAGER_THREAD_PAGE_SIZE,
+    });
+    absorbEngagementRows(lists, page.engagement);
+    seedPager(panel.pager, page.engagement, page.pagination, (row) => row?.actionTxId);
+    resolvePosterIdentities(
+      Object.values(lists).flat().map((entry) => entry.actorAddress),
+      () => { if (activePanel === panel) renderPanel(); },
+    );
   } catch (error) {
-    // Older deployments: derive from the notification stream (own posts only).
+    // Older deployments: derive from the notification stream (own posts only) — a one-shot
+    // list with no cursor of its own, so paging stops here.
+    panel.pager.hasMore = false;
     if (post.posterAddress === deps.engine.address) {
       try {
-        const raw = await fetchKaPostNotifications({ engine: deps.engine });
+        const raw = (await fetchKaPostNotifications({ engine: deps.engine })).notifications;
         for (const n of raw) {
           if (n.contentId !== post.remoteId) continue;
           const actorAddress = kaspaAddressFromPubkey(deps.engine, n.userPublicKey);
@@ -1103,10 +1590,42 @@ async function openEngagementPanel(post) {
       } catch { /* leave empty */ }
     }
   }
-  if (activePanel?.type !== "engagement" || activePanel.postId !== post.id) return;
-  activePanel.lists = lists;
-  activePanel.loading = false;
+  if (activePanel !== panel || generation !== panelGeneration) return;
+  panel.lists = lists;
+  panel.loading = false;
   renderPanel();
+}
+
+/**
+ * Sentinel hit under a "who liked / reposted" list. One cursor covers the mixed stream the
+ * indexer returns, so a page feeds all four tabs at once; only rows landing on the tab the
+ * user is looking at count towards the target.
+ */
+function loadMoreEngagement() {
+  const panel = activePanel;
+  if (panel?.type !== "engagement" || !panel.pager || !panel.postTxId) return;
+  const generation = panelGeneration;
+  return runPager(panel.pager, {
+    idOf: (row) => row?.actionTxId,
+    fetchPage: async (before, limit) => {
+      const page = await fetchPostEngagement({
+        engine: deps.engine, postId: panel.postTxId, limit, before,
+      });
+      return { items: page.engagement, pagination: page.pagination };
+    },
+    absorb: (fresh) => {
+      const lists = panel.lists || (panel.lists = { likes: [], dislikes: [], reposts: [], quotes: [] });
+      const counts = absorbEngagementRows(lists, fresh);
+      renderPanel();
+      resolvePosterIdentities(
+        fresh.map((row) => kaspaAddressFromPubkey(deps.engine, row.actorPubkey)),
+        () => { if (activePanel === panel) renderPanel(); },
+      );
+      return counts[panel.tab || "likes"] || 0;
+    },
+    isStale: () => generation !== panelGeneration || activePanel !== panel,
+    onUpdate: () => renderPanel(),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,7 +1691,17 @@ function handlePopoverAction(action, post) {
 // Init + events
 // ---------------------------------------------------------------------------
 
+/**
+ * Tab activation. Keeps an already-loaded (and still fresh) endless-scroll window instead of
+ * snapping back to page one — leaving KaPosts for a moment must not throw away everything the
+ * user scrolled in. The Refresh button always reloads.
+ */
 export function refreshKaPostsFeed() {
+  if (!deps) return;
+  if (remotePosts.length > 0 && Date.now() - lastFeedLoadAt < FEED_FRESH_MS) {
+    renderFeed();
+    return;
+  }
   loadFeed();
 }
 
@@ -1183,6 +1712,16 @@ export function resetKaPostsForAccount() {
   myContentPosts = [];
   threadStack = [];
   activePanel = null;
+  // Account change: every cursor, every in-flight page and every observer belongs to the old
+  // wallet's lists.
+  feedGeneration += 1;
+  threadGeneration += 1;
+  panelGeneration += 1;
+  feedPager = makePager();
+  threadPagers.clear();
+  renderedFeedIds = new Set();
+  lastFeedLoadAt = 0;
+  clearAllPagerSentinels();
   renderAll();
   renderPanel();
 }
@@ -1220,6 +1759,10 @@ export function initKaPosts(dependencies) {
     if (!button) return;
     activeFeedTab = button.dataset.kapostsFeedTab;
     tabsEl.querySelectorAll("[data-kaposts-feed-tab]").forEach((b) => b.classList.toggle("active", b === button));
+    // Retire the outgoing tab's cursor before anything can repaint: its sentinel must not
+    // fire a "load more" that would page the tab the user just left.
+    feedPager = null;
+    clearPagerSentinel("feed");
     renderFeed();
     loadFeed();
   });
@@ -1231,10 +1774,17 @@ export function initKaPosts(dependencies) {
     button.addEventListener("click", () => {
       const key = button.dataset.kapostsRail;
       threadStack = [];
+      threadGeneration += 1; // drops any reply page still in flight for the thread we left
       if (key === "feed") closePanel();
       else if (key === "notifications") openNotificationsPanel();
       else if (key === "profile") openPosterProfile(deps.engine.address, safeRequesterPubkey());
-      else { rememberFeedScroll(); activePanel = { type: "list", kind: key }; renderPanel(); }
+      else {
+        rememberFeedScroll();
+        panelGeneration += 1;
+        clearPanelPagerSentinels();
+        activePanel = { type: "list", kind: key };
+        renderPanel();
+      }
       renderThread();
       renderFeed();
       syncRailActive();
@@ -1251,6 +1801,12 @@ export function initKaPosts(dependencies) {
   document.querySelector("[data-kaposts-thread-back]")?.addEventListener("click", () => {
     threadStack.pop();
     replyTargetId = null;
+    if (threadStack.length === 0) {
+      // Back at the feed: drop every thread cursor so a re-open starts from a fresh page one.
+      threadGeneration += 1;
+      threadPagers.clear();
+      clearPagerSentinel("thread");
+    }
     renderThread();
     renderFeed();
     restoreFeedScroll();
@@ -1324,6 +1880,9 @@ export function initKaPosts(dependencies) {
       replyInput?.focus();
       return;
     }
+
+    const pagerRetry = event.target.closest("[data-kaposts-pager-retry]");
+    if (pagerRetry) { retryPager(pagerRetry.dataset.kapostsPagerRetry); return; }
 
     const undo = event.target.closest("[data-kaposts-undo]");
     if (undo) { cancelUndoable(undo.dataset.kapostsUndo); return; }

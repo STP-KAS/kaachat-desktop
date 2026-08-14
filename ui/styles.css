@@ -5273,6 +5273,31 @@ body.session-logged-out [data-account-rename-modal] {
 .kaposts-feed-status { color: var(--muted); font-size: 13px; text-align: center; padding: 18px 0; }
 .kaposts-feed { display: flex; flex-direction: column; gap: 10px; }
 
+/* Endless scrolling: rows live in this wrapper so a page can be appended to it without
+   rebuilding the panel around it, and the sentinel below is what the IntersectionObserver
+   watches (it is removed entirely once a list reaches its end). */
+.kaposts-panel-list { display: flex; flex-direction: column; gap: 10px; }
+.kaposts-pager {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 40px; padding: 8px 0;
+  color: var(--muted); font-size: 12.5px; font-weight: 650;
+}
+.kaposts-pager button {
+  border: 1px solid var(--line); background: var(--surface-1); color: var(--text);
+  border-radius: 999px; padding: 6px 14px;
+  font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer;
+}
+.kaposts-pager button:hover { border-color: var(--kaspa); color: var(--kaspa); }
+.kaposts-pager-spinner {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--kaspa);
+  animation: kaposts-pager-spin .8s linear infinite;
+}
+@keyframes kaposts-pager-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .kaposts-pager-spinner { animation-duration: 2.4s; }
+}
+
 .kaposts-cell {
   display: flex; gap: 12px; padding: 14px;
   border: 1px solid var(--line); border-radius: 18px;
