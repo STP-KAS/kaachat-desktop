@@ -3188,11 +3188,14 @@ body.session-logged-out [data-account-rename-modal] {
 }
 .fee-estimate-banner { left: 18px; }
 
+/* Sits in the composer shell's normal flow, directly above the composer, so the
+   absolutely-positioned Available/fee pills (anchored to the shell's top edge)
+   clear it instead of covering it. */
 .handshake-warning-banner {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 16px 10px;
+  margin: 0 0 8px;
   padding: 10px 14px;
   border-radius: 12px;
   background: rgba(255, 183, 77, 0.1);

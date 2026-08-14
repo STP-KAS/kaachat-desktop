@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=228" />
+  <link rel="stylesheet" href="./ui/styles.css?v=229" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -197,14 +197,16 @@
             </div>
             <div class="message-area" data-message-area><div data-message-empty hidden aria-hidden="true"></div></div>
 
-            <div class="handshake-warning-banner" data-handshake-warning-banner hidden role="status" aria-live="polite">
-              <span>The recipient won't see your messages until they message you or you ping them with a handshake. Handshakes cost 0.2 KAS and are returned to you if they accept.</span>
-              <button type="button" data-handshake-warning-send>Send Handshake</button>
-            </div>
-
             <div class="composer-shell">
               <div class="available-balance-banner" data-available-balance-banner hidden role="status" aria-live="polite"></div>
               <div class="fee-estimate-banner" data-fee-estimate-banner hidden role="status" aria-live="polite"></div>
+              <!-- Lives inside the composer shell (not as a sibling grid row) so the
+                   absolutely-positioned payment/fee pills, which sit above the shell,
+                   can never overlap it. -->
+              <div class="handshake-warning-banner" data-handshake-warning-banner hidden role="status" aria-live="polite">
+                <span>The recipient won't see your messages until they message you or you ping them with a handshake. Handshakes cost 0.2 KAS and are returned to you if they accept.</span>
+                <button type="button" data-handshake-warning-send>Send Handshake</button>
+              </div>
               <div class="composer-plus-menu" data-composer-plus-menu hidden>
                 <button type="button" data-composer-mode="message">
                   <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6.5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-7.2L7.5 21v-3.5H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z"/><path d="M7 10h10M7 13.5h7"/></svg></span>
@@ -443,13 +445,16 @@
             </div>
           </div>
 
-          <!-- Edit KNS Profile: one row, two variants toggled by refreshOwnKnsProfile()
-               (no domain -> the create/register flow, like iOS; domain -> the editor). -->
-          <button class="profile-card profile-recovery-row" type="button" data-open-kns-register data-profile-kns-empty-cta>
-            <span>Edit KNS Profile</span>
+          <!-- KNS profile row: two variants toggled by refreshOwnKnsProfile()
+               (no domain -> "Create KNS Profile" + the register flow, like iOS;
+               domain -> "Edit KNS Profile" + the editor). The empty variant is
+               the one visible before the first lookup resolves, so its label has
+               to be the create wording. -->
+          <button class="profile-card profile-recovery-row" type="button" data-open-kns-register data-profile-kns-empty-cta aria-label="Create KNS Profile">
+            <span>Create KNS Profile</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
           </button>
-          <button class="profile-card profile-recovery-row" type="button" data-open-kns-editor data-profile-kns-owned hidden>
+          <button class="profile-card profile-recovery-row" type="button" data-open-kns-editor data-profile-kns-owned hidden aria-label="Edit KNS Profile">
             <span>Edit KNS Profile</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
           </button>
@@ -2150,7 +2155,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=206"></script>
+  <script type="module" src="./ui/app.js?v=207"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

@@ -1372,6 +1372,9 @@ function setActiveConversationId(id) {
   if (conversation) conversation.hidden = !isOpen || !onChatsTab;
   if (detailEmptyState) detailEmptyState.hidden = isOpen || !onChatsTab;
   updateDetailActiveClass();
+  // Opening a 1:1 thread is enough to raise the handshake warning (no typing
+  // needed); leaving one drops it.
+  try { updateHandshakeWarningBanner(); } catch { /* banner section not evaluated yet */ }
 }
 
 function nowId() {
@@ -1662,6 +1665,7 @@ function reconcileEstablishedRelationships({ persist = true } = {}) {
     if (promoteRelationshipFromIncomingEvidence(contact, conversationEntry, { persist: false })) changed = true;
   }
   if (changed && persist) persistState();
+  if (changed) updateHandshakeWarningBanner();
   return changed;
 }
 
@@ -2833,8 +2837,8 @@ const appTabScreens = document.querySelectorAll("[data-app-tab-screen]");
 
 // Own-account version of the Chat Info Domains/Profile display: shows the
 // resolved KNS domain + bio/links for the active wallet's own address when it
-// owns one, otherwise leaves the existing "Create KNS Profile" CTA (real
-// registration is a separate, later on-chain feature — this call is read-only).
+// owns one, otherwise shows the "Create KNS Profile" CTA that opens the
+// registration wizard. This lookup itself is read-only.
 let ownKnsAssetId = null;
 let ownKnsProfileFields = null;
 
@@ -2912,6 +2916,27 @@ async function refreshOwnKnsProfile() {
       link.textContent = label;
       profileKnsLinks.appendChild(link);
     }
+  }
+}
+
+// The KNS indexer can lag a few seconds behind a freshly revealed domain, so a
+// single refresh right after registration may still report "no domain" and
+// leave the row reading "Create KNS Profile". Re-check a handful of times (with
+// the cache cleared each round) so the row flips to the edit variant on its own,
+// no reload needed. A newer call, or an account switch, cancels the poll.
+let ownKnsProfileRefreshToken = 0;
+async function refreshOwnKnsProfileUntilResolved({ attempts = 6, delayMs = 5000 } = {}) {
+  const token = ++ownKnsProfileRefreshToken;
+  const address = engine.address;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+      if (token !== ownKnsProfileRefreshToken || engine.address !== address) return;
+      engine.clearKnsCache?.(address);
+    }
+    await refreshOwnKnsProfile();
+    if (token !== ownKnsProfileRefreshToken || engine.address !== address) return;
+    if (profileKnsOwned && !profileKnsOwned.hidden) return; // domain is live: row now reads "Edit KNS Profile"
   }
 }
 
@@ -6229,7 +6254,7 @@ document.querySelector("[data-open-kns-register]")?.addEventListener("click", as
 document.querySelectorAll("[data-close-kns-register]").forEach((button) => {
   button.addEventListener("click", async () => {
     closeKnsRegisterModal();
-    await refreshOwnKnsProfile();
+    await refreshOwnKnsProfileUntilResolved();
   });
 });
 
@@ -6300,7 +6325,7 @@ document.querySelector("[data-kns-register-submit]")?.addEventListener("click", 
 
 document.querySelector("[data-kns-details-skip]")?.addEventListener("click", async () => {
   closeKnsRegisterModal();
-  await refreshOwnKnsProfile();
+  await refreshOwnKnsProfileUntilResolved();
 });
 
 // --- KNS profile editor (for an already-registered domain) -------------------
@@ -6965,6 +6990,11 @@ function renderMessages(conversationEntry) {
   messageArea.innerHTML = "";
 
   const requestContact = contactForConversation(conversationEntry);
+  // Every path that changes the relationship (incoming sync, accept/decline, our
+  // own send) re-renders the thread, so this is where the handshake warning
+  // learns that the relationship just became mutual — it hides mid-conversation
+  // the moment a reciprocal message lands, with no reload.
+  if (conversationEntry.id === activeConversationId) updateHandshakeWarningBanner();
   if (requestContact?.relationshipState === "incoming-request") {
     const card = document.createElement("section");
     card.className = "handshake-request-card";
@@ -7553,6 +7583,9 @@ async function sendHandshakeFromComposer() {
     await sendOutgoingHandshake(contact, conversationEntry);
   } finally {
     handshakeSendInFlight = false;
+    // Sending a handshake doesn't make the relationship mutual (they still have
+    // to answer), so re-evaluate rather than assume the warning can go.
+    updateHandshakeWarningBanner();
   }
 }
 
@@ -8418,7 +8451,9 @@ async function activateComposerMode(mode) {
   input.setAttribute("aria-label", composerMode === "kas" ? "KAS amount" : "Message");
   setComposerHint(composerMode === "kas" ? "Amount (KAS)" : "Message");
   hideFeeEstimateBanner();
-  hideHandshakeWarningBanner();
+  // Message mode re-shows the handshake warning if the relationship still needs
+  // it; payment mode hides it so it can't crowd the Available/fee pills.
+  updateHandshakeWarningBanner();
   if (composerMode === "kas") clearPendingPhoto();
   if (composerMode !== "kas") {
     hideAvailableBalanceBanner();
@@ -9828,22 +9863,33 @@ function hideHandshakeWarningBanner() {
   if (handshakeWarningBanner) handshakeWarningBanner.hidden = true;
 }
 
-// Matches iOS: a contact added manually (or recovered) with no reciprocal
-// handshake yet can't be sure the other side will ever see a message sent to
-// them — Kasia messages rely on a completed handshake for the recipient's
-// client to recognize and decrypt them. Surfaced only while actually
-// composing (same trigger point as the fee-estimate banner), not as a
-// persistent nag every time the conversation is opened.
+// Relationship states that still need the "they may never see this" warning:
+// nothing proves the other side can decrypt our messages yet. "incoming-request"
+// and "declined" are deliberately absent — those conversations already show the
+// Accept/Decline request card, and the banner's copy ("until they message you")
+// is simply untrue there, since they messaged us first.
+const HANDSHAKE_WARNING_STATES = new Set(["legacy-manual", "outgoing-request", "request-failed"]);
+
+// Matches what the phones now do: the warning is up from the moment a 1:1
+// conversation is opened — no typing required — and only disappears once the
+// relationship is provably mutual. "established" is the single source of truth
+// for that: promoteRelationshipFromIncomingEvidence only sets it once there's a
+// genuine non-handshake message in both directions (legacy-manual) or a
+// reciprocal incoming message answering our request (outgoing-request).
+// Only ever applies to 1:1 chats: this banner lives in the direct-conversation
+// composer, which group chats (placeholder only), Broadcasts and KaPosts never
+// use — they are separate tab screens with their own composers.
 function updateHandshakeWarningBanner() {
   if (!handshakeWarningBanner) return;
+  // Payment mode stacks the Available/fee pills over the composer; keep the
+  // banner out of that crowd, it's a message-mode warning anyway.
   if (composerMode !== "message" || !activeConversationId) {
     hideHandshakeWarningBanner();
     return;
   }
-  const text = String(composer.elements.message?.value || "").trim();
   const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
   const contact = contactForConversation(conversationEntry);
-  if (!text || !contact || contact.relationshipState !== "legacy-manual") {
+  if (!conversationEntry || !contact || !HANDSHAKE_WARNING_STATES.has(contact.relationshipState)) {
     hideHandshakeWarningBanner();
     return;
   }
@@ -9888,10 +9934,8 @@ function scheduleFeeEstimate() {
 }
 
 composer.elements.message?.addEventListener("input", scheduleFeeEstimate);
-composer.elements.message?.addEventListener("input", updateHandshakeWarningBanner);
 
 document.querySelector("[data-handshake-warning-send]")?.addEventListener("click", async () => {
-  hideHandshakeWarningBanner();
   await sendHandshakeFromComposer();
 });
 
