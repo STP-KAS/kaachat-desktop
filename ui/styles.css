@@ -4337,8 +4337,10 @@ body.session-logged-out [data-account-rename-modal] {
 .spending-detail-screen .chatting-address-balance { color: var(--text); }
 /* Stacking: the Receive (QR) screen must sit above the detail/manage screens it
    opens from (all share z-index 1500, so raise Receive); the spending send modal
-   (a .modal-backdrop, default z-index 20) must sit above those full-screens too. */
-[data-chatting-address-screen] { z-index: 1600; }
+   must sit above those full-screens too. Receive also opens from the setup
+   guide's funding step (a .modal-backdrop at 2000), so it has to clear that as
+   well — 2050 keeps it under the send modal and the guide's own picker layers. */
+[data-chatting-address-screen] { z-index: 2050; }
 [data-spending-send-modal] { z-index: 2100; }
 .spending-send-source {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
