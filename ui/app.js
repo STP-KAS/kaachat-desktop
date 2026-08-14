@@ -7579,10 +7579,14 @@ async function sendHandshakeFromComposer() {
   const contact = contactForConversation(conversationEntry);
   if (!conversationEntry || !contact) return;
   handshakeSendInFlight = true;
+  // The warning banner's own Send Handshake button is the usual entry point, so
+  // it carries the busy state for both it and the composer-menu equivalent.
+  setHandshakeWarningButtonBusy(true);
   try {
     await sendOutgoingHandshake(contact, conversationEntry);
   } finally {
     handshakeSendInFlight = false;
+    setHandshakeWarningButtonBusy(false);
     // Sending a handshake doesn't make the relationship mutual (they still have
     // to answer), so re-evaluate rather than assume the warning can go.
     updateHandshakeWarningBanner();
@@ -9863,6 +9867,15 @@ function hideHandshakeWarningBanner() {
   if (handshakeWarningBanner) handshakeWarningBanner.hidden = true;
 }
 
+// A handshake is a real on-chain transaction that has to be signed and accepted
+// by a node, so the banner's button says so instead of looking inert.
+const handshakeWarningSendButton = document.querySelector("[data-handshake-warning-send]");
+function setHandshakeWarningButtonBusy(busy) {
+  if (!handshakeWarningSendButton) return;
+  handshakeWarningSendButton.disabled = Boolean(busy);
+  handshakeWarningSendButton.textContent = busy ? "Sending…" : "Send Handshake";
+}
+
 // Relationship states that still need the "they may never see this" warning:
 // nothing proves the other side can decrypt our messages yet. "incoming-request"
 // and "declined" are deliberately absent — those conversations already show the
@@ -9935,7 +9948,7 @@ function scheduleFeeEstimate() {
 
 composer.elements.message?.addEventListener("input", scheduleFeeEstimate);
 
-document.querySelector("[data-handshake-warning-send]")?.addEventListener("click", async () => {
+handshakeWarningSendButton?.addEventListener("click", async () => {
   await sendHandshakeFromComposer();
 });
 

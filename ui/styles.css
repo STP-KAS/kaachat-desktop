@@ -3217,6 +3217,11 @@ body.session-logged-out [data-account-rename-modal] {
   cursor: pointer;
 }
 .handshake-warning-banner button:hover { background: rgba(255, 183, 77, 0.25); }
+.handshake-warning-banner button:disabled {
+  opacity: .55;
+  cursor: default;
+  background: rgba(255, 183, 77, 0.12);
+}
 
 .reply-banner {
   display: flex;

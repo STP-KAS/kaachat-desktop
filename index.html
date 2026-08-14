@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=229" />
+  <link rel="stylesheet" href="./ui/styles.css?v=230" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -204,7 +204,7 @@
                    absolutely-positioned payment/fee pills, which sit above the shell,
                    can never overlap it. -->
               <div class="handshake-warning-banner" data-handshake-warning-banner hidden role="status" aria-live="polite">
-                <span>The recipient won't see your messages until they message you or you ping them with a handshake. Handshakes cost 0.2 KAS and are returned to you if they accept.</span>
+                <span>The recipient won't see your messages until they message you or you ping them with a handshake. Handshakes cost 0.2 KAS and are returned to you if they accept. You lose privacy if you ping them.</span>
                 <button type="button" data-handshake-warning-send>Send Handshake</button>
               </div>
               <div class="composer-plus-menu" data-composer-plus-menu hidden>
@@ -2155,7 +2155,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=207"></script>
+  <script type="module" src="./ui/app.js?v=208"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>
