@@ -41,7 +41,11 @@ let activeAddressIndex = null; // non-null = address screen within the open acco
 let addressTab = "transactions";
 let addrTxs = { state: "idle", txs: [], error: null };
 let addrUtxos = { state: "idle", entries: [], error: null };
+let addrKns = { state: "idle", domains: [], error: null };
 let addrToken = 0;
+// Addresses of the open account that own at least one KNS domain (cached
+// engine lookups) — drives the "Contains domain" row tag and list ordering.
+let detailDomainOwning = new Set();
 
 function nowId() {
   return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `c-${Date.now()}-${Math.random()}`;
@@ -350,6 +354,7 @@ function addressRowHtml(account, entry, { hiddenMode = false } = {}) {
         <div class="spending-address-row-head">
           <span class="spending-address-label cold-addr-label">${deps.escapeHtml(displayLabelFor(account, entry.index))}</span>
           ${usageBadge}
+          ${detailDomainOwning.has(entry.address) ? '<span class="cold-address-domain-tag">Contains domain</span>' : ""}
         </div>
         <span class="spending-address-value">${deps.escapeHtml(shortColdAddress(entry.address))}</span>
         <span class="spending-address-balance" data-cold-balance-cell="${entry.index}">${deps.escapeHtml(balanceText)}</span>
@@ -386,11 +391,12 @@ function renderDetail() {
     return;
   }
 
-  // Funded addresses first, newest index first within each group — same sort as iOS.
+  // Funded-or-domain-holding addresses first (the KNS tag promotes a row into
+  // the active group), newest index first within each group — same sort as iOS.
   const sorted = [...visible].sort((a, b) => {
-    const aFunded = (a.balanceSompi || 0) > 0;
-    const bFunded = (b.balanceSompi || 0) > 0;
-    if (aFunded !== bFunded) return aFunded ? -1 : 1;
+    const aActive = (a.balanceSompi || 0) > 0 || detailDomainOwning.has(a.address);
+    const bActive = (b.balanceSompi || 0) > 0 || detailDomainOwning.has(b.address);
+    if (aActive !== bActive) return aActive ? -1 : 1;
     return b.index - a.index;
   });
 
@@ -503,6 +509,23 @@ function addressUtxoRowsHtml(entry) {
   }).join("");
 }
 
+// KNS domains owned by this cold storage address — same assets-by-owner
+// lookup and card style as the spending-address KNS Domains tab, but
+// deliberately LIST-ONLY: a KNS transfer is a commit/reveal inscription pair
+// whose reveal input spends a P2SH redeem script, and the KSPT QR format
+// KaChat and the KasSigner exchange only carries plain single-sig Schnorr
+// inputs — so no send flow is offered here (see the footer note).
+function addressKnsRowsHtml() {
+  if (addrKns.state === "loading" && !addrKns.domains.length) return '<div class="manage-address-empty">Loading…</div>';
+  if (addrKns.state === "error" && !addrKns.domains.length) return `<div class="manage-address-empty">Could not load KNS domains: ${deps.escapeHtml(addrKns.error || "")}</div>`;
+  if (!addrKns.domains.length) return '<div class="manage-address-empty">No KNS domains on this address.</div>';
+  const cards = addrKns.domains.map((domain) => `
+    <div class="kns-domain-card" role="listitem">
+      <strong>${deps.escapeHtml(domain.fullName || "")}</strong>
+    </div>`).join("");
+  return `${cards}<p class="kns-domain-note">Sending domains from a cold storage address requires signing on the KasSigner, which doesn't support inscription transactions yet.</p>`;
+}
+
 function renderAddressScreen() {
   const account = activeAccount();
   const entry = detailEntries.find((e) => e.index === activeAddressIndex);
@@ -526,11 +549,12 @@ function renderAddressScreen() {
       <span class="spending-detail-balance-address">${deps.escapeHtml(shortColdAddress(entry.address))}</span>
     </div>
     <div class="settings-segmented full manage-address-tabs" role="group" aria-label="Cold address view">
-      <button type="button" class="settings-segmented-option ${addressTab === "transactions" ? "active" : ""}" data-cold-tab="transactions">Transaction History</button>
+      <button type="button" class="settings-segmented-option ${addressTab === "transactions" ? "active" : ""}" data-cold-tab="transactions">History</button>
       <button type="button" class="settings-segmented-option ${addressTab === "utxos" ? "active" : ""}" data-cold-tab="utxos">UTXOs${addrUtxos.state === "ready" ? ` (${addrUtxos.entries.length})` : ""}</button>
+      <button type="button" class="settings-segmented-option ${addressTab === "kns" ? "active" : ""}" data-cold-tab="kns">KNS Domains${addrKns.state === "ready" ? ` (${addrKns.domains.length})` : ""}</button>
     </div>
     <div class="manage-address-list cold-address-panel">
-      ${addressTab === "transactions" ? addressTxRowsHtml(entry) : addressUtxoRowsHtml(entry)}
+      ${addressTab === "transactions" ? addressTxRowsHtml(entry) : addressTab === "utxos" ? addressUtxoRowsHtml(entry) : addressKnsRowsHtml()}
     </div>
     <div class="cold-bottom-actions">
       <button class="primary-button cold-capsule" type="button" data-cold-addr-receive>
@@ -553,6 +577,7 @@ async function openAddressScreen(index) {
   addressTab = "transactions";
   addrTxs = { state: "loading", txs: [], error: null };
   addrUtxos = { state: "loading", entries: [], error: null };
+  addrKns = { state: "loading", domains: [], error: null };
   const token = ++addrToken;
   render();
 
@@ -585,6 +610,21 @@ async function openAddressScreen(index) {
     } catch (error) {
       if (addrToken !== token) return;
       addrUtxos = { state: "error", entries: [], error: error.message };
+    }
+    render();
+  })();
+
+  // KNS domains (assets-by-owner, engine-cached) for the KNS Domains tab.
+  (async () => {
+    try {
+      const info = await deps.engine.fetchKnsAddressInfo?.(entry.address);
+      if (addrToken !== token) return;
+      addrKns = { state: "ready", domains: info?.allDomains || [], error: null };
+    } catch (error) {
+      if (addrToken !== token) return;
+      const cached = deps.engine.peekKnsAddressInfo?.(entry.address);
+      if (cached) addrKns = { state: "ready", domains: cached.allDomains || [], error: null };
+      else addrKns = { state: "error", domains: [], error: error.message };
     }
     render();
   })();
@@ -1568,6 +1608,22 @@ async function loadDetail({ useCache = true } = {}) {
   render(); // applies the funded-first sort + summary total now that balances are in
   persistAccountCache(account.id);
 
+  // Contains-domain tags: batched, cached KNS assets-by-owner lookups (the
+  // refresh is debounced inside engine/kns.js), applied after the rows are
+  // already visible — a re-render then also promotes tagged rows in the sort.
+  (async () => {
+    try { await deps.engine.refreshKnsIfNeeded?.(derived); } catch { /* tags fall back to cache */ }
+    if (detailToken !== token) return;
+    const owning = new Set();
+    for (const address of derived) {
+      const info = deps.engine.peekKnsAddressInfo?.(address);
+      if (info?.allDomains?.length) owning.add(address);
+    }
+    const changed = owning.size !== detailDomainOwning.size || [...owning].some((a) => !detailDomainOwning.has(a));
+    detailDomainOwning = owning;
+    if (changed) render();
+  })();
+
   // Backfill Used/Unused for zero-balance addresses, 4 requests at a time (sequential made
   // this crawl on big accounts; unbounded parallel risks the REST host rate-limiting).
   const pending = detailEntries.filter((e) => (e.balanceSompi || 0) === 0 && e.everUsed === undefined);
@@ -1827,6 +1883,29 @@ async function removeActiveAccount() {
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
+
+// Every address (0..maxIndex) of every imported cold-storage account for the
+// active wallet, with its owning account's label — consumed by app.js's
+// Address Activity notifier (watched set + notification wording). Reads
+// persisted state directly so it works even before the Cold Storage tab has
+// been opened. Cached by account fingerprint (kpub derivation isn't free).
+const coldWatchedCache = { fingerprint: "", list: [] };
+export function listColdWatchedAddresses() {
+  if (!deps) return [];
+  loadState();
+  const fingerprint = `${deps.engine?.address || ""}|${accounts.map((a) => `${a.id}:${a.maxIndex}`).join(",")}`;
+  if (coldWatchedCache.fingerprint === fingerprint) return coldWatchedCache.list;
+  const list = [];
+  for (const account of accounts) {
+    try {
+      const addresses = deriveReceiveAddresses(account.kpub, 0, account.maxIndex + 1);
+      for (const address of addresses) list.push({ address, label: account.label });
+    } catch { /* a bad kpub just contributes nothing */ }
+  }
+  coldWatchedCache.fingerprint = fingerprint;
+  coldWatchedCache.list = list;
+  return list;
+}
 
 export function refreshColdStorage() {
   if (activeAccountId && detailEntries.length === 0) loadDetail();

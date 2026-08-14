@@ -1209,6 +1209,76 @@ button { cursor: pointer; }
   border-bottom-left-radius: 7px;
 }
 
+/* Apple-Pay-style payment cards (matches iOS's paymentCardBubble). The card
+   takes over the bubble surface entirely — the bubble keeps its slot in the
+   row (reactions, delivery icon, selection) but drops its own chrome. */
+.message-bubble.has-payment-card {
+  padding: 0;
+  background: transparent !important;
+  border: 0 !important;
+}
+.message-payment-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 170px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, .14);
+}
+.message-payment-card.outgoing {
+  background: linear-gradient(135deg, var(--kaspa), color-mix(in srgb, var(--kaspa) 78%, #06110f));
+  color: #06110f;
+  border: 1px solid rgba(255, 255, 255, .22);
+}
+.message-payment-card.incoming {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--kaspa) 35%, transparent);
+}
+.payment-card-logo {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+/* Outgoing rides the teal gradient — a translucent circle left the teal logo
+   nearly invisible (teal on teal). Solid white gives the mark its contrast. */
+.message-payment-card.outgoing .payment-card-logo {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+}
+.message-payment-card.incoming .payment-card-logo {
+  background: color-mix(in srgb, var(--kaspa) 12%, transparent);
+}
+.payment-card-logo img { width: 30px; height: 30px; }
+.payment-card-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.payment-card-label {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.message-payment-card.outgoing .payment-card-label { color: rgba(6, 17, 15, .72); }
+.message-payment-card.incoming .payment-card-label { color: var(--muted); }
+.payment-card-amount {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+}
+.payment-card-note {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.message-payment-card.outgoing .payment-card-note { color: rgba(6, 17, 15, .7); }
+.message-payment-card.incoming .payment-card-note { color: var(--muted); }
+
 .composer {
   width: 100%;
   display: grid;
@@ -3106,7 +3176,16 @@ body.session-logged-out [data-account-rename-modal] {
   box-shadow: 0 8px 20px rgba(0,0,0,.22);
 }
 
-.available-balance-banner { right: 18px; }
+.available-balance-banner { right: 18px; display: inline-flex; align-items: center; gap: 6px; }
+.available-balance-banner.clickable { cursor: pointer; }
+.available-balance-banner .available-balance-value.clickable { text-decoration: underline; text-underline-offset: 2px; }
+/* Fresh-address indicator: the next send pays a pool address the contact shared. */
+.available-balance-banner .available-balance-fresh {
+  color: var(--kaspa);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+}
 .fee-estimate-banner { left: 18px; }
 
 .handshake-warning-banner {
@@ -4096,6 +4175,41 @@ body.session-logged-out [data-account-rename-modal] {
   border-color: color-mix(in srgb, var(--kaspa, #058b6f) 45%, transparent);
   background: color-mix(in srgb, var(--kaspa, #058b6f) 10%, transparent);
 }
+/* "Contains domain" tag: this address owns at least one KNS domain. */
+.spending-address-domain-tag,
+.cold-address-domain-tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #06110f;
+  background: color-mix(in srgb, var(--kaspa, #62f4d0) 85%, #fff);
+}
+/* KNS domain cards in the address-detail KNS Domains tabs. */
+.kns-domain-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  border: 1px solid color-mix(in srgb, var(--kaspa, #62f4d0) 40%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--kaspa, #62f4d0) 8%, transparent);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.kns-domain-card:disabled { opacity: .55; cursor: default; }
+.kns-domain-card strong { font-size: 14.5px; }
+.kns-domain-card small { color: var(--muted); font-size: 11.5px; }
+.kns-domain-note {
+  margin: 6px 2px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .spending-address-value {
   grid-area: value;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -4585,6 +4699,89 @@ body.session-logged-out [data-account-rename-modal] {
 }
 
 .chat-info-stats-card { display: flex; flex-direction: column; gap: 2px; }
+
+/* Import source-wallet chooser (which wallet is this seed from?). */
+.import-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 8px 0 4px;
+}
+.import-source-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.import-source-row.selected { border-color: color-mix(in srgb, var(--kaspa, #62f4d0) 60%, transparent); }
+.import-source-mark { color: var(--kaspa); font-size: 13px; flex: 0 0 auto; }
+.import-source-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.import-source-copy strong { font-size: 14px; }
+.import-source-copy small { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.import-source-default {
+  font-style: normal;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--kaspa-ink);
+}
+
+/* Chat Info "Aliases" block — deterministic pair aliases, dots until revealed. */
+.chat-info-aliases-card { padding: 0; }
+.chat-info-alias-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px 15px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-info-alias-row:last-child { border-bottom: 0; }
+.chat-info-alias-row > strong { font-size: 14px; flex: 0 0 auto; }
+.chat-info-alias-value {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-info-alias-value.revealed { color: var(--text); }
+.chat-info-alias-eye {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.chat-info-alias-eye:hover { color: var(--text); background: var(--line); }
+.chat-info-alias-eye svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.chat-info-alias-footer {
+  margin: 6px 4px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 
 .chat-info-stats-row {
   display: flex;

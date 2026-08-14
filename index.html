@@ -766,34 +766,66 @@
           <section class="settings-group">
             <p class="settings-group-label">Chats</p>
             <div class="settings-list-card">
+              <div class="settings-toggle-row"><span><strong>Chats Payment Privacy</strong><small>Payments in your chats travel between fresh private addresses instead of your public chatting address. Stored per account.</small></span><label class="switch-control"><input type="checkbox" data-chats-privacy-toggle checked><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Show Fee Estimate</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
-              <button class="settings-list-row" type="button" data-settings-open-subscreen="notifications">
-                <span class="settings-row-copy"><strong>Notifications</strong></span>
-                <span class="architecture-badge">Coming Soon</span>
+              <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+            </div>
+            <p class="settings-group-footer">With Chats Payment Privacy on, when you pay a contact who also has privacy on, the money goes to a fresh address only the two of you know about, and payments you receive arrive on fresh addresses of your own the same way. Off: payments you send and receive are tied to your chatting address only, where anyone can see the full payment history.</p>
+          </section>
+
+          <section class="settings-group">
+            <p class="settings-group-label">Notifications</p>
+            <div class="settings-list-card">
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="notifications-chats">
+                <span class="settings-row-copy"><strong>Chats</strong></span>
                 <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
               </button>
-              <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="notifications-wallet">
+                <span class="settings-row-copy"><strong>Wallet</strong></span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+              <button class="settings-list-row" type="button" data-settings-open-subscreen="notifications-kaposts">
+                <span class="settings-row-copy"><strong>KaPosts</strong></span>
+                <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
             </div>
           </section>
 
-          <!-- Chats sub-screen. -->
-          <section class="settings-group" data-settings-subscreen="notifications">
-            <p class="settings-group-label">Notifications</p>
+          <!-- Notifications sub-screens. -->
+          <section class="settings-group" data-settings-subscreen="notifications-chats">
+            <p class="settings-group-label">Chats</p>
             <div class="settings-list-card">
               <div class="settings-page-form">
-                  <div class="settings-toggle-row settings-segmented-row">
-                    <span><strong>Mode</strong></span>
-                    <div class="settings-segmented">
-                      <button type="button" class="settings-segmented-option active" data-mockup-action="notif-disabled">Disabled</button>
-                      <button type="button" class="settings-segmented-option" data-mockup-action="notif-push">Remote push</button>
-                    </div>
-                  </div>
-                  <div class="settings-toggle-row"><span><strong>Play sound</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
-                  <div class="settings-toggle-row"><span><strong>Vibration</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Message Notifications</strong><small>Desktop notification when a contact messages you and the chat isn't focused.</small></span><label class="switch-control"><input type="checkbox" data-pref-chat-notifications checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Play sound</strong></span><label class="switch-control"><input type="checkbox" data-pref-notification-sound checked><span></span></label></div>
                   <p class="field-hint">Per-contact notification overrides live in each chat's info screen.</p>
               </div>
             </div>
+          </section>
+
+          <section class="settings-group" data-settings-subscreen="notifications-wallet">
+            <p class="settings-group-label">Wallet</p>
+            <div class="settings-list-card">
+              <div class="settings-page-form">
+                  <div class="settings-toggle-row"><span><strong>Address Activity</strong></span><label class="switch-control"><input type="checkbox" data-pref-address-activity checked><span></span></label></div>
+              </div>
+            </div>
+            <p class="settings-group-footer">Notify when any of your spending or cold storage addresses receives Kaspa from an external source. Transfers between your own addresses are ignored.</p>
+          </section>
+
+          <section class="settings-group" data-settings-subscreen="notifications-kaposts">
+            <p class="settings-group-label">KaPosts</p>
+            <div class="settings-list-card">
+              <div class="settings-page-form">
+                  <div class="settings-toggle-row"><span><strong>Likes</strong></span><label class="switch-control"><input type="checkbox" data-pref-kaposts-notify-likes checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Reposts</strong></span><label class="switch-control"><input type="checkbox" data-pref-kaposts-notify-reposts checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Follows</strong></span><label class="switch-control"><input type="checkbox" data-pref-kaposts-notify-follows checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Dislikes</strong></span><label class="switch-control"><input type="checkbox" data-pref-kaposts-notify-dislikes checked><span></span></label></div>
+                  <div class="settings-toggle-row"><span><strong>Comments</strong></span><label class="switch-control"><input type="checkbox" data-pref-kaposts-notify-comments checked><span></span></label></div>
+              </div>
+            </div>
+            <p class="settings-group-footer">Choose which KaPosts activity sends a notification. Quotes of your posts count as reposts.</p>
           </section>
 
           <section class="settings-group">
@@ -1190,6 +1222,15 @@
       <div class="modal-header">
         <div><p class="modal-kicker">Existing account</p><h2>Import Account</h2></div>
         <button class="modal-close" type="button" data-close-import-account aria-label="Close">×</button>
+      </div>
+
+      <div data-import-step="source" hidden>
+        <p class="field-hint">Different wallets store your Kaspa on different address paths. Pick where this seed phrase comes from so KaChat finds your funds and domains.</p>
+        <div class="import-source-list" data-import-source-list></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-import-account>Cancel</button>
+          <button class="primary-button" type="button" data-import-source-continue>Continue</button>
+        </div>
       </div>
 
       <div data-import-step="form">
@@ -1766,8 +1807,9 @@
       </div>
 
       <div class="settings-segmented full manage-address-tabs" role="group" aria-label="Spending address view">
-        <button type="button" class="settings-segmented-option active" data-spending-detail-tab="transactions">Transaction History</button>
+        <button type="button" class="settings-segmented-option active" data-spending-detail-tab="transactions">History</button>
         <button type="button" class="settings-segmented-option" data-spending-detail-tab="utxos">UTXOs</button>
+        <button type="button" class="settings-segmented-option" data-spending-detail-tab="kns">KNS Domains</button>
       </div>
 
       <div class="manage-address-body">
@@ -1776,6 +1818,9 @@
         </div>
         <div data-spending-detail-panel="utxos" hidden>
           <div class="manage-address-list" data-spending-detail-utxos></div>
+        </div>
+        <div data-spending-detail-panel="kns" hidden>
+          <div class="manage-address-list" data-spending-detail-kns></div>
         </div>
       </div>
 
@@ -1790,6 +1835,28 @@
         </button>
       </div>
     </div>
+  </div>
+
+  <div class="modal-backdrop" data-kns-transfer-modal hidden>
+    <section class="contact-modal send-kaspa-modal" role="dialog" aria-modal="true" aria-label="Send KNS Domain">
+      <div class="modal-header">
+        <div>
+          <p class="modal-kicker">On-chain inscription</p>
+          <h2>Send KNS Domain</h2>
+        </div>
+        <button class="modal-close" type="button" data-kns-transfer-close aria-label="Close">×</button>
+      </div>
+      <p class="field-hint">Transfer <strong data-kns-transfer-domain></strong> to another Kaspa address. This inscribes an on-chain transfer (about 2 KAS committed from the owning address, most of it returned minus network fees).</p>
+      <label class="field-label">Recipient
+        <input class="field-input" type="text" data-kns-transfer-recipient placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" />
+      </label>
+      <p class="field-error" data-kns-transfer-error hidden></p>
+      <p class="field-hint" data-kns-transfer-status hidden></p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-kns-transfer-cancel>Cancel</button>
+        <button class="primary-button" type="button" data-kns-transfer-send>Send Domain</button>
+      </div>
+    </section>
   </div>
 
   <div class="modal-backdrop" data-send-kaspa-modal hidden>
@@ -1971,6 +2038,25 @@
           <canvas width="512" height="512" data-chat-info-qr></canvas>
           <span class="chat-info-address-mono" data-chat-info-address-mono></span>
         </button>
+
+        <p class="profile-section-label">Aliases</p>
+        <div class="settings-list-card chat-info-aliases-card">
+          <div class="chat-info-alias-row">
+            <strong>Receiving alias</strong>
+            <button class="chat-info-alias-value" type="button" data-chat-info-alias-receiving title="Tap to reveal, then click to copy">••••••••••••</button>
+            <button class="chat-info-alias-eye" type="button" data-chat-info-alias-receiving-eye aria-label="Reveal receiving alias">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="chat-info-alias-row">
+            <strong>Sending alias</strong>
+            <button class="chat-info-alias-value" type="button" data-chat-info-alias-sending title="Tap to reveal, then click to copy">••••••••••••</button>
+            <button class="chat-info-alias-eye" type="button" data-chat-info-alias-sending-eye aria-label="Reveal sending alias">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <p class="chat-info-alias-footer">These identify this conversation's messages on the network. Receiving is the alias on messages this contact sends you. Sending is the alias on messages you send them. Useful when building tools that message this chat.</p>
 
         <p class="profile-section-label">Notifications</p>
         <div class="settings-list-card">

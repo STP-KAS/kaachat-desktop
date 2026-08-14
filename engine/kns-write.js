@@ -245,9 +245,14 @@ export async function buildAndSubmitKnsReveal({
   builder,
   revealTargetAddress,
   revealAmountSompi,
+  signer = null,
   log = () => {},
 }) {
-  const { kaspa, privateKey } = engine;
+  const kaspa = engine?.kaspa;
+  // Optional signer ({ privateKey, address }) — the reveal input's signature
+  // must come from the same key whose x-only pubkey the redeem script embeds,
+  // which for spending-address KNS activity is NOT the chatting identity key.
+  const privateKey = signer?.privateKey || engine?.privateKey;
   if (!kaspa || !privateKey) throw new Error("Load a wallet before revealing a KNS inscription.");
 
   const utxoEntry = {
@@ -431,6 +436,121 @@ export async function inscribeDomain({ engine, label, onStatus = () => {}, log =
     revealTxid: reveal.txid,
     verified: Boolean(verified),
     assetId: verified?.inscriptionId || null,
+  };
+}
+
+// --- domain transfer orchestration -------------------------------------------
+
+// Transfers a KNS domain to another address end to end (iOS
+// KNSDomainTransferService port): ownership pre-check, transfer-payload
+// commit/reveal pair, recipient-ownership verification polling.
+//
+// `signer` ({ privateKey, address }) selects the OWNER of the domain — it
+// funds the commit, its x-only pubkey goes into the redeem script, its key
+// signs both transactions, and it receives the reveal remainder (transfers
+// return funds to the owner; only the inscription moves ownership). Defaults
+// to the engine's chatting identity; pass a derived spending wallet's keypair
+// to transfer a domain held by a spending address (iOS's
+// fromSpendingAddressIndex analog).
+//
+// Amounts match the KNS web app's transfer submission: tx.amount=0 maps to a
+// fixed 2 KAS commit; the reveal output is commit minus the actual fee.
+export async function transferDomain({ engine, domain, assetId, toAddress, signer = null, onStatus = () => {}, log = () => {} }) {
+  const privateKey = signer?.privateKey || engine?.privateKey;
+  const sourceAddress = signer?.address || engine?.address;
+  if (!engine?.kaspa || !privateKey || !sourceAddress) throw new Error("Load a wallet before transferring a domain.");
+
+  const cleanAssetId = String(assetId || "").trim();
+  if (!cleanAssetId) throw new Error("Missing domain asset id.");
+  const fullDomain = String(domain || "").trim().toLowerCase();
+  if (!fullDomain) throw new Error("Missing domain name.");
+
+  // Recipient may be a .kas domain — resolve it to its owner address.
+  let recipient = String(toAddress || "").trim();
+  if (recipient.toLowerCase().endsWith(".kas")) {
+    onStatus({ status: "resolving-recipient" });
+    const resolution = await resolveDomain(recipient, { baseUrl: KNS_DEFAULT_MAINNET_URL });
+    if (!resolution?.ownerAddress) throw new Error("Could not resolve the recipient KNS domain.");
+    recipient = resolution.ownerAddress;
+  }
+  if (!recipient.startsWith("kaspa:")) throw new Error("Recipient must be a kaspa: address or a .kas domain.");
+  try {
+    if (engine.kaspa.Address?.validate && engine.kaspa.Address.validate(recipient) !== true) {
+      throw new Error("invalid");
+    }
+  } catch {
+    throw new Error("Recipient address is invalid.");
+  }
+  if (recipient.toLowerCase() === sourceAddress.toLowerCase()) {
+    throw new Error("Recipient must be different from the sending address.");
+  }
+
+  // Ownership pre-check (best-effort — a resolver miss doesn't block; the
+  // chain-side inscription rules are authoritative).
+  onStatus({ status: "verifying-ownership" });
+  const owned = await resolveDomain(fullDomain, { baseUrl: KNS_DEFAULT_MAINNET_URL }).catch(() => null);
+  if (owned && owned.ownerAddress !== sourceAddress) {
+    throw new Error("This domain is not owned by the sending address.");
+  }
+
+  const payloadJson = buildTransferPayload(cleanAssetId, recipient);
+  assertPayloadFits(payloadJson);
+
+  const xOnlyPubkeyHex = xOnlyPublicKeyHexFromPrivateKey(privateKey);
+  const { builder, commitScriptPublicKey, commitAddressString } = buildKnsRedeemScript(engine.kaspa, xOnlyPubkeyHex, payloadJson);
+
+  const commitAmountKas = 2;
+  const commitAmountSompi = engine.kaspa.kaspaToSompi(String(commitAmountKas));
+
+  onStatus({ status: "committing", commitAmountKas });
+  await engine.connect();
+  const commitSend = await sendPayloadTransaction({
+    kaspa: engine.kaspa,
+    rpc: engine.rpc,
+    withRpc: engine.withRpc.bind(engine),
+    privateKey,
+    sourceAddress,
+    destinationAddress: commitAddressString,
+    amountKas: String(commitAmountKas),
+    feeKas: "0",
+    log,
+  });
+  const commitTxId = commitSend.txids?.[0];
+  if (!commitTxId) throw new Error("Commit transaction did not return a transaction id.");
+  onStatus({ status: "committed", commitTxid: commitTxId });
+
+  onStatus({ status: "revealing" });
+  const reveal = await buildAndSubmitKnsReveal({
+    engine,
+    commitTxId,
+    commitAmountSompi,
+    commitScriptPublicKey,
+    builder,
+    revealTargetAddress: sourceAddress,
+    revealAmountSompi: commitAmountSompi, // pre-fee placeholder; real value = commit - fee
+    signer: { privateKey, address: sourceAddress },
+    log,
+  });
+  onStatus({ status: "revealed", revealTxid: reveal.txid });
+
+  onStatus({ status: "verifying" });
+  clearKnsCache(sourceAddress);
+  clearKnsCache(recipient);
+  const verified = await pollUntil(
+    async () => {
+      const resolution = await resolveDomain(fullDomain, { baseUrl: KNS_DEFAULT_MAINNET_URL });
+      return resolution && resolution.ownerAddress === recipient ? resolution : null;
+    },
+    { timeoutMs: 90_000 },
+  );
+  onStatus({ status: verified ? "confirmed" : "pending-confirmation", domain: fullDomain });
+
+  return {
+    domain: fullDomain,
+    recipientAddress: recipient,
+    commitTxid: commitTxId,
+    revealTxid: reveal.txid,
+    verified: Boolean(verified),
   };
 }
 

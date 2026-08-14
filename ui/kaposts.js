@@ -954,6 +954,82 @@ async function openPosterProfile(address, pubkey) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Background notification polling (iOS parity: KaPosts activity pings, gated by
+// Settings > Notifications > KaPosts per-type toggles via
+// deps.shouldNotifyKaPostsAction). Polls the same get-notifications endpoint
+// the panel uses, dedupes by notification id (account-scoped, persisted), and
+// posts a desktop notification per fresh item. First run for an account seeds
+// the baseline silently so enabling never blasts history. Suppressed entirely
+// in Child Mode (deps.kaPostsSuppressed), matching the hidden tab.
+// ---------------------------------------------------------------------------
+
+const KAPOSTS_SEEN_NOTIFS_KEY = "kachat-kaposts-seen-notifications-v1";
+const KAPOSTS_NOTIF_POLL_MS = 90_000;
+let kaPostsNotifPollTimer = 0;
+
+function loadSeenKaPostNotificationIds() {
+  try { return JSON.parse(localStorage.getItem(deps.accountScopedKey(KAPOSTS_SEEN_NOTIFS_KEY)) || "[]"); }
+  catch { return []; }
+}
+
+function saveSeenKaPostNotificationIds(ids) {
+  try { localStorage.setItem(deps.accountScopedKey(KAPOSTS_SEEN_NOTIFS_KEY), JSON.stringify(ids.slice(-300))); }
+  catch {}
+}
+
+function kaPostsNotificationAction(n, text) {
+  if (n.contentType === "vote") return n.voteType === "downvote" ? "disliked your post" : "liked your post";
+  if (n.contentType === "reply") return "replied to your post";
+  if (n.contentType === "quote") return text ? "quoted your post" : "reposted your post";
+  if (n.contentType === "follow") return "followed you";
+  return "interacted with your post";
+}
+
+async function pollKaPostNotificationsForPings() {
+  if (!deps?.engine?.address) return;
+  if (deps.kaPostsSuppressed?.()) return;
+  let raw;
+  try { raw = await fetchKaPostNotifications({ engine: deps.engine }); } catch { return; }
+  if (!Array.isArray(raw) || !raw.length) return;
+
+  const my = deps.engine.address;
+  const seen = loadSeenKaPostNotificationIds().map(String);
+  const seenSet = new Set(seen);
+  const firstRun = seen.length === 0;
+  const fresh = [];
+  for (const n of raw) {
+    const id = String(n?.id || "");
+    if (!id || seenSet.has(id)) continue;
+    seenSet.add(id);
+    seen.push(id);
+    if (firstRun) continue; // baseline seeding — history never notifies
+    const actorAddress = kaspaAddressFromPubkey(deps.engine, n.userPublicKey);
+    if (!actorAddress || actorAddress === my || isHiddenAuthor(actorAddress)) continue;
+    // Per-type gate (Settings > Notifications > KaPosts). Disabled types are
+    // silently skipped — never queued for later. Unknown kinds always notify.
+    if (deps.shouldNotifyKaPostsAction && !deps.shouldNotifyKaPostsAction(n.contentType, n.voteType)) continue;
+    fresh.push({ n, actorAddress });
+  }
+  saveSeenKaPostNotificationIds(seen);
+
+  for (const { n, actorAddress } of fresh.slice(0, 5)) {
+    const text = stripKaChatMarker(n.postContent ? (decodePostContent({ postContent: n.postContent }) || "") : "").trim();
+    deps.postDesktopNotification?.({
+      title: "KaPosts",
+      body: `${posterName(actorAddress)} ${kaPostsNotificationAction(n, text)}`,
+      tag: `kachat-kaposts-${n.id}`,
+      onClick: () => { openNotificationsPanel(); },
+    });
+  }
+}
+
+function startKaPostsNotificationPolling() {
+  if (kaPostsNotifPollTimer) window.clearInterval(kaPostsNotifPollTimer);
+  kaPostsNotifPollTimer = window.setInterval(pollKaPostNotificationsForPings, KAPOSTS_NOTIF_POLL_MS);
+  window.setTimeout(pollKaPostNotificationsForPings, 10_000);
+}
+
 async function openNotificationsPanel() {
   rememberFeedScroll();
   activePanel = { type: "notifications", items: [], loading: true };
@@ -1113,6 +1189,7 @@ export function resetKaPostsForAccount() {
 
 export function initKaPosts(dependencies) {
   deps = dependencies;
+  startKaPostsNotificationPolling();
 
   feedEl = document.querySelector("[data-kaposts-feed]");
   statusEl = document.querySelector("[data-kaposts-status]");

@@ -144,6 +144,35 @@ export function markUserTypeChosen() {
 }
 
 // ---------------------------------------------------------------------------
+// Onboarding-run pending marker (extends the Adult/Child machinery above):
+// EVERY account-onboarding run — create or import — is fully unskippable end
+// to end, and an interrupted run (reload/kill mid-guide) re-presents on the
+// next launch. The marker stores the run kind ("create" | "import") so the
+// re-presented guide keeps its import-only affordances (the funding step's
+// "Change Chatting Address" picker). Cleared only by Finish on the last step.
+// Help replays never set this and stay skippable.
+// ---------------------------------------------------------------------------
+
+const ONBOARDING_RUN_KEY = "kachat-onboarding-run-pending-v1";
+
+export function pendingOnboardingRunKind() {
+  const value = localStorage.getItem(ONBOARDING_RUN_KEY);
+  return value === "create" || value === "import" ? value : null;
+}
+
+export function isOnboardingRunPending() {
+  return pendingOnboardingRunKind() !== null;
+}
+
+export function markOnboardingRunPending(kind) {
+  localStorage.setItem(ONBOARDING_RUN_KEY, kind === "import" ? "import" : "create");
+}
+
+export function clearOnboardingRunPending() {
+  localStorage.removeItem(ONBOARDING_RUN_KEY);
+}
+
+// ---------------------------------------------------------------------------
 // Eye toggle (password reveal) — reusable via markup convention:
 // <span class="password-field-wrap"><input type="password" …>
 //   <button data-eye-toggle>…</button></span>

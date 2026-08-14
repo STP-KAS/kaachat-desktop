@@ -1,6 +1,6 @@
 import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
-import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importPrivateKey, deriveSpendingWallet, spendingDerivationPath } from "./wallet.js";
+import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
 import { getBalance, sendKaspa, estimateOnchainFee } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
@@ -28,6 +28,7 @@ import {
 } from "./kns.js";
 import {
   inscribeDomain as knsInscribeDomain,
+  transferDomain as knsTransferDomain,
   submitProfileFields as knsSubmitProfileFields,
   submitProfileField as knsSubmitProfileField,
   validateProfileFields as knsValidateProfileFields,
@@ -448,6 +449,23 @@ export class KaspaEngine {
     return this.setWallet(importMnemonic(this.kaspa, phrase, passphrase));
   }
 
+  // Family-aware identity import (iOS WalletSourceFamily port): derives the
+  // chatting identity where the seed's source wallet actually kept it
+  // (standard / legacy-972 / OneKey-tweaked), optionally at a nonzero index
+  // (the import-time chatting-address picker). Async — OneKey needs WebCrypto.
+  async importMnemonicWithFamily(phrase, passphrase = "", { family = "kaspaStandard", index = 0 } = {}) {
+    this.requireSdk();
+    const wallet = await importMnemonicWithFamily(this.kaspa, phrase, passphrase, { family, index });
+    return this.setWallet(wallet);
+  }
+
+  // Derives one family identity address WITHOUT touching the engine's active
+  // wallet — the chatting-address picker's batch scanner.
+  async deriveIdentityCandidate(phrase, passphrase = "", { family = "kaspaStandard", index = 0 } = {}) {
+    this.requireSdk();
+    return importMnemonicWithFamily(this.kaspa, phrase, passphrase, { family, index });
+  }
+
   importPrivateKey(hex) {
     this.requireSdk();
     return this.setWallet(importPrivateKey(this.kaspa, hex));
@@ -801,6 +819,22 @@ export class KaspaEngine {
     return knsInscribeDomain({ engine: this, label, onStatus, log: this.log });
   }
 
+  // Transfers a KNS domain. `spendingIndex` (with the account's mnemonic/
+  // passphrase) makes a derived spending address the owner/funder/signer of
+  // the commit/reveal pair — iOS's fromSpendingAddressIndex analog; omitted,
+  // the chatting identity transfers its own domain.
+  async transferKnsDomain({ domain, assetId, toAddress, mnemonic = null, spendingIndex = null, passphrase = "", onStatus = () => {} }) {
+    this.requireWallet();
+    await this.connect();
+    let signer = null;
+    if (spendingIndex != null) {
+      if (!mnemonic) throw new Error("The account mnemonic is required to sign from a spending address.");
+      const spending = this.deriveSpendingWallet(mnemonic, spendingIndex, passphrase);
+      signer = { privateKey: spending.privateKey, address: spending.address };
+    }
+    return knsTransferDomain({ engine: this, domain, assetId, toAddress, signer, onStatus, log: this.log });
+  }
+
   async submitKnsProfileField(assetId, key, value, { onStatus = () => {} } = {}) {
     this.requireWallet();
     await this.connect();
@@ -819,6 +853,7 @@ export class KaspaEngine {
   }
 }
 
+export { normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
 export * from "./conversations.js";
 export * from "./sync.js";
 export * from "./kasia-protocol.js";

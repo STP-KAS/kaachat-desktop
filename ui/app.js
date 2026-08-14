@@ -2,12 +2,13 @@ import { KaspaEngine } from "../engine/index.js";
 import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount } from "./kaposts.js";
 import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling } from "./broadcasts.js";
 import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
-import { initColdStorage, refreshColdStorage, resetColdStorageForAccount } from "./coldstorage.js";
+import { initColdStorage, refreshColdStorage, resetColdStorageForAccount, listColdWatchedAddresses } from "./coldstorage.js";
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
 import {
   initChildMode, isChildModeEnabled, CHILD_HIDDEN_TABS,
   isUserTypePending, markUserTypePending,
+  isOnboardingRunPending, pendingOnboardingRunKind, markOnboardingRunPending, clearOnboardingRunPending,
   renderUserTypeGuideStep, applyUserTypeGuideChoice, renderChildModeSettingsPage,
 } from "./childmode.js";
 import {
@@ -56,6 +57,11 @@ engine.onWalletActivity?.((event) => {
     appendEngineLog(`Live wallet activity: ${event?.type || "UTXO change"}`);
     await refreshBalanceOnly({ quiet: true });
     await refreshAllConversations({ quiet: true });
+    // Own spending/cold addresses are in the tracked set too — diff their
+    // balances against the persisted baselines (Address Activity notifications)
+    // and keep the payment composer's Available pill fresh.
+    scheduleAddressActivityCheck();
+    refreshComposerAvailableBalance();
   }, 250);
 });
 const STORAGE_KEY = "kachat-shell-step25-state";
@@ -155,8 +161,24 @@ function subscriptionContactAddresses() {
     .filter((address) => address.startsWith("kaspa:") && address !== engine.address))];
 }
 
+// Own non-chatting addresses the wallet wants live UTXO events for: revealed
+// spending-chain addresses, cold-storage watch addresses (Address Activity
+// notifications), and reserved-and-offered payment-pool addresses (so incoming
+// pool payments are noticed promptly). All helpers are defensive — during early
+// module init none of the backing state exists yet.
+function ownWatchedActivityAddresses() {
+  try {
+    const set = new Set(spendingWatchedAddressList());
+    for (const entry of listColdWatchedAddresses()) set.add(entry.address);
+    for (const address of paymentPoolOfferedAddresses()) set.add(address);
+    set.delete(engine.address || "");
+    return [...set];
+  } catch { return []; }
+}
+
 function refreshSubscriptionAddresses({ restart = true } = {}) {
-  return engine.setSubscriptionAddresses?.(subscriptionContactAddresses(), { restart });
+  const addresses = [...new Set([...subscriptionContactAddresses(), ...ownWatchedActivityAddresses()])];
+  return engine.setSubscriptionAddresses?.(addresses, { restart });
 }
 
 refreshSubscriptionAddresses({ restart: false });
@@ -417,7 +439,7 @@ function persistSavedAccounts(accounts) {
   localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
-function upsertSavedAccount({ address, privateKeyHex, mnemonic = "", passphrase = "", derivationPath = "", wordCount = 0, name, createdAt, savedAt = new Date().toISOString() }) {
+function upsertSavedAccount({ address, privateKeyHex, mnemonic = "", passphrase = "", derivationPath = "", wordCount = 0, sourceFamily = "", chattingIndex = null, name, createdAt, savedAt = new Date().toISOString() }) {
   const cleanAddress = String(address || "").trim();
   const cleanKey = String(privateKeyHex || "").trim();
   if (!cleanAddress || !cleanKey) throw new Error("Account address or private key is missing.");
@@ -435,6 +457,10 @@ function upsertSavedAccount({ address, privateKeyHex, mnemonic = "", passphrase 
     passphrase: String(passphrase || existing?.passphrase || ""),
     derivationPath: String(derivationPath || existing?.derivationPath || ""),
     wordCount: Number(wordCount || existing?.wordCount || 0),
+    // Identity derivation family (import source-wallet chooser) + the chosen
+    // chatting-address index within it. Honored on any re-derivation.
+    sourceFamily: String(sourceFamily || existing?.sourceFamily || "kaspaStandard"),
+    chattingIndex: Number.isInteger(chattingIndex) ? chattingIndex : Number(existing?.chattingIndex || 0),
     name: String(name || existing?.name || `Account ${cleanAddress.slice(-6)}`),
     createdAt: createdAt || existing?.createdAt || new Date().toISOString(),
     savedAt,
@@ -467,6 +493,8 @@ function activateSavedAccount(address) {
     passphrase: String(account.passphrase || ""),
     derivationPath: String(account.derivationPath || ""),
     wordCount: Number(account.wordCount || 0),
+    sourceFamily: String(account.sourceFamily || "kaspaStandard"),
+    chattingIndex: Number(account.chattingIndex || 0),
     address: account.address,
     savedAt: account.savedAt || new Date().toISOString(),
   }));
@@ -1129,6 +1157,53 @@ let chatInfoContactAddress = null;
 const chatInfoNotifyToggle = document.querySelector("[data-chat-info-notify]");
 const chatInfoPhotosToggle = document.querySelector("[data-chat-info-photos]");
 
+// --- Chat Info "Aliases" block: this conversation's deterministic pair aliases
+// (ECDH + HKDF, 12 hex chars, engine/kasia-cipher.js). Direction semantics are
+// verified against the sync pipeline: myAlias = RECEIVING (the alias messages
+// FROM this contact carry — engine/sync.js queries by-sender with it),
+// theirAlias = SENDING (the alias OUR messages to them carry —
+// createEncryptedMessageEnvelope tags with it). Hidden behind dots until the
+// eye is clicked; keys are only touched on demand. Clicking a revealed value
+// copies it. Matches iOS ChatInfoView's Aliases section.
+const ALIAS_HIDDEN_DOTS = "••••••••••••";
+const chatInfoAliasReceiving = document.querySelector("[data-chat-info-alias-receiving]");
+const chatInfoAliasSending = document.querySelector("[data-chat-info-alias-sending]");
+const chatInfoAliasReceivingEye = document.querySelector("[data-chat-info-alias-receiving-eye]");
+const chatInfoAliasSendingEye = document.querySelector("[data-chat-info-alias-sending-eye]");
+let chatInfoRevealedAliases = null;
+
+function resetChatInfoAliases() {
+  chatInfoRevealedAliases = null;
+  if (chatInfoAliasReceiving) { chatInfoAliasReceiving.textContent = ALIAS_HIDDEN_DOTS; chatInfoAliasReceiving.classList.remove("revealed"); }
+  if (chatInfoAliasSending) { chatInfoAliasSending.textContent = ALIAS_HIDDEN_DOTS; chatInfoAliasSending.classList.remove("revealed"); }
+}
+
+async function revealChatInfoAlias(which) {
+  if (!chatInfoContactAddress) return;
+  try {
+    if (!chatInfoRevealedAliases) {
+      chatInfoRevealedAliases = await engine.deriveConversationAliases(chatInfoContactAddress);
+    }
+  } catch (error) {
+    showCopyToast(`Could not derive aliases: ${error.message}`);
+    return;
+  }
+  const el = which === "receiving" ? chatInfoAliasReceiving : chatInfoAliasSending;
+  const value = which === "receiving" ? chatInfoRevealedAliases.myAlias : chatInfoRevealedAliases.theirAlias;
+  if (el && value) { el.textContent = value; el.classList.add("revealed"); }
+}
+
+chatInfoAliasReceivingEye?.addEventListener("click", () => revealChatInfoAlias("receiving"));
+chatInfoAliasSendingEye?.addEventListener("click", () => revealChatInfoAlias("sending"));
+chatInfoAliasReceiving?.addEventListener("click", async () => {
+  if (!chatInfoAliasReceiving.classList.contains("revealed")) { revealChatInfoAlias("receiving"); return; }
+  try { await navigator.clipboard.writeText(chatInfoAliasReceiving.textContent); showCopyToast("Receiving alias copied."); } catch {}
+});
+chatInfoAliasSending?.addEventListener("click", async () => {
+  if (!chatInfoAliasSending.classList.contains("revealed")) { revealChatInfoAlias("sending"); return; }
+  try { await navigator.clipboard.writeText(chatInfoAliasSending.textContent); showCopyToast("Sending alias copied."); } catch {}
+});
+
 function refreshChatInfoContactControls() {
   if (chatInfoNotifyToggle) chatInfoNotifyToggle.checked = getContactNotify(chatInfoContactAddress) !== "muted";
   if (chatInfoPhotosToggle) chatInfoPhotosToggle.checked = getContactPhotos(chatInfoContactAddress) !== "manual";
@@ -1161,6 +1236,8 @@ async function ensureNotificationPermission() {
 }
 function maybeNotifyIncoming(conversationEntry, contact, message) {
   if (!message || message.direction !== "incoming") return;
+  // Settings > Notifications > Chats master toggle (default ON).
+  if ((accountShellPrefs.chatNotifications ?? true) === false) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   if (getContactNotify(contact?.address) === "muted") return;
   if (parseReactionEnvelope(message.text)) return; // reactions aren't standalone messages
@@ -1172,9 +1249,52 @@ function maybeNotifyIncoming(conversationEntry, contact, message) {
       body: displayTextForMessage(message) || "New message",
       tag: `kachat-${conversationEntry.id}`,
       icon: "./ui/assets/kachat-logo.png",
+      silent: (accountShellPrefs.notificationSound ?? true) === false,
     });
     note.onclick = () => { try { window.focus(); } catch {} setActiveAppTab("chats"); openConversation(conversationEntry.id); note.close(); };
   } catch { /* notification construction can throw in some contexts */ }
+}
+
+// Generic desktop notification helper for non-chat pings (wallet address
+// activity, KaPosts). Honors the Play sound preference; falls back to the
+// in-app toast when browser notifications are unavailable/denied.
+function postDesktopNotification({ title, body, tag, onClick } = {}) {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
+    showCopyToast(body ? `${title} — ${body}` : title);
+    return;
+  }
+  try {
+    const note = new Notification(title || "KaChat", {
+      body: body || "",
+      tag: tag || undefined,
+      icon: "./ui/assets/kachat-logo.png",
+      silent: (accountShellPrefs.notificationSound ?? true) === false,
+    });
+    note.onclick = () => {
+      try { window.focus(); } catch {}
+      try { onClick?.(); } catch {}
+      note.close();
+    };
+  } catch {
+    showCopyToast(body ? `${title} — ${body}` : title);
+  }
+}
+
+// Per-event-type gate for KaPosts notification pings (iOS
+// AppSettings.shouldNotifyKaPostsAction): contentType "vote" (voteType
+// "upvote"/"downvote"), "reply", "quote" (K's repost mechanism —
+// quotes-with-text included), or "follow". Unknown kinds always notify rather
+// than silently vanishing behind a toggle that doesn't name them.
+function shouldNotifyKaPostsAction(contentType, voteType) {
+  switch (contentType) {
+    case "vote": return voteType === "downvote"
+      ? (accountShellPrefs.kaPostsNotifyDislikes ?? true)
+      : (accountShellPrefs.kaPostsNotifyLikes ?? true);
+    case "reply": return accountShellPrefs.kaPostsNotifyComments ?? true;
+    case "quote": return accountShellPrefs.kaPostsNotifyReposts ?? true;
+    case "follow": return accountShellPrefs.kaPostsNotifyFollows ?? true;
+    default: return true;
+  }
 }
 const copyContactAddressButtons = document.querySelectorAll("[data-copy-contact-address]");
 const clearChatButton = document.querySelector("[data-clear-chat]");
@@ -1373,7 +1493,7 @@ function getStoredTestingWalletHex() {
   return "";
 }
 
-function persistTestingWallet({ mnemonic = "", passphrase = "", derivationPath = "", wordCount = 0 } = {}) {
+function persistTestingWallet({ mnemonic = "", passphrase = "", derivationPath = "", wordCount = 0, sourceFamily = "", chattingIndex = null } = {}) {
   const privateKeyHex = String(engine.privateKeyHex || "").trim();
   if (!privateKeyHex) throw new Error("Wallet private key was unavailable for browser storage.");
   const address = String(engine.address || "").trim();
@@ -1392,6 +1512,11 @@ function persistTestingWallet({ mnemonic = "", passphrase = "", derivationPath =
     passphrase: String(passphrase || existingAccount?.passphrase || ""),
     derivationPath: String(derivationPath || existingAccount?.derivationPath || ""),
     wordCount: Number(wordCount || existingAccount?.wordCount || 0),
+    // Identity derivation family + chatting index (iOS WalletSourceFamily):
+    // honored whenever the identity is re-derived from the mnemonic (the
+    // chatting-address picker/scanner) — restores use privateKeyHex directly.
+    sourceFamily: String(sourceFamily || existingAccount?.sourceFamily || "kaspaStandard"),
+    chattingIndex: Number.isInteger(chattingIndex) ? chattingIndex : Number(existingAccount?.chattingIndex || 0),
     address,
     savedAt: new Date().toISOString(),
   };
@@ -1404,6 +1529,8 @@ function persistTestingWallet({ mnemonic = "", passphrase = "", derivationPath =
     passphrase: payload.passphrase,
     derivationPath: payload.derivationPath,
     wordCount: payload.wordCount,
+    sourceFamily: payload.sourceFamily,
+    chattingIndex: payload.chattingIndex,
     name: meta?.name,
     createdAt: meta?.createdAt,
     savedAt: payload.savedAt,
@@ -1869,6 +1996,9 @@ function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
   setActiveConversationId(null);
   state = buildFullyRestoredState();
   refreshSubscriptionAddresses({ restart: false });
+  // Per-account Chats Payment Privacy: switching accounts applies that
+  // account's stored value immediately (Settings toggle included).
+  try { refreshChatsPrivacyToggle(); } catch { /* not yet wired during early init */ }
   return state;
 }
 
@@ -2845,10 +2975,22 @@ function getActiveSpendingIndex() {
   return getSpendingState().activeIndex;
 }
 
+// Memoized per (account, index): every derivation re-runs BIP39 seeding
+// (PBKDF2), so looped callers (address list, watched-set builders, payment
+// pool reservations) would otherwise pay that cost per call.
+const spendingAddressMemo = new Map();
+
 function deriveSpendingAddressAt(index) {
   const mnemonic = activeAccountMnemonic();
   if (!mnemonic || !engine.kaspa) return null;
-  try { return engine.deriveSpendingWallet(mnemonic, index, activeAccountPassphrase()).address; }
+  const memoKey = `${engine.address || ""}:${index}`;
+  const cached = spendingAddressMemo.get(memoKey);
+  if (cached) return cached;
+  try {
+    const address = engine.deriveSpendingWallet(mnemonic, index, activeAccountPassphrase()).address;
+    if (address) spendingAddressMemo.set(memoKey, address);
+    return address;
+  }
   catch (error) { appendEngineLog(`Spending derive #${index} failed: ${error.message}`); return null; }
 }
 
@@ -2858,6 +3000,881 @@ function spendingLabelFor(state, index) {
   if (trimmed) return trimmed;
   return index === 0 ? "Primary spending" : `Spending #${index}`;
 }
+
+// ---------------------------------------------------------------------------
+// Address Activity notifications (iOS AddressActivityNotifier port).
+//
+// Alerts when any own NON-chatting address — revealed spending-chain addresses
+// or cold-storage watch addresses — receives Kaspa from an external source.
+// Wallet events only, never chat: no conversation, no bubble, just the app's
+// standard desktop notification.
+//
+// Detection is the balance-diff catch-up model (iOS's runCatchUpIfNeeded):
+// per-account persisted baselines are diffed against live balances (one
+// batched getUtxosByAddresses), increases are attributed via each address's
+// recent REST transactions with a self-send filter (any own address among the
+// tx inputs = our own change/consolidation/withdrawal, suppressed silently),
+// falling back to a neutral "Balance increased" notification when attribution
+// fails. First run per account seeds the baseline silently so enabling the
+// feature or importing a wallet never blasts notifications for old funds.
+// Triggered from the live UTXO-subscription bridge (own watched addresses are
+// in the tracked set via ownWatchedActivityAddresses), on startup, and on a
+// slow safety interval. Deduped per txId (persisted, capped).
+//
+// Gated by Settings > Notifications > Wallet > "Address Activity" (default
+// ON). Deliberately NOT gated by Child Mode — these are wallet notifications.
+// ---------------------------------------------------------------------------
+
+const ADDR_ACTIVITY_BASELINES_KEY = "kachat-addr-activity-baselines-v1"; // account-scoped { address: sompi string }
+const ADDR_ACTIVITY_HANDLED_KEY = "kachat-addr-activity-handled-txids-v1"; // account-scoped [txid]
+const ADDR_ACTIVITY_HANDLED_CAP = 500;
+let addressActivityRunning = false;
+let addressActivityCheckTimer = 0;
+
+function addressActivityFeatureEnabled() {
+  return (accountShellPrefs.addressActivityNotifications ?? true) !== false;
+}
+
+function loadAddrActivityBaselines() {
+  try { return JSON.parse(localStorage.getItem(accountScopedKey(ADDR_ACTIVITY_BASELINES_KEY)) || "{}") || {}; }
+  catch { return {}; }
+}
+
+function saveAddrActivityBaselines(baselines) {
+  try { localStorage.setItem(accountScopedKey(ADDR_ACTIVITY_BASELINES_KEY), JSON.stringify(baselines)); } catch {}
+}
+
+function loadAddrActivityHandled() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(accountScopedKey(ADDR_ACTIVITY_HANDLED_KEY)) || "[]");
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch { return []; }
+}
+
+function saveAddrActivityHandled(list) {
+  try {
+    localStorage.setItem(accountScopedKey(ADDR_ACTIVITY_HANDLED_KEY), JSON.stringify(list.slice(-ADDR_ACTIVITY_HANDLED_CAP)));
+  } catch {}
+}
+
+// Every revealed spending-chain address (0...maxIndex) for the active account.
+function spendingWatchedAddressList() {
+  if (!engine.address || !activeAccountMnemonic() || !engine.kaspa) return [];
+  const spendingState = getSpendingState();
+  const list = [];
+  for (let index = 0; index <= spendingState.maxIndex; index += 1) {
+    const address = deriveSpendingAddressAt(index);
+    if (address) list.push(address);
+  }
+  return list;
+}
+
+// Addresses whose receives should NOTIFY, mapped to a wording kind: watched
+// spending + cold addresses, minus the chatting address (its receives are chat
+// classified) and minus currently offered payment-pool reservation addresses
+// (payments to those render as chat bubbles via payment_notice — notifying
+// here too would double up).
+function addressActivityWatchedMap() {
+  const map = new Map();
+  for (const address of spendingWatchedAddressList()) map.set(address, "spending");
+  for (const entry of listColdWatchedAddresses()) {
+    if (!map.has(entry.address)) map.set(entry.address, `cold:${entry.label}`);
+  }
+  map.delete(engine.address || "");
+  for (const offered of paymentPoolOfferedAddresses()) map.delete(offered);
+  return map;
+}
+
+// Addresses that count as "ours" when they appear among a tx's INPUTS —
+// superset of the notifiable set: chatting + all spending (reserved pool
+// addresses are spending-chain indices, so covered) + all cold storage.
+function ownInputAddressSet() {
+  const set = new Set(spendingWatchedAddressList());
+  for (const entry of listColdWatchedAddresses()) set.add(entry.address);
+  if (engine.address) set.add(engine.address);
+  return set;
+}
+
+function describeActivityAddress(kind, address) {
+  const shortA = shortAddress(address);
+  return String(kind || "").startsWith("cold:")
+    ? `Cold storage (${String(kind).slice(5)}) ${shortA}`
+    : `Spending address ${shortA}`;
+}
+
+function formatSompiForNotification(sompi) {
+  let text = (Number(sompi) / 1e8).toFixed(8);
+  text = text.replace(/0+$/, "").replace(/\.$/, "");
+  return text || "0";
+}
+
+async function fetchRecentFullTransactionsFor(address, limit = 10) {
+  const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
+  const url = `${base}/addresses/${encodeURIComponent(address)}/full-transactions?limit=${limit}&offset=0&resolve_previous_outpoints=light`;
+  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  if (!response.ok) return [];
+  const txs = await response.json();
+  return Array.isArray(txs) ? txs : [];
+}
+
+function txInputAddresses(tx) {
+  const inputs = Array.isArray(tx?.inputs) ? tx.inputs : [];
+  return inputs
+    .map((input) => String(
+      input?.previous_outpoint_address || input?.previousOutpointAddress ||
+      input?.previous_outpoint_resolved?.script_public_key_address ||
+      input?.previousOutpointResolved?.scriptPublicKeyAddress || "",
+    ).trim())
+    .filter(Boolean);
+}
+
+function scheduleAddressActivityCheck(delayMs = 1200) {
+  if (addressActivityCheckTimer) window.clearTimeout(addressActivityCheckTimer);
+  addressActivityCheckTimer = window.setTimeout(() => {
+    addressActivityCheckTimer = 0;
+    runAddressActivityCheck().catch((error) => appendEngineLog(`Address activity check failed: ${error.message}`));
+  }, delayMs);
+}
+
+async function runAddressActivityCheck() {
+  if (addressActivityRunning) return;
+  if (!engine.address || !engine.kaspa) return;
+  addressActivityRunning = true;
+  const walletAtStart = engine.address;
+  try {
+    const watched = addressActivityWatchedMap();
+    if (!watched.size) return;
+    const addresses = [...watched.keys()];
+
+    // One batched balance fetch for the whole set (mirrors iOS's single
+    // getUtxosByAddresses call). A network failure leaves baselines untouched
+    // so nothing is silently marked as seen.
+    await engine.connect();
+    const response = await engine.withRpc(
+      (rpc) => rpc.getUtxosByAddresses(addresses),
+      { retries: 1, label: "Address activity balances" },
+    );
+    if (engine.address !== walletAtStart) return; // account switched mid-flight
+    const balances = new Map(addresses.map((address) => [address, 0n]));
+    for (const entry of response?.entries || []) {
+      const address = String(entry.address ?? entry.entry?.address ?? "");
+      if (!balances.has(address)) continue;
+      balances.set(address, balances.get(address) + BigInt(entry.amount ?? entry.entry?.amount ?? 0));
+    }
+
+    const baselines = loadAddrActivityBaselines();
+    const isFirstRun = Object.keys(baselines).length === 0;
+    let changed = false;
+    const increases = [];
+    for (const [address, balance] of balances) {
+      const balanceText = balance.toString();
+      const previous = baselines[address];
+      if (previous === undefined) {
+        // Never-tracked address (feature install, newly revealed slot, fresh
+        // cold import): seed silently — its history predates our tracking.
+        baselines[address] = balanceText;
+        changed = true;
+        continue;
+      }
+      if (previous !== balanceText) changed = true;
+      let previousSompi = 0n;
+      try { previousSompi = BigInt(previous); } catch {}
+      if (!isFirstRun && balance > previousSompi && addressActivityFeatureEnabled()) {
+        increases.push({ address, delta: balance - previousSompi, kind: watched.get(address) });
+      }
+      baselines[address] = balanceText;
+    }
+    if (changed) saveAddrActivityBaselines(baselines);
+    if (increases.length) await attributeAndNotifyAddressActivity(increases);
+  } finally {
+    addressActivityRunning = false;
+  }
+}
+
+async function attributeAndNotifyAddressActivity(increases) {
+  const own = ownInputAddressSet();
+  const handled = loadAddrActivityHandled();
+  const handledSet = new Set(handled);
+  for (const { address, delta, kind } of increases) {
+    let attributed = false;
+    let recentTxs = [];
+    try { recentTxs = await fetchRecentFullTransactionsFor(address, 10); } catch {}
+    for (const tx of recentTxs) {
+      const txid = String(tx?.transaction_id || tx?.transactionId || "").trim();
+      if (!txid) continue;
+      let toAddress = 0n;
+      for (const output of (Array.isArray(tx?.outputs) ? tx.outputs : [])) {
+        if (kaspaOutputAddress(output) === address) toAddress += kaspaOutputAmount(output);
+      }
+      if (toAddress <= 0n) continue;
+      if (handledSet.has(txid)) { attributed = true; continue; }
+      attributed = true;
+      handledSet.add(txid);
+      handled.push(txid);
+      const inputAddresses = txInputAddresses(tx);
+      const isSelfSend = inputAddresses.length > 0 && inputAddresses.some((input) => own.has(input));
+      if (!isSelfSend) {
+        postDesktopNotification({
+          title: `Received ${formatSompiForNotification(toAddress)} KAS`,
+          body: describeActivityAddress(kind, address),
+          tag: `kachat-addr-activity-${txid}`,
+          onClick: () => {},
+        });
+        appendEngineLog(`Address activity: external receive ${txid.slice(0, 12)}… on ${shortAddress(address)}`);
+      } else {
+        appendEngineLog(`Address activity: suppressed self-send ${txid.slice(0, 12)}…`);
+      }
+    }
+    if (!attributed) {
+      // Balance grew but no fetched recent tx pays this address (deep history
+      // page or indexer lag) — neutral fallback rather than staying silent.
+      postDesktopNotification({
+        title: `Balance increased by ${formatSompiForNotification(delta)} KAS`,
+        body: describeActivityAddress(kind, address),
+        tag: `kachat-addr-activity-bal-${address.slice(-12)}-${Date.now()}`,
+        onClick: () => {},
+      });
+    }
+  }
+  saveAddrActivityHandled(handled);
+}
+
+// Slow safety interval: the live subscription covers the common case, this
+// picks up anything a dropped event or REST hiccup missed.
+window.setInterval(() => scheduleAddressActivityCheck(0), 180_000);
+
+// ---------------------------------------------------------------------------
+// Fresh-address payment pools (MESSAGING.md "Fresh-Address Payment Pools";
+// iOS PaymentPoolStore + ChatService+PaymentPools port).
+//
+// Contacts exchange batches of fresh, never-used spending-chain receive
+// addresses through the normal encrypted contextual channel (`addr_pool`,
+// plain JSON in the plaintext exactly like reactions), Send KAS pays one of
+// those instead of the contact's chatting address, and a `payment_notice`
+// envelope keeps the recipient's chat showing a payment bubble. All three
+// envelope types are invisible — intercepted in appendIncomingOrReactionMessage
+// before they could ever render. State is device-local, per account
+// (accountScopedKey), NOT backed up — a restore simply re-exchanges pools.
+// ---------------------------------------------------------------------------
+
+const PAYMENT_POOL_STATE_KEY = "kachat-payment-pool-state-v1";
+const CHATS_PRIVACY_KEY = "kachat-chats-privacy-v1"; // per-account: "1"/"0", default ON
+const POOL_OFFER_BATCH_SIZE = 5;
+const POOL_LOW_WATER_MARK = 2;
+const POOL_MAX_STORED = 20;
+const POOL_MAX_HANDLED_TXIDS = 500;
+const POOL_REQUEST_THROTTLE_MS = 10 * 60 * 1000;
+// Inbound abuse limits — part of the protocol contract (MESSAGING.md).
+const POOL_SERVE_THROTTLE_MS = 10 * 60 * 1000;
+const POOL_TOGGLE_TRANSITION_GAP_MS = 60 * 1000;
+const POOL_MAX_LIFETIME_RESERVATIONS = 50;
+const POOL_MAX_OUTSTANDING_UNFUNDED = 15;
+
+function loadPoolState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(accountScopedKey(PAYMENT_POOL_STATE_KEY)) || "{}") || {};
+    return {
+      // contactAddress -> [{ address, index, offered, funded }] — MY reserved
+      // spending addresses offered to that contact. CRITICAL INVARIANT: an
+      // address reserved for contact X is never offered to any other contact
+      // and never re-offered; reserveFreshSpendingAddresses only hands out
+      // indices past the all-time max.
+      myReservations: raw.myReservations && typeof raw.myReservations === "object" ? raw.myReservations : {},
+      // contactAddress -> [{ address, used }] — THAT contact's fresh addresses I can pay them at.
+      theirPools: raw.theirPools && typeof raw.theirPools === "object" ? raw.theirPools : {},
+      offeredContacts: Array.isArray(raw.offeredContacts) ? raw.offeredContacts.map(String) : [],
+      handledEnvelopeTxIds: Array.isArray(raw.handledEnvelopeTxIds) ? raw.handledEnvelopeTxIds.map(String) : [],
+      lastPoolRequestAt: raw.lastPoolRequestAt && typeof raw.lastPoolRequestAt === "object" ? raw.lastPoolRequestAt : {},
+      lastPoolServeAt: raw.lastPoolServeAt && typeof raw.lastPoolServeAt === "object" ? raw.lastPoolServeAt : {},
+      revokedContacts: Array.isArray(raw.revokedContacts) ? raw.revokedContacts.map(String) : [],
+    };
+  } catch {
+    return { myReservations: {}, theirPools: {}, offeredContacts: [], handledEnvelopeTxIds: [], lastPoolRequestAt: {}, lastPoolServeAt: {}, revokedContacts: [] };
+  }
+}
+
+function savePoolState(poolState) {
+  try { localStorage.setItem(accountScopedKey(PAYMENT_POOL_STATE_KEY), JSON.stringify(poolState)); } catch {}
+}
+
+// Per-ACCOUNT "Chats Payment Privacy" toggle (Settings > Chats), default ON.
+// Gates the send side only: OFF pays/funds via the chatting address, offers
+// nothing and requests nothing; inbound notices/pools stay handled regardless.
+function chatsPrivacyEnabled() {
+  try { return localStorage.getItem(accountScopedKey(CHATS_PRIVACY_KEY)) !== "0"; } catch { return true; }
+}
+
+function setChatsPrivacyEnabled(enabled) {
+  try { localStorage.setItem(accountScopedKey(CHATS_PRIVACY_KEY), enabled ? "1" : "0"); } catch {}
+}
+
+// Every reserved-and-offered address across all contacts — these belong in the
+// UTXO subscription watched set, and are excluded from Address Activity
+// notifications (their receives render as chat payment bubbles instead).
+function paymentPoolOfferedAddresses() {
+  try {
+    const poolState = loadPoolState();
+    const list = [];
+    for (const entries of Object.values(poolState.myReservations || {})) {
+      for (const entry of entries || []) if (entry.offered) list.push(entry.address);
+    }
+    return list;
+  } catch { return []; }
+}
+
+function isReservedPoolAddress(poolState, address) {
+  for (const entries of Object.values(poolState.myReservations || {})) {
+    if ((entries || []).some((entry) => entry.address === address)) return true;
+  }
+  return false;
+}
+
+// Wire parser for the three pool envelope types (PaymentPoolCodec.parse).
+// Unknown `type` values fall through to the normal message pipeline; unknown
+// extra fields inside these envelopes are ignored.
+function parsePaymentPoolEnvelope(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed.startsWith("{") || trimmed.length > 100_000) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.type === "addr_pool") {
+      if (!Array.isArray(parsed.addresses)) return null;
+      return { kind: "pool", addresses: parsed.addresses.map((a) => String(a || "")), replace: parsed.replace === true };
+    }
+    if (parsed.type === "addr_pool_request") return { kind: "request" };
+    if (parsed.type === "payment_notice") {
+      const txId = String(parsed.txId || "").trim().toLowerCase();
+      const amountSompi = Number(parsed.amountSompi);
+      const address = String(parsed.address || "").trim();
+      if (!txId || !Number.isFinite(amountSompi) || amountSompi <= 0 || !address) return null;
+      return { kind: "notice", txId, amountSompi: Math.floor(amountSompi), address };
+    }
+    return null;
+  } catch { return null; }
+}
+
+// Established = both directions have spoken (>=1 incoming AND >=1 outgoing) —
+// the bar both for offering our pool and for accepting a contact's.
+function isPoolEstablishedConversation(conversationEntry) {
+  const messages = conversationEntry?.messages || [];
+  return messages.some((m) => m.direction === "incoming") && messages.some((m) => m.direction === "outgoing");
+}
+
+function isValidKaspaAddressString(address) {
+  try { return engine.kaspa?.Address?.validate ? engine.kaspa.Address.validate(address) === true : address.startsWith("kaspa:"); }
+  catch { return false; }
+}
+
+function isWithinPoolServeGap(poolState, contactAddress, toggleTransition) {
+  const last = Number(poolState.lastPoolServeAt?.[contactAddress] || 0);
+  if (!last) return false;
+  const gap = toggleTransition ? POOL_TOGGLE_TRANSITION_GAP_MS : POOL_SERVE_THROTTLE_MS;
+  return Date.now() - last < gap;
+}
+
+// Gate for EVERY addr_pool send (initial offer, reciprocity, request-driven
+// top-ups): one send per contact per 10 minutes (60s transition gap for
+// genuine toggle flips), nothing once the lifetime reservation cap or the
+// outstanding-unfunded-offers cap is hit. Suppressions are silent (log only).
+function canServePoolOffer(contactAddress, { toggleTransition = false } = {}) {
+  const poolState = loadPoolState();
+  if (isWithinPoolServeGap(poolState, contactAddress, toggleTransition)) return false;
+  const reservations = poolState.myReservations[contactAddress] || [];
+  if (reservations.length >= POOL_MAX_LIFETIME_RESERVATIONS) return false;
+  const outstandingUnfunded = reservations.filter((r) => r.offered && r.funded !== true).length;
+  if (outstandingUnfunded >= POOL_MAX_OUTSTANDING_UNFUNDED) return false;
+  return true;
+}
+
+// Reveals `count` fresh spending-chain slots strictly past the all-time max
+// index (bumping the persisted maxIndex, so they show in Manage Addresses like
+// any revealed address and future generates/reservations can never collide).
+function reserveFreshSpendingAddresses(count) {
+  if (!engine.address || !activeAccountMnemonic() || !engine.kaspa) return [];
+  const spendingState = getSpendingState();
+  const base = spendingState.maxIndex + 1;
+  const results = [];
+  for (let i = 0; i < count; i += 1) {
+    const index = base + i;
+    const address = deriveSpendingAddressAt(index);
+    if (!address) break;
+    results.push({ index, address });
+  }
+  if (results.length) saveSpendingState({ maxIndex: results[results.length - 1].index });
+  return results;
+}
+
+// Sends an invisible pool envelope through the normal encrypted
+// contextual-message pipeline (identical to sendReaction's construction) —
+// never a bubble, no pending bookkeeping. Returns the submitted txid ("" if
+// unknown), which is remembered in the replay guard so the indexer re-fetch of
+// our own envelope is dropped without re-entering handler logic.
+async function sendInvisiblePoolEnvelope(contact, payload) {
+  if (!engine.address) throw new Error("No wallet loaded.");
+  const conversationEntry = state.conversations.find((entry) => entry.contactId === contact.id);
+  const envelope = await engine.createEncryptedMessageEnvelope({
+    conversationId: conversationEntry?.id || nowId(),
+    contactId: contact.id,
+    toAddress: contact.address,
+    fromAddress: engine.address,
+    text: payload,
+    localNonce: nowId(),
+    createdAt: Date.now(),
+  });
+  const result = await engine.sendMessageOnchain({ envelope, amountKas: onchainAmountKas(), feeKas: "0", onStatus: () => {} });
+  const txid = String(result?.txid || "").trim();
+  if (txid) {
+    const poolState = loadPoolState();
+    if (!poolState.handledEnvelopeTxIds.includes(txid)) {
+      poolState.handledEnvelopeTxIds.push(txid);
+      if (poolState.handledEnvelopeTxIds.length > POOL_MAX_HANDLED_TXIDS) {
+        poolState.handledEnvelopeTxIds.splice(0, poolState.handledEnvelopeTxIds.length - POOL_MAX_HANDLED_TXIDS);
+      }
+      savePoolState(poolState);
+    }
+  }
+  return txid;
+}
+
+// Serializes pool-envelope sends: the engine already queues per source
+// address, but the marker/throttle re-checks inside reserveAndSendAddressPool
+// must run after any queued predecessor finished (several envelope handlers
+// can queue offers for the same contact before the first flips the marker).
+let poolSendChain = Promise.resolve();
+function enqueuePoolOperation(operation) {
+  const next = poolSendChain.then(operation, operation);
+  poolSendChain = next.catch(() => {});
+  return next;
+}
+
+// Reserves fresh spending-chain addresses for `contact` and sends them as an
+// addr_pool envelope. Re-uses reservations whose send previously failed
+// (offered=false) before revealing new indices; replace:true offers may re-send
+// previously offered but never-funded reservations (post-revoke re-offer —
+// the recipient discarded them, re-sending creates no reuse and doesn't burn
+// five new indices per toggle cycle). All gates re-checked here, inside the
+// serialized operation, not just at call sites.
+async function reserveAndSendAddressPool(contact, { replace, toggleTransition = false } = {}) {
+  if (!engine.address || !contact?.address) return;
+  if (!chatsPrivacyEnabled()) return;
+  const contactAddress = contact.address;
+  let poolState = loadPoolState();
+  if (replace && poolState.offeredContacts.includes(contactAddress)) return;
+  if (!canServePoolOffer(contactAddress, { toggleTransition })) {
+    appendEngineLog(`Pool offer to ${shortAddress(contactAddress)} suppressed by serve throttle/caps.`);
+    return;
+  }
+
+  const reservations = poolState.myReservations[contactAddress] || [];
+  let pending = replace
+    ? reservations.filter((r) => r.funded !== true)
+    : reservations.filter((r) => !r.offered);
+  if (pending.length > POOL_OFFER_BATCH_SIZE) pending = pending.slice(0, POOL_OFFER_BATCH_SIZE);
+
+  const lifetimeHeadroom = POOL_MAX_LIFETIME_RESERVATIONS - reservations.length;
+  const missing = Math.min(POOL_OFFER_BATCH_SIZE - pending.length, lifetimeHeadroom);
+  if (missing > 0) {
+    const fresh = reserveFreshSpendingAddresses(missing);
+    if (!fresh.length && !pending.length) {
+      appendEngineLog("Pool offer aborted — could not reserve fresh spending addresses.");
+      return;
+    }
+    if (fresh.length) {
+      const entries = fresh.map(({ address, index }) => ({ address, index, offered: false, funded: false }));
+      poolState = loadPoolState();
+      const list = poolState.myReservations[contactAddress] || [];
+      const known = new Set(list.map((r) => r.address));
+      for (const entry of entries) if (!known.has(entry.address)) list.push(entry);
+      poolState.myReservations[contactAddress] = list;
+      savePoolState(poolState);
+      pending = pending.concat(entries);
+    }
+  }
+  if (!pending.length) return;
+
+  // Wire format (MESSAGING.md): {"type":"addr_pool","addresses":[...],"replace":bool}
+  const payload = JSON.stringify({ type: "addr_pool", addresses: pending.map((r) => r.address), replace: replace === true });
+  await sendInvisiblePoolEnvelope(contact, payload);
+
+  poolState = loadPoolState();
+  const list = poolState.myReservations[contactAddress] || [];
+  const offeredNow = new Set(pending.map((r) => r.address));
+  for (const entry of list) if (offeredNow.has(entry.address)) entry.offered = true;
+  poolState.myReservations[contactAddress] = list;
+  if (!poolState.offeredContacts.includes(contactAddress)) poolState.offeredContacts.push(contactAddress);
+  poolState.lastPoolServeAt[contactAddress] = Date.now();
+  poolState.revokedContacts = poolState.revokedContacts.filter((a) => a !== contactAddress);
+  savePoolState(poolState);
+  appendEngineLog(`Offered ${pending.length} fresh pool addresses to ${shortAddress(contactAddress)} (replace=${replace === true}).`);
+
+  // The just-offered reserved addresses join the UTXO watched set.
+  refreshSubscriptionAddresses({ restart: true });
+}
+
+// Lazily offers this wallet's fresh receive addresses once per contact
+// (persisted marker) — called on conversation open and reciprocally from an
+// incoming addr_pool. Established conversations only.
+function offerAddressPoolIfNeeded(contact, conversationEntry) {
+  if (!engine.address || !contact?.address) return;
+  if (!chatsPrivacyEnabled()) return;
+  const poolState = loadPoolState();
+  if (poolState.offeredContacts.includes(contact.address)) return;
+  if (!canServePoolOffer(contact.address)) return;
+  if (!isPoolEstablishedConversation(conversationEntry)) return;
+  enqueuePoolOperation(() => reserveAndSendAddressPool(contact, { replace: true }))
+    .catch((error) => appendEngineLog(`Pool offer failed: ${error.message}`));
+}
+
+// Sends addr_pool_request when the stored pool for `contact` has run low
+// (<= POOL_LOW_WATER_MARK unused), throttled per contact. Never when Chats
+// Payment Privacy is OFF (we aren't consuming pool addresses then).
+function maybeRequestMorePoolAddresses(contact) {
+  if (!engine.address || !contact?.address) return;
+  if (!chatsPrivacyEnabled()) return;
+  const poolState = loadPoolState();
+  const pool = poolState.theirPools[contact.address] || [];
+  if (!pool.length) return;
+  if (pool.filter((entry) => !entry.used).length > POOL_LOW_WATER_MARK) return;
+  const last = Number(poolState.lastPoolRequestAt[contact.address] || 0);
+  if (last && Date.now() - last < POOL_REQUEST_THROTTLE_MS) return;
+  enqueuePoolOperation(async () => {
+    await sendInvisiblePoolEnvelope(contact, JSON.stringify({ type: "addr_pool_request" }));
+    const current = loadPoolState();
+    current.lastPoolRequestAt[contact.address] = Date.now();
+    savePoolState(current);
+    appendEngineLog(`Requested fresh pool addresses from ${shortAddress(contact.address)}.`);
+  }).catch((error) => appendEngineLog(`addr_pool_request send failed: ${error.message}`));
+}
+
+// Front door for the three envelope types, called from the interception in
+// appendIncomingOrReactionMessage — these never become bubbles (except the
+// payment bubble a payment_notice deliberately creates). Replay-guarded by
+// envelope txid: history re-fetch replays the same envelopes and must not
+// re-trigger reservation sends or pool merges.
+function handlePaymentPoolEnvelope(envelope, conversationEntry, message) {
+  if (!engine.address) return;
+  const contact = contactForConversation(conversationEntry);
+  const contactAddress = contact?.address || "";
+  if (!contactAddress) return;
+
+  const txid = String(message.txid || "").trim();
+  if (txid) {
+    const poolState = loadPoolState();
+    if (poolState.handledEnvelopeTxIds.includes(txid)) return;
+    poolState.handledEnvelopeTxIds.push(txid);
+    if (poolState.handledEnvelopeTxIds.length > POOL_MAX_HANDLED_TXIDS) {
+      poolState.handledEnvelopeTxIds.splice(0, poolState.handledEnvelopeTxIds.length - POOL_MAX_HANDLED_TXIDS);
+    }
+    savePoolState(poolState);
+  }
+
+  const outgoing = message.direction === "outgoing";
+  if (envelope.kind === "pool") {
+    // Our own outgoing addr_pool re-fetched: nothing to do.
+    if (outgoing) return;
+    if (!isPoolEstablishedConversation(conversationEntry)) {
+      appendEngineLog(`Ignoring addr_pool from non-established conversation ${shortAddress(contactAddress)}.`);
+      return;
+    }
+    acceptIncomingAddressPool(envelope, contact, conversationEntry);
+  } else if (envelope.kind === "request") {
+    if (outgoing) return;
+    // Chats Privacy OFF: silently ignore (same no-error semantics as the rate limits).
+    if (!chatsPrivacyEnabled()) return;
+    if (!isPoolEstablishedConversation(conversationEntry)) return;
+    if (!canServePoolOffer(contactAddress)) {
+      appendEngineLog(`Ignoring addr_pool_request from ${shortAddress(contactAddress)} — serve throttle/caps.`);
+      return;
+    }
+    enqueuePoolOperation(() => reserveAndSendAddressPool(contact, { replace: false }))
+      .catch((error) => appendEngineLog(`Pool top-up failed: ${error.message}`));
+  } else if (envelope.kind === "notice") {
+    // The payer's own notice re-fetched: swallow — the payer's bubble was
+    // created by the send flow.
+    if (outgoing) return;
+    createPaymentBubbleFromNotice(envelope, conversationEntry, contact, message);
+  }
+}
+
+// Validates and stores a received addr_pool as "addresses I can pay this
+// contact at". Per-address validation: bech32-valid, kaspa: prefix, not our
+// chatting address, not one we reserved, not our own spending-chain address.
+// Honors the revocation primitive: replace:true + empty-after-validation
+// clears the stored pool entirely. Reciprocity offers our pool if the contact
+// hasn't gotten it yet.
+function acceptIncomingAddressPool(envelope, contact, conversationEntry) {
+  const contactAddress = contact.address;
+  const poolState = loadPoolState();
+  const ownSpending = new Set(spendingWatchedAddressList());
+  const accepted = [];
+  for (const raw of envelope.addresses.slice(0, POOL_MAX_STORED)) {
+    const address = String(raw || "").trim();
+    if (!address.startsWith("kaspa:") ||
+        !isValidKaspaAddressString(address) ||
+        address === engine.address ||
+        isReservedPoolAddress(poolState, address) ||
+        ownSpending.has(address)) {
+      appendEngineLog(`Rejected pool address from ${shortAddress(contactAddress)}: …${address.slice(-14)}`);
+      continue;
+    }
+    accepted.push(address);
+  }
+
+  // REVOCATION PRIMITIVE: a replace:true pool that is empty after validation
+  // clears this contact's stored pool entirely — our next payment falls back
+  // to their chatting address, and the fresh-address indicator goes false
+  // immediately. No reciprocity on a revoke.
+  if (envelope.replace && accepted.length === 0) {
+    poolState.theirPools[contactAddress] = [];
+    savePoolState(poolState);
+    appendEngineLog(`Pool REVOKED by ${shortAddress(contactAddress)} — cleared stored pool.`);
+    refreshComposerAvailableBalance();
+    return;
+  }
+  if (!accepted.length) return;
+
+  const existing = poolState.theirPools[contactAddress] || [];
+  const usedByAddress = new Map(existing.map((entry) => [entry.address, entry.used === true]));
+  let merged = envelope.replace ? [] : existing.slice();
+  const seen = new Set(merged.map((entry) => entry.address));
+  for (const address of accepted) {
+    if (seen.has(address)) continue;
+    seen.add(address);
+    // used flags carry over on replace — a replayed/overlapping replace can
+    // never resurrect an already-spent address.
+    merged.push({ address, used: usedByAddress.get(address) === true });
+  }
+  if (merged.length > POOL_MAX_STORED) merged = merged.slice(0, POOL_MAX_STORED);
+  poolState.theirPools[contactAddress] = merged;
+  savePoolState(poolState);
+  appendEngineLog(`Stored ${accepted.length} pool addresses for ${shortAddress(contactAddress)} (replace=${envelope.replace}).`);
+  refreshComposerAvailableBalance();
+
+  // Reciprocity: they shared theirs — if they've never gotten ours, offer now.
+  if (!loadPoolState().offeredContacts.includes(contactAddress)) {
+    offerAddressPoolIfNeeded(contact, conversationEntry);
+  }
+}
+
+// Marks one of our reservations funded — a payment_notice from the contact
+// named it as the payment destination. Feeds the outstanding-unfunded cap.
+function markReservationFunded(address, contactAddress) {
+  const poolState = loadPoolState();
+  const entries = poolState.myReservations[contactAddress];
+  if (!entries) return;
+  const entry = entries.find((r) => r.address === address);
+  if (!entry || entry.funded === true) return;
+  entry.funded = true;
+  savePoolState(poolState);
+}
+
+// Renders a received payment_notice as a normal incoming payment bubble,
+// deduped by the payment's txId. Rendering is NOT blocked on chain
+// verification (the notice arrived over the sender-authenticated encrypted
+// channel); a background REST check corrects the amount if the chain
+// disagrees and downgrades the bubble if the tx pays nothing to the claimed
+// address.
+function createPaymentBubbleFromNotice(envelope, conversationEntry, contact, sourceMessage) {
+  markReservationFunded(envelope.address, contact.address);
+
+  const txId = envelope.txId;
+  const exists = (conversationEntry.messages || []).some((m) => String(m.txid || "").toLowerCase() === txId);
+  if (exists) return;
+
+  const amountKas = formatSompiForNotification(envelope.amountSompi);
+  const createdAt = Number(sourceMessage.createdAt || Date.now());
+  const bubble = createMessage({
+    conversationId: conversationEntry.id,
+    contactId: contact.id,
+    direction: "incoming",
+    text: `Received ${amountKas} KAS`,
+    sender: contact.address,
+    receiver: envelope.address,
+    status: MESSAGE_STATUSES.CONFIRMED,
+    transport: "kaspa-payment",
+    createdAt,
+  });
+  bubble.txid = txId;
+  bubble.messageType = "payment";
+  bubble.paymentAmountKas = amountKas;
+  bubble.confirmations = 1;
+  addMessageToConversation(conversationEntry, bubble);
+  conversationEntry.messages.sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+  conversationEntry.lastActivityAt = Math.max(Number(conversationEntry.lastActivityAt || 0), createdAt);
+  conversationEntry.updatedAt = Date.now();
+  persistState();
+  if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+  renderChats();
+  maybeNotifyIncoming(conversationEntry, contact, bubble);
+  appendEngineLog(`Created payment bubble from payment_notice ${txId.slice(0, 12)}…`);
+  verifyPaymentNoticeAgainstChain(conversationEntry, bubble, envelope);
+}
+
+// Best-effort background verification of a payment_notice against the
+// on-chain tx. Silent on network failure; the chain is authoritative for the
+// amount; a tx with no output to the claimed address flags the bubble.
+async function verifyPaymentNoticeAgainstChain(conversationEntry, bubble, envelope) {
+  let tx = null;
+  try {
+    const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
+    const response = await fetch(`${base}/transactions/${encodeURIComponent(envelope.txId)}?resolve_previous_outpoints=no`, {
+      headers: { Accept: "application/json" }, cache: "no-store",
+    });
+    if (!response.ok) return;
+    tx = await response.json();
+  } catch { return; }
+  let paidToClaimed = 0n;
+  for (const output of (Array.isArray(tx?.outputs) ? tx.outputs : [])) {
+    if (kaspaOutputAddress(output) === envelope.address) paidToClaimed += kaspaOutputAmount(output);
+  }
+  const live = (conversationEntry.messages || []).find((m) => m.id === bubble.id) || bubble;
+  if (paidToClaimed === 0n) {
+    appendEngineLog(`payment_notice ${envelope.txId.slice(0, 12)}… FAILED verification — no output to claimed address.`);
+    applyMessagePatch(live, { status: MESSAGE_STATUSES.BROADCAST, note: "Unverified: the referenced transaction pays nothing to the claimed address." });
+  } else if (paidToClaimed !== BigInt(envelope.amountSompi)) {
+    const corrected = formatSompiForNotification(paidToClaimed);
+    applyMessagePatch(live, { text: `Received ${corrected} KAS`, paymentAmountKas: corrected, note: "Amount corrected from chain data." });
+  } else {
+    return;
+  }
+  persistState();
+  if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+}
+
+// The destination for a Send KAS to `contact`: an unused address from their
+// stored pool (consumed immediately and persisted — burning an address is
+// safe, reusing one is not), else the chatting address — exact pre-pool
+// behavior. Privacy OFF always returns the chatting address (stored pools are
+// kept, just not consumed).
+function consumePoolPaymentDestination(contact) {
+  if (!chatsPrivacyEnabled()) return contact.address;
+  const poolState = loadPoolState();
+  const pool = poolState.theirPools[contact.address] || [];
+  const next = pool.find((entry) => !entry.used);
+  if (!next || !isValidKaspaAddressString(next.address)) return contact.address;
+  next.used = true;
+  savePoolState(poolState);
+  appendEngineLog(`Payment to ${shortAddress(contact.address)} will use fresh pool address …${next.address.slice(-10)}.`);
+  return next.address;
+}
+
+// True when the NEXT payment to this contact would go to a fresh pool address —
+// drives the subtle fresh-address indicator in the payment composer.
+function willPayViaFreshPoolAddress(contactAddress) {
+  if (!engine.address || !chatsPrivacyEnabled()) return false;
+  const pool = loadPoolState().theirPools[contactAddress] || [];
+  return pool.some((entry) => !entry.used);
+}
+
+// Sends the payment_notice envelope after a pool-address payment was accepted
+// (fire-and-forget), then checks the low-water mark. No-op for
+// chatting-address payments — existing detection covers those.
+function handlePoolPaymentSubmitted(contact, txid, amountSompi, destinationAddress) {
+  if (!contact || destinationAddress === contact.address) return;
+  const payload = JSON.stringify({ type: "payment_notice", txId: String(txid).toLowerCase(), amountSompi, address: destinationAddress });
+  enqueuePoolOperation(async () => {
+    await sendInvisiblePoolEnvelope(contact, payload);
+    appendEngineLog(`Sent payment_notice for ${String(txid).slice(0, 12)}…`);
+  }).catch((error) => {
+    // The payment itself succeeded; a lost notice only means the recipient's
+    // bubble waits for their own discovery. Not retried automatically.
+    appendEngineLog(`payment_notice send failed for ${String(txid).slice(0, 12)}…: ${error.message}`);
+  }).finally(() => {
+    maybeRequestMorePoolAddresses(contact);
+  });
+}
+
+// Chats Payment Privacy toggle propagation — both directions are PROACTIVE
+// (the toggle is the switch, not conversation-opening): OFF revokes our pool
+// at every contact holding one (empty replace:true), ON clears revocation
+// markers and immediately re-offers to every established contact not holding
+// a live pool. Toggle broadcasts honor the 60s per-contact transition gap.
+function handleChatsPrivacyToggleChanged(enabled) {
+  if (!engine.address) return;
+  if (enabled) {
+    const poolState = loadPoolState();
+    poolState.revokedContacts = [];
+    savePoolState(poolState);
+    reofferPoolsForChatsPrivacyOn();
+  } else {
+    revokeOfferedPoolsForChatsPrivacyOff();
+  }
+  refreshComposerAvailableBalance();
+}
+
+function reofferPoolsForChatsPrivacyOn() {
+  const poolState = loadPoolState();
+  const targets = (state.conversations || [])
+    .map((entry) => ({ entry, contact: contactForConversation(entry) }))
+    .filter(({ entry, contact }) => contact?.address
+      && isPoolEstablishedConversation(entry)
+      && !poolState.offeredContacts.includes(contact.address));
+  if (!targets.length) return;
+  appendEngineLog(`Chats Payment Privacy on — re-offering pools to ${targets.length} contact(s).`);
+  enqueuePoolOperation(async () => {
+    for (const { contact } of targets) {
+      if (!chatsPrivacyEnabled()) return; // flipped back OFF mid-broadcast
+      try {
+        await reserveAndSendAddressPool(contact, { replace: true, toggleTransition: true });
+      } catch (error) {
+        appendEngineLog(`Toggle-on pool offer to ${shortAddress(contact.address)} failed (lazy offer remains): ${error.message}`);
+      }
+    }
+  });
+}
+
+// One revoke per contact currently holding our pool, per PERSISTED state: the
+// offered-marker set unioned with contacts holding offered-flagged
+// reservations, minus already-revoked. Revokes bypass the reservation caps (a
+// revoke must always be allowed out) but honor the 60s transition gap.
+// Failures are non-fatal — that contact simply drains the residual pool and
+// stays eligible for a retry on a later toggle-off.
+function revokeOfferedPoolsForChatsPrivacyOff() {
+  const poolState = loadPoolState();
+  const holders = new Set(poolState.offeredContacts);
+  for (const [contactAddress, entries] of Object.entries(poolState.myReservations || {})) {
+    if ((entries || []).some((r) => r.offered)) holders.add(contactAddress);
+  }
+  const targets = [...holders].filter((address) => !poolState.revokedContacts.includes(address)).sort();
+  if (!targets.length) return;
+  appendEngineLog(`Chats Payment Privacy off — revoking offered pools at ${targets.length} contact(s).`);
+  enqueuePoolOperation(async () => {
+    for (const contactAddress of targets) {
+      if (chatsPrivacyEnabled()) return; // flipped back ON mid-broadcast
+      const current = loadPoolState();
+      if (current.revokedContacts.includes(contactAddress)) continue;
+      if (isWithinPoolServeGap(current, contactAddress, true)) {
+        appendEngineLog(`Revoke to ${shortAddress(contactAddress)} deferred by transition gap.`);
+        continue;
+      }
+      const contact = state.contacts.find((entry) => entry.address === contactAddress);
+      if (!contact) continue;
+      try {
+        await sendInvisiblePoolEnvelope(contact, JSON.stringify({ type: "addr_pool", addresses: [], replace: true }));
+        const after = loadPoolState();
+        if (!after.revokedContacts.includes(contactAddress)) after.revokedContacts.push(contactAddress);
+        after.offeredContacts = after.offeredContacts.filter((a) => a !== contactAddress);
+        after.lastPoolServeAt[contactAddress] = Date.now();
+        savePoolState(after);
+        appendEngineLog(`Revoked pool at ${shortAddress(contactAddress)}.`);
+      } catch (error) {
+        appendEngineLog(`Pool revoke to ${shortAddress(contactAddress)} failed (non-fatal, residual drain applies): ${error.message}`);
+      }
+    }
+  });
+}
+
+// Settings > Chats toggle wiring (per-account, applied on account switches too).
+const chatsPrivacyToggleEl = document.querySelector("[data-chats-privacy-toggle]");
+function refreshChatsPrivacyToggle() {
+  if (chatsPrivacyToggleEl) chatsPrivacyToggleEl.checked = chatsPrivacyEnabled();
+}
+chatsPrivacyToggleEl?.addEventListener("change", () => {
+  setChatsPrivacyEnabled(chatsPrivacyToggleEl.checked);
+  handleChatsPrivacyToggleChanged(chatsPrivacyToggleEl.checked);
+});
+refreshChatsPrivacyToggle();
 
 // --- Profile card summary (active spending address + live balance) ---
 async function refreshSpendingSummary() {
@@ -2893,7 +3910,7 @@ const STAR_PATH = "m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 18l-5.8 3 1.1-6.5L2.6 
 // Each row: tap the body to open the address's detail (transactions + send/
 // receive); the ⋯ button opens a menu (Rename / Copy / Show QR / Set as Primary),
 // matching iOS's ManageAddressesView.
-function spendingRowHtml(index, address, state, balanceText, used) {
+function spendingRowHtml(index, address, state, balanceText, used, hasDomain = false) {
   const isActive = index === state.activeIndex;
   const label = spendingLabelFor(state, index);
   const usageBadge = used === true
@@ -2901,6 +3918,7 @@ function spendingRowHtml(index, address, state, balanceText, used) {
     : used === false
       ? '<span class="spending-address-usage unused">Unused</span>'
       : "";
+  const domainBadge = hasDomain ? '<span class="spending-address-domain-tag">Contains domain</span>' : "";
   const menuItems = [
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="rename" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>Rename Address</button>`,
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="copy" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>Copy Address</button>`,
@@ -2915,6 +3933,7 @@ function spendingRowHtml(index, address, state, balanceText, used) {
           <span class="spending-address-label">${escapeHtml(label)}</span>
           ${isActive ? `<span class="spending-address-active-badge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>Primary</span>` : ""}
           ${usageBadge}
+          ${domainBadge}
         </div>
         <span class="spending-address-value">${escapeHtml(shortAddress(address))}</span>
         <span class="spending-address-balance" data-spending-balance-cell="${index}">${escapeHtml(balanceText)}</span>
@@ -2971,10 +3990,25 @@ async function renderSpendingList() {
     return { ...it, kas, totalKas, used };
   }));
   if (token !== spendingListToken) return;
-  const rank = (e) => (e.index === primaryIndex ? 0 : e.kas > 0 ? 1 : 2);
+  // Batched, cached KNS assets-by-owner lookups drive the "Contains domain"
+  // tag and promote those rows into the funded group (iOS parity). The
+  // refresh is debounced/backed-off inside engine/kns.js, so reopening the
+  // screen is normally cache-only.
+  let domainOwning = new Set();
+  try {
+    await engine.refreshKnsIfNeeded?.(enriched.map((e) => e.address));
+  } catch { /* tags fall back to whatever is cached */ }
+  for (const e of enriched) {
+    const info = engine.peekKnsAddressInfo?.(e.address);
+    if (info?.allDomains?.length) domainOwning.add(e.address);
+  }
+  if (token !== spendingListToken) return;
+  // Primary first → addresses with a balance OR a KNS domain (stable within
+  // the group) → fresh/unused last.
+  const rank = (e) => (e.index === primaryIndex ? 0 : (e.kas > 0 || domainOwning.has(e.address)) ? 1 : 2);
   enriched.sort((a, b) => rank(a) - rank(b) || a.index - b.index);
   spendingListEl.innerHTML = enriched
-    .map((e) => spendingRowHtml(e.index, e.address, state, e.totalKas != null ? `${e.totalKas} KAS` : "-- KAS", e.used))
+    .map((e) => spendingRowHtml(e.index, e.address, state, e.totalKas != null ? `${e.totalKas} KAS` : "-- KAS", e.used, domainOwning.has(e.address)))
     .join("");
 }
 
@@ -3067,8 +4101,136 @@ const spendingDetailAddressEl = document.querySelector("[data-spending-detail-ad
 const spendingDetailExplorer = document.querySelector("[data-spending-detail-explorer]");
 const spendingDetailTxList = document.querySelector("[data-spending-detail-transactions]");
 const spendingDetailUtxoList = document.querySelector("[data-spending-detail-utxos]");
+const spendingDetailKnsList = document.querySelector("[data-spending-detail-kns]");
 let spendingDetailIndex = 0;
 let spendingDetailAddress = null;
+
+function setSpendingDetailTabCount(tab, count) {
+  const button = document.querySelector(`[data-spending-detail-tab="${tab}"]`);
+  if (!button) return;
+  const base = tab === "utxos" ? "UTXOs" : tab === "kns" ? "KNS Domains" : "History";
+  button.textContent = count == null ? base : `${base} (${count})`;
+}
+
+// KNS domains owned by this specific spending address (assets-by-owner
+// lookup, engine-cached). Cards match the address-detail domain rows; tapping
+// one opens the transfer modal scoped to THIS address's derivation index —
+// the domain transfer is then owned/funded/signed by that derived key.
+async function loadSpendingDetailKnsDomains(address) {
+  if (!spendingDetailKnsList) return;
+  spendingDetailKnsList.innerHTML = '<div class="manage-address-empty">Loading…</div>';
+  setSpendingDetailTabCount("kns", null);
+  const index = spendingDetailIndex;
+  let info = null;
+  try { info = await engine.fetchKnsAddressInfo(address); } catch { info = engine.peekKnsAddressInfo?.(address) || null; }
+  if (spendingDetailAddress !== address) return;
+  const domains = info?.allDomains || [];
+  setSpendingDetailTabCount("kns", domains.length);
+  if (!domains.length) {
+    spendingDetailKnsList.innerHTML = '<div class="manage-address-empty">No KNS domains on this address.</div>';
+    return;
+  }
+  spendingDetailKnsList.replaceChildren();
+  for (const domain of domains) {
+    const status = String(domain.status || "default").trim().toLowerCase();
+    const transferable = Boolean(domain.inscriptionId) && status !== "listed";
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "kns-domain-card";
+    card.disabled = !transferable;
+    const name = document.createElement("strong");
+    name.textContent = domain.fullName;
+    card.append(name);
+    const hint = document.createElement("small");
+    hint.textContent = transferable ? "Tap to send this domain" : "This domain is listed and can't be sent right now.";
+    card.append(hint);
+    card.addEventListener("click", () => {
+      if (!transferable) return;
+      openKnsTransferModal({ domain: domain.fullName, assetId: domain.inscriptionId, spendingIndex: index });
+    });
+    spendingDetailKnsList.appendChild(card);
+  }
+}
+
+// --- Send KNS Domain modal (spending-address transfers) ---
+const knsTransferModal = document.querySelector("[data-kns-transfer-modal]");
+const knsTransferDomainEl = document.querySelector("[data-kns-transfer-domain]");
+const knsTransferRecipientInput = document.querySelector("[data-kns-transfer-recipient]");
+const knsTransferErrorEl = document.querySelector("[data-kns-transfer-error]");
+const knsTransferStatusEl = document.querySelector("[data-kns-transfer-status]");
+const knsTransferSendBtn = document.querySelector("[data-kns-transfer-send]");
+let knsTransferContext = null;
+let knsTransferInFlight = false;
+
+function openKnsTransferModal({ domain, assetId, spendingIndex = null }) {
+  if (!knsTransferModal) return;
+  knsTransferContext = { domain, assetId, spendingIndex };
+  if (knsTransferDomainEl) knsTransferDomainEl.textContent = domain;
+  if (knsTransferRecipientInput) knsTransferRecipientInput.value = "";
+  if (knsTransferErrorEl) knsTransferErrorEl.hidden = true;
+  if (knsTransferStatusEl) knsTransferStatusEl.hidden = true;
+  if (knsTransferSendBtn) knsTransferSendBtn.disabled = false;
+  knsTransferModal.hidden = false;
+  knsTransferRecipientInput?.focus();
+}
+
+function closeKnsTransferModal() {
+  if (knsTransferInFlight) return; // don't abandon a running inscription mid-flight
+  if (knsTransferModal) knsTransferModal.hidden = true;
+  knsTransferContext = null;
+}
+
+const KNS_TRANSFER_STATUS_LABELS = {
+  "resolving-recipient": "Resolving recipient domain…",
+  "verifying-ownership": "Verifying domain ownership…",
+  "committing": "Broadcasting commit transaction…",
+  "committed": "Commit accepted…",
+  "revealing": "Broadcasting reveal inscription…",
+  "revealed": "Reveal accepted…",
+  "verifying": "Waiting for the KNS indexer…",
+};
+
+async function submitKnsTransfer() {
+  if (!knsTransferContext || knsTransferInFlight) return;
+  const recipient = String(knsTransferRecipientInput?.value || "").trim();
+  if (!recipient) {
+    if (knsTransferErrorEl) { knsTransferErrorEl.textContent = "Enter a recipient address or .kas domain."; knsTransferErrorEl.hidden = false; }
+    return;
+  }
+  knsTransferInFlight = true;
+  if (knsTransferSendBtn) knsTransferSendBtn.disabled = true;
+  if (knsTransferErrorEl) knsTransferErrorEl.hidden = true;
+  const { domain, assetId, spendingIndex } = knsTransferContext;
+  try {
+    const result = await engine.transferKnsDomain({
+      domain,
+      assetId,
+      toAddress: recipient,
+      mnemonic: spendingIndex != null ? activeAccountMnemonic() : null,
+      spendingIndex,
+      passphrase: spendingIndex != null ? activeAccountPassphrase() : "",
+      onStatus: (patch) => {
+        const label = KNS_TRANSFER_STATUS_LABELS[patch?.status];
+        if (label && knsTransferStatusEl) { knsTransferStatusEl.textContent = label; knsTransferStatusEl.hidden = false; }
+      },
+    });
+    knsTransferInFlight = false;
+    closeKnsTransferModal();
+    showCopyToast(result.verified
+      ? `${domain} sent to ${shortAddress(result.recipientAddress)}.`
+      : `${domain} transfer broadcast — the indexer may take a moment to reflect it.`);
+    if (spendingDetailAddress) loadSpendingDetailKnsDomains(spendingDetailAddress);
+  } catch (error) {
+    knsTransferInFlight = false;
+    if (knsTransferSendBtn) knsTransferSendBtn.disabled = false;
+    if (knsTransferStatusEl) knsTransferStatusEl.hidden = true;
+    if (knsTransferErrorEl) { knsTransferErrorEl.textContent = error.message; knsTransferErrorEl.hidden = false; }
+  }
+}
+
+knsTransferSendBtn?.addEventListener("click", submitKnsTransfer);
+document.querySelector("[data-kns-transfer-close]")?.addEventListener("click", closeKnsTransferModal);
+document.querySelector("[data-kns-transfer-cancel]")?.addEventListener("click", closeKnsTransferModal);
 
 function renderSpendingDetailUtxos(address, utxos) {
   if (!spendingDetailUtxoList) return;
@@ -3096,6 +4258,7 @@ async function loadSpendingDetailUtxos(address) {
     const balance = await engine.balanceForAddress(address);
     if (spendingDetailAddress !== address) return; // user navigated away
     renderSpendingDetailUtxos(address, balance.entries || []);
+    setSpendingDetailTabCount("utxos", (balance.entries || []).length);
     if (spendingDetailBalanceEl) spendingDetailBalanceEl.textContent = `${balance.totalKas} KAS`;
   } catch (error) {
     if (spendingDetailAddress !== address) return;
@@ -3120,9 +4283,12 @@ async function openSpendingDetailScreen(index) {
   if (spendingDetailBalanceEl) spendingDetailBalanceEl.textContent = "…";
   if (spendingDetailExplorer) spendingDetailExplorer.href = explorerAddressUrl(address);
   setSpendingDetailTab("transactions");
+  setSpendingDetailTabCount("utxos", null);
+  setSpendingDetailTabCount("kns", null);
   spendingDetailScreen.hidden = false;
   loadManageAddressTransactions(address, spendingDetailTxList);
   loadSpendingDetailUtxos(address);
+  loadSpendingDetailKnsDomains(address);
 }
 
 function closeSpendingDetailScreen() {
@@ -3134,6 +4300,7 @@ function refreshSpendingDetailIfOpen() {
   if (spendingDetailScreen && !spendingDetailScreen.hidden && spendingDetailAddress) {
     loadManageAddressTransactions(spendingDetailAddress, spendingDetailTxList);
     loadSpendingDetailUtxos(spendingDetailAddress);
+    loadSpendingDetailKnsDomains(spendingDetailAddress);
   }
 }
 
@@ -5872,6 +7039,16 @@ function renderMessages(conversationEntry) {
         bubble.append(card);
       }
     } else {
+    // Payments render as an Apple-Pay-style card (matches iOS's paymentCardBubble):
+    // Kaspa logo in a circle — solid white on the sent/teal side for contrast —
+    // bold amount, a Sent/Received line, optional note. Unparseable/legacy payment
+    // content falls through to the classic text rendering below. Covers both
+    // detected payments and pool payment_notice bubbles (same text template).
+    const paymentParts = parsePaymentCardParts(message);
+    if (paymentParts) {
+      bubble.classList.add("has-payment-card");
+      bubble.append(buildPaymentCard(paymentParts, message.direction !== "incoming"));
+    } else {
     const imageEnvelope = parseImageEnvelope(message.text);
     const audioEnvelope = imageEnvelope ? null : parseAudioEnvelope(message.text);
     const replyEnvelope = (imageEnvelope || audioEnvelope) ? null : parseReplyEnvelope(message.text);
@@ -5930,6 +7107,7 @@ function renderMessages(conversationEntry) {
         const card = buildLinkPreviewCard(previewable);
         if (card) bubble.append(card);
       }
+    }
     }
     }
     // Hover reaction bar — desktop's equivalent of iOS's double-tap
@@ -6043,6 +7221,11 @@ function openConversation(conversationId) {
   activateComposerMode("message");
   window.setTimeout(() => composer.elements.message?.focus(), 0);
 
+  // Fresh-address payment pools: the lazy once-per-contact offer plus the
+  // low-water top-up request, both no-ops unless due (see the pool section).
+  offerAddressPoolIfNeeded(contact, conversationEntry);
+  maybeRequestMorePoolAddresses(contact);
+
   // The header name above is a synchronous cache-peek and may render before
   // KNS data has ever been fetched for this address — refresh in the
   // background and update it once real data lands, same idea as the chat
@@ -6083,6 +7266,7 @@ function openChatInfo() {
 
   chatInfoContactId = contact.id;
   chatInfoContactAddress = contact.address;
+  resetChatInfoAliases();
   refreshChatInfoContactControls();
   if (chatInfoAvatarInitials) { chatInfoAvatarInitials.textContent = initialsFor(contact.name); chatInfoAvatarInitials.hidden = false; }
   if (chatInfoAvatarImage) { chatInfoAvatarImage.hidden = true; chatInfoAvatarImage.src = ""; }
@@ -6399,6 +7583,7 @@ const SETTINGS_HUB_ICONS = {
   "Security": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.8v5.4c0 4.5-3 8.2-7 9.8-4-1.6-7-5.3-7-9.8V5.8z"/><circle cx="12" cy="10.6" r="1.6"/><path d="M12 12.2v2.8"/></svg>',
   "Connection": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="1.8"/><path d="M8.5 15.5a5 5 0 0 1 0-7M15.5 8.5a5 5 0 0 1 0 7M5.6 18.4a9 9 0 0 1 0-12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></svg>',
   "Chats": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.3 4.5h9.1a3.8 3.8 0 0 1 3.8 3.8v2.7a3.8 3.8 0 0 1-3.8 3.8H8.7l-4.45 3.05.02-3.44A3.78 3.78 0 0 1 .5 10.65V8.3a3.8 3.8 0 0 1 3.8-3.8Z"/><path d="M9.65 8.15h6.1a3.75 3.75 0 0 1 3.75 3.75v1.95a3.75 3.75 0 0 1-3.75 3.75h-2.7L9.5 20.1v-2.5"/></svg>',
+  "Notifications": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a5.5 5.5 0 0 1 5.5 5.5c0 3.2.8 5 1.8 6.2.4.5.05 1.3-.6 1.3H5.3c-.65 0-1-.8-.6-1.3 1-1.2 1.8-3 1.8-6.2A5.5 5.5 0 0 1 12 4Z"/><path d="M10 19.5a2 2 0 0 0 4 0"/><path d="M12 4V2.8"/></svg>',
   "Contacts": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3"/><path d="M3.5 19c.9-3 2.9-4.5 5.5-4.5s4.6 1.5 5.5 4.5"/><path d="M15.2 5.9a2.9 2.9 0 1 1 1.3 5.5M17.3 14.7c1.7.7 2.8 2 3.2 4.3"/></svg>',
   "Storage": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="18" height="8" rx="2.2"/><path d="M6.5 12h.01M10 12h.01"/><circle cx="17.4" cy="12" r=".4"/></svg>',
   "Chat History": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.25"/><path d="M12 7.5V12l3 1.8"/></svg>',
@@ -7152,16 +8337,64 @@ function hideAvailableBalanceBanner() {
   if (availableBalanceBanner) availableBalanceBanner.hidden = true;
 }
 
-function showAvailableBalanceBanner(balanceKas) {
+// Payment-mode "Available" pill (iOS availableBalanceBubble port). Stays
+// visible for the whole KAS mode (it IS the funding-source display, not a
+// toast). Privacy ON: shows the PRIMARY SPENDING address balance — the actual
+// funding source — underlined and clickable, opening Manage Spending
+// Addresses; refreshed when that balance changes (wallet-activity bridge) and
+// after sends. Privacy OFF: the plain chatting balance, not clickable. A
+// small accent arrow marks that the next send pays a fresh pool address.
+let composerBalanceToken = 0;
+
+function renderAvailableBalanceBanner(balanceText, clickable, contact) {
   if (!availableBalanceBanner) return;
-  availableBalanceBanner.textContent = `Available ${balanceKas} KAS`;
+  availableBalanceBanner.replaceChildren();
+  const value = document.createElement("span");
+  value.className = `available-balance-value${clickable ? " clickable" : ""}`;
+  value.textContent = `Available ${balanceText} KAS`;
+  availableBalanceBanner.append(value);
+  if (contact && willPayViaFreshPoolAddress(contact.address)) {
+    const arrow = document.createElement("span");
+    arrow.className = "available-balance-fresh";
+    arrow.textContent = "→";
+    arrow.title = "Payment goes to a fresh address this contact shared, so it cannot be linked to their chat address on-chain";
+    availableBalanceBanner.append(arrow);
+  }
+  availableBalanceBanner.classList.toggle("clickable", clickable);
   availableBalanceBanner.hidden = false;
-  if (availableBalanceHideTimer) window.clearTimeout(availableBalanceHideTimer);
-  availableBalanceHideTimer = window.setTimeout(() => {
-    if (composerMode === "kas") availableBalanceBanner.hidden = true;
-    availableBalanceHideTimer = null;
-  }, 2000);
 }
+
+async function refreshComposerAvailableBalance() {
+  if (!availableBalanceBanner || composerMode !== "kas") return;
+  const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
+  const contact = contactForConversation(conversationEntry);
+  const spendingFunded = chatsPrivacyEnabled() && Boolean(activeAccountMnemonic());
+  const token = ++composerBalanceToken;
+  renderAvailableBalanceBanner("…", spendingFunded, contact);
+  try {
+    let balanceKas;
+    if (spendingFunded) {
+      const address = deriveSpendingAddressAt(getActiveSpendingIndex());
+      if (!address) throw new Error("No spending address");
+      balanceKas = (await engine.balanceForAddress(address)).totalKas;
+    } else {
+      const balance = await engine.balance();
+      currentBalanceKas = balance.totalKas;
+      balanceKas = balance.totalKas;
+    }
+    if (token !== composerBalanceToken || composerMode !== "kas") return;
+    renderAvailableBalanceBanner(balanceKas, spendingFunded, contact);
+  } catch {
+    if (token !== composerBalanceToken || composerMode !== "kas") return;
+    renderAvailableBalanceBanner("--", spendingFunded, contact);
+  }
+}
+
+availableBalanceBanner?.addEventListener("click", () => {
+  if (composerMode !== "kas") return;
+  if (!chatsPrivacyEnabled() || !activeAccountMnemonic()) return; // OFF: not tappable
+  openSpendingManageScreen();
+});
 
 async function activateComposerMode(mode) {
   const input = composer?.elements?.message;
@@ -7181,14 +8414,7 @@ async function activateComposerMode(mode) {
     return;
   }
   setStatus("KAS payment mode selected");
-  try {
-    const balance = await engine.balance();
-    currentBalanceKas = balance.totalKas;
-    showAvailableBalanceBanner(balance.totalKas);
-  } catch (error) {
-    hideAvailableBalanceBanner();
-    setStatus(`Balance unavailable: ${error.message}`);
-  }
+  await refreshComposerAvailableBalance();
 }
 
 
@@ -7276,6 +8502,56 @@ function paymentAmountForMessage(message) {
   return match ? match[1] : "";
 }
 
+// Amount + optional note pulled out of a payment message's display text
+// ("Sent 0.2 KAS", "Received 0.2 KAS — thanks!"). Mirrors iOS's
+// paymentCardParts: null when the content doesn't look like a standard payment
+// phrase (foreign/legacy data) — the bubble then falls back to plain text.
+function parsePaymentCardParts(message) {
+  if (message?.messageType !== "payment" && message?.transport !== "kaspa-payment" && message?.transport !== "kaspa-payment-rest") return null;
+  const content = String(message?.text || "");
+  if (!content || content.length > 512) return null;
+  const pieces = content.split(" — ");
+  const head = pieces[0];
+  const noteRaw = pieces.length > 1 ? pieces.slice(1).join(" — ") : null;
+  const amountToken = head
+    .split(/\s+/)
+    .find((token) => token && Number.isFinite(Number(token.replace(",", "."))));
+  if (!amountToken) return null;
+  const note = noteRaw ? noteRaw.trim() : "";
+  return { amountText: amountToken, note: note || null };
+}
+
+// Builds the payment card element. All content is set via textContent (never
+// innerHTML), so no escaping concerns.
+function buildPaymentCard(parts, outgoing) {
+  const card = document.createElement("div");
+  card.className = `message-payment-card ${outgoing ? "outgoing" : "incoming"}`;
+  const logoWrap = document.createElement("span");
+  logoWrap.className = "payment-card-logo";
+  logoWrap.setAttribute("aria-hidden", "true");
+  const logo = document.createElement("img");
+  logo.src = "./ui/assets/kaspa-logo.png";
+  logo.alt = "";
+  logoWrap.append(logo);
+  const body = document.createElement("div");
+  body.className = "payment-card-body";
+  const label = document.createElement("span");
+  label.className = "payment-card-label";
+  label.textContent = outgoing ? "Sent" : "Received";
+  const amount = document.createElement("strong");
+  amount.className = "payment-card-amount";
+  amount.textContent = `${parts.amountText} KAS`;
+  body.append(label, amount);
+  if (parts.note) {
+    const note = document.createElement("span");
+    note.className = "payment-card-note";
+    note.textContent = parts.note;
+    body.append(note);
+  }
+  card.append(logoWrap, body);
+  return card;
+}
+
 async function refreshPendingPaymentStatuses(conversationEntry, contact) {
   let changed = false;
   const pendingPayments = (conversationEntry.messages || []).filter((message) =>
@@ -7328,8 +8604,17 @@ async function sendKasPayment(conversationId, rawAmount) {
   const submitButton = composer.querySelector(".composer-send");
   if (submitButton) submitButton.disabled = true;
   try {
-    const balance = await engine.balance();
-    currentBalanceKas = balance.totalKas;
+    // Funding source follows the per-account Chats Payment Privacy toggle
+    // (iOS paymentFundingSourceAddress): ON funds from the PRIMARY SPENDING
+    // address (falling back to the chatting address only if this account has
+    // no stored mnemonic to derive from), OFF is chatting-to-chatting end to
+    // end. The balance guard checks the same source the send will use.
+    const privacyOn = chatsPrivacyEnabled();
+    const fundingIndex = getActiveSpendingIndex();
+    const fundingAddress = privacyOn && activeAccountMnemonic() ? deriveSpendingAddressAt(fundingIndex) : null;
+    const spendingFunded = Boolean(fundingAddress);
+    const balance = spendingFunded ? await engine.balanceForAddress(fundingAddress) : await engine.balance();
+    if (!spendingFunded) currentBalanceKas = balance.totalKas;
     const requestedSompi = BigInt(Math.round(Number(amountKas) * 1e8));
     const feeReserveSompi = 10000n;
     if (requestedSompi + feeReserveSompi > balance.totalSompi) {
@@ -7348,6 +8633,11 @@ async function sendKasPayment(conversationId, rawAmount) {
       });
       if (!proceed) return;
     }
+    // Fresh-address payment pools: consume the contact's next unused pool
+    // address (persisted immediately — a consumed address is never offered to
+    // a payment again, even if this payment ultimately fails), chatting
+    // address fallback. Privacy OFF always pays the chatting address.
+    const destinationAddress = consumePoolPaymentDestination(contact);
     const createdAt = Date.now();
     const message = createMessage({
       conversationId: conversationEntry.id,
@@ -7355,7 +8645,7 @@ async function sendKasPayment(conversationId, rawAmount) {
       direction: "outgoing",
       text: `Sent ${amountKas} KAS`,
       sender: engine.address || null,
-      receiver: contact.address,
+      receiver: destinationAddress,
       status: MESSAGE_STATUSES.PENDING,
       transport: "kaspa-payment",
       createdAt,
@@ -7373,11 +8663,20 @@ async function sendKasPayment(conversationId, rawAmount) {
     setStatus(`Sending ${amountKas} KAS…`);
 
     try {
-      const result = await engine.send(contact.address, amountKas, "0");
+      const result = spendingFunded
+        ? await engine.sendFromSpending({
+            mnemonic: activeAccountMnemonic(),
+            index: fundingIndex,
+            passphrase: activeAccountPassphrase(),
+            destinationAddress,
+            amountKas,
+            feeKas: "0",
+          })
+        : await engine.send(destinationAddress, amountKas, "0");
       const submittedTxids = (result?.txids || []).map((value) => String(value || "").trim()).filter(Boolean);
       const txid = submittedTxids.at(-1) || submittedTxids[0] || null;
       if (!txid) throw new Error("Kaspa node accepted the send request but did not return a transaction ID.");
-      const verifiedTxid = await verifyKasPaymentBroadcast(submittedTxids, contact.address, amountKas);
+      const verifiedTxid = await verifyKasPaymentBroadcast(submittedTxids, destinationAddress, amountKas);
       applyMessagePatch(liveMessage, {
         status: MESSAGE_STATUSES.CONFIRMED,
         txid: verifiedTxid || txid,
@@ -7388,7 +8687,12 @@ async function sendKasPayment(conversationId, rawAmount) {
           : "Kaspa node accepted and broadcast the payment transaction.",
       });
       setStatus(`Payment sent · ${(verifiedTxid || txid).slice(0, 12)}…`);
+      // Pool payments never touch the recipient's chatting address — send the
+      // payment_notice so their chat still shows the bubble, then top up our
+      // stored pool if it ran low. No-op for chatting-address payments.
+      handlePoolPaymentSubmitted(contact, verifiedTxid || txid, Number(requestedSompi), destinationAddress);
       await refreshBalanceOnly({ quiet: true });
+      refreshComposerAvailableBalance();
     } catch (error) {
       applyMessagePatch(liveMessage, { status: MESSAGE_STATUSES.FAILED, note: error.message });
       setStatus(`Payment failed: ${error.message}`);
@@ -8166,6 +9470,17 @@ function appendIncomingOrReactionMessage(conversationEntry, message) {
     renderChats();
     return message;
   }
+  // Fresh-address payment pool envelopes ride the same encrypted pipeline and
+  // are intercepted the same way reactions are — they never render as bubbles
+  // (a payment_notice *produces* a payment bubble, but the envelope itself is
+  // swallowed here). Unknown {type:...} values fall through to the normal
+  // pipeline per the wire contract.
+  const poolEnvelope = parsePaymentPoolEnvelope(message.text);
+  if (poolEnvelope) {
+    try { handlePaymentPoolEnvelope(poolEnvelope, conversationEntry, message); }
+    catch (error) { appendEngineLog(`Pool envelope handling failed: ${error.message}`); }
+    return message;
+  }
   return addMessageToConversation(conversationEntry, message);
 }
 
@@ -8293,6 +9608,12 @@ function importPhoneChatArchive(json) {
       if (knownIds.has(id) || hidden.has(id)) continue;
 
       const rawContent = String(archiveMessage?.content || "");
+      // Pool envelopes in a phone archive are historical bookkeeping — never
+      // rendered, and their side effects must not replay from a backup.
+      if (parsePaymentPoolEnvelope(rawContent)) {
+        if (txid) knownTxids.add(txid);
+        continue;
+      }
       const reaction = parseReactionEnvelope(rawContent);
       if (reaction) {
         // Same interception as live sync: a reaction only ever updates the
@@ -8906,9 +10227,20 @@ const SETUP_STEPS = [
   { icon: "🖥️", title: "Connect to a Node", body: "KaChat needs to connect to a node. How would you like to connect?", extra: "node" },
   { icon: "🪪", title: "Chatting vs. Spending Address", body: "", extra: "addresses" },
   { icon: "💬", title: "Starting a Conversation", body: "To chat with someone, press Create Chat and enter their Kaspa address or KNS domain. If you send a message, they will not see it unless you send a handshake first, or you both decide to message each other around the same time - doing the latter increases your privacy." },
+  // Per-account Chats Payment Privacy (fresh-address payment pools) — placed
+  // directly after the starting-a-conversation step, the guide's final step.
+  // Copy matches iOS's WelcomeGuideView paymentPrivacyStep exactly.
+  { icon: "🕶️", title: "Chat Payment Privacy", body: "How would you like to send and receive payments in chats?", extra: "privacy" },
 ];
 let setupStepIndex = 0;
 const SETUP_USER_TYPE_STEP = SETUP_STEPS.findIndex((step) => step.extra === "usertype");
+
+// Presentation context, supplied by the presenter — an ONBOARDING run (create
+// or import, fresh or re-presented after a reload) is fully unskippable end
+// to end; Help replays stay skippable and never show the import-only
+// chatting-address picker.
+let setupGuideIsOnboardingRun = false;
+let setupGuideIsImportRun = false;
 
 function wizardSetCurrency(key) {
   if (!CURRENCIES[key]) return;
@@ -8968,7 +10300,56 @@ function renderSetupExtra(kind) {
     qrBtn.addEventListener("click", () => { openChattingAddressScreen(); });
     // No gift row: desktop deliberately has no free-gift program (mobile-only).
     wrap.append(addrBtn, qrBtn);
+    // INITIAL IMPORT ONBOARDING RUNS ONLY, never Help replays: an imported
+    // seed may hold its real identity — KNS domains, a funded chatting
+    // balance — at a nonzero derivation index. Opens the batched scanner;
+    // after a switch this step re-renders with the new address.
+    if (setupGuideIsOnboardingRun && setupGuideIsImportRun && activeAccountMnemonic()) {
+      const pickerBtn = document.createElement("button");
+      pickerBtn.type = "button";
+      pickerBtn.className = "secondary-button";
+      pickerBtn.textContent = "Change Chatting Address";
+      pickerBtn.addEventListener("click", () => openChattingAddressPicker());
+      wrap.append(pickerBtn);
+    }
     setupExtraEl.appendChild(wrap);
+  } else if (kind === "privacy") {
+    // Chats Payment Privacy chooser (iOS paymentPrivacyRow port): On
+    // preselected + Recommended; the selection writes straight through to the
+    // per-account store, so a replay shows and edits the real setting.
+    const options = [
+      {
+        value: true,
+        title: "On",
+        badge: "Recommended",
+        sub: "Payments in your chats travel between fresh private addresses. When you pay a contact who also has privacy on, the money goes to a fresh address only the two of you know about, and payments you receive arrive on fresh addresses of your own the same way. Nobody watching the network can tie chat payments to you or your contacts.",
+      },
+      {
+        value: false,
+        title: "Off",
+        badge: null,
+        sub: "Payments you send and receive are tied to your chatting address only, where anyone can see the full payment history.",
+      },
+    ];
+    const current = chatsPrivacyEnabled();
+    const list = document.createElement("div");
+    list.className = "setup-choice-list";
+    for (const o of options) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "setup-node-row" + (current === o.value ? " selected" : "");
+      row.innerHTML = `<span class="setup-node-dot"></span><span class="setup-node-copy"><strong></strong><small></small></span>${o.badge ? `<span class="setup-node-badge"></span>` : ""}`;
+      row.querySelector("strong").textContent = o.title;
+      row.querySelector("small").textContent = o.sub;
+      if (o.badge) row.querySelector(".setup-node-badge").textContent = o.badge;
+      row.addEventListener("click", () => {
+        setChatsPrivacyEnabled(o.value);
+        refreshChatsPrivacyToggle();
+        renderSetupStep();
+      });
+      list.appendChild(row);
+    }
+    setupExtraEl.appendChild(list);
   } else if (kind === "node") {
     // Desktop connects via auto-discovery (wRPC resolver) by default; "own node"
     // lets the user paste a trusted endpoint.
@@ -9043,13 +10424,19 @@ function renderSetupStep() {
   renderSetupExtra(step.extra);
   if (setupNextBtn) setupNextBtn.textContent = setupStepIndex === SETUP_STEPS.length - 1 ? "Finish" : "Next";
   if (setupProgressEl) setupProgressEl.textContent = `${setupStepIndex + 1} / ${SETUP_STEPS.length}`;
-  // While the Adult/Child choice is still owed (first-run marker "pending"),
-  // the guide has no way out: Skip disappears and backdrop-close no-ops.
-  if (setupSkipBtn) setupSkipBtn.hidden = isUserTypePending();
+  // Skip exists ONLY on replays: while the Adult/Child choice is still owed OR
+  // this is an onboarding run (create or import, fresh or re-presented after a
+  // reload), the guide has no way out — every step must be advanced through to
+  // Finish. Backdrop-close no-ops the same way (see closeSetupGuide).
+  if (setupSkipBtn) setupSkipBtn.hidden = isUserTypePending() || setupGuideIsOnboardingRun;
 }
-// `options` may be a click event (listeners below pass one) — only the explicit
-// boot call passes { startAtUserType: true } to jump straight to the choice.
+// `options` may be a click event (listeners below pass one) — only explicit
+// presenter calls pass { onboardingRun, importRun, startAtUserType }. The
+// context is presenter-supplied, never inferred from persisted markers, so
+// Help replays are always skippable.
 function openSetupGuide(options = {}) {
+  setupGuideIsOnboardingRun = options.onboardingRun === true;
+  setupGuideIsImportRun = options.importRun === true;
   setupStepIndex = options.startAtUserType === true && isUserTypePending() && SETUP_USER_TYPE_STEP >= 0
     ? SETUP_USER_TYPE_STEP
     : 0;
@@ -9060,8 +10447,16 @@ function openSetupGuide(options = {}) {
     setupGuideModal.hidden = false;
   }
 }
-function closeSetupGuide() {
+function closeSetupGuide({ completed = false } = {}) {
+  if (completed) {
+    // Finish on the last step: the onboarding run is done — a completed run
+    // must not re-present on the next launch.
+    clearOnboardingRunPending();
+    setupGuideIsOnboardingRun = false;
+    setupGuideIsImportRun = false;
+  }
   if (isUserTypePending()) return; // Adult/Child unanswered: unskippable
+  if (setupGuideIsOnboardingRun) return; // onboarding runs only end via Finish
   if (setupGuideModal) setupGuideModal.hidden = true;
 }
 setupNextBtn?.addEventListener("click", async () => {
@@ -9071,13 +10466,13 @@ setupNextBtn?.addEventListener("click", async () => {
     try { advance = await applyUserTypeGuideChoice(); } finally { setupNextBtn.disabled = false; }
     if (!advance) return;
   }
-  if (setupStepIndex >= SETUP_STEPS.length - 1) { closeSetupGuide(); return; }
+  if (setupStepIndex >= SETUP_STEPS.length - 1) { closeSetupGuide({ completed: true }); return; }
   setupStepIndex += 1;
   renderSetupStep();
 });
-setupSkipBtn?.addEventListener("click", closeSetupGuide);
+setupSkipBtn?.addEventListener("click", () => closeSetupGuide());
 setupGuideModal?.addEventListener("click", (event) => { if (event.target === setupGuideModal) closeSetupGuide(); });
-document.querySelectorAll("[data-open-setup-guide]").forEach((b) => b.addEventListener("click", openSetupGuide));
+document.querySelectorAll("[data-open-setup-guide]").forEach((b) => b.addEventListener("click", () => openSetupGuide()));
 
 const importAccountModal = document.querySelector("[data-import-account-modal]");
 const importNameInput = document.querySelector("[data-import-name]");
@@ -9091,6 +10486,71 @@ const importWithPassphraseBtn = document.querySelector("[data-import-with-passph
 const importSkipPassphraseBtn = document.querySelector("[data-import-skip-passphrase]");
 let pendingImport = null;
 
+// Source-wallet chooser (iOS ImportSourceWalletView port): shown FIRST, before
+// seed entry. The selection maps a wallet name to its identity derivation-path
+// family — KaChat derives the chatting identity where that wallet actually
+// kept the user's funds and KNS domains. The spending chain always stays on
+// KaChat's own m/44'/111111'/1' branch regardless of this choice.
+const IMPORT_SOURCE_WALLETS = [
+  { name: "KaChat", family: "kaspaStandard", isDefault: true },
+  { name: "KasWare Wallet", family: "kaspaStandard" },
+  { name: "Kaspium Wallet", family: "kaspaStandard" },
+  // Kastle derives m/44'/111111'/{account}'/0/{index}; account 0 is
+  // byte-identical to the standard family.
+  { name: "Kastle Wallet", family: "kaspaStandard" },
+  { name: "KDX Wallet", family: "kaspaLegacy972" },
+  { name: "Core Golang Cli Wallet", family: "kaspaStandard" },
+  { name: "OKX Wallet", family: "kaspaStandard" },
+  { name: "OneKey Wallet", family: "oneKey" },
+  { name: "Ledger Wallet", family: "kaspaStandard" },
+];
+let importSourceSelection = 0;
+
+function importSourcePathDescription(family) {
+  switch (family) {
+    case "kaspaLegacy972": return "m/44'/972/0'";
+    case "oneKey": return "m/44'/111111'/0' (OneKey)";
+    default: return "m/44'/111111'/0'";
+  }
+}
+
+function renderImportSourceList() {
+  const listEl = document.querySelector("[data-import-source-list]");
+  if (!listEl) return;
+  listEl.replaceChildren();
+  IMPORT_SOURCE_WALLETS.forEach((option, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `import-source-row${index === importSourceSelection ? " selected" : ""}`;
+    const mark = document.createElement("span");
+    mark.className = "import-source-mark";
+    mark.textContent = index === importSourceSelection ? "●" : "○";
+    const copy = document.createElement("span");
+    copy.className = "import-source-copy";
+    const title = document.createElement("strong");
+    title.textContent = option.name;
+    if (option.isDefault) {
+      const badge = document.createElement("em");
+      badge.className = "import-source-default";
+      badge.textContent = "Default";
+      title.append(" ", badge);
+    }
+    const path = document.createElement("small");
+    path.textContent = importSourcePathDescription(option.family);
+    copy.append(title, path);
+    row.append(mark, copy);
+    row.addEventListener("click", () => {
+      importSourceSelection = index;
+      renderImportSourceList();
+    });
+    listEl.appendChild(row);
+  });
+}
+
+function selectedImportSourceFamily() {
+  return IMPORT_SOURCE_WALLETS[importSourceSelection]?.family || "kaspaStandard";
+}
+
 function showImportStep(step) {
   document.querySelectorAll("[data-import-step]").forEach((el) => { el.hidden = el.dataset.importStep !== step; });
 }
@@ -9099,14 +10559,15 @@ function showImportError(message) {
 }
 function openImportAccountModal() {
   pendingImport = null;
+  importSourceSelection = 0;
   if (importAccountError) { importAccountError.hidden = true; importAccountError.textContent = ""; }
   if (importPassphraseError) importPassphraseError.hidden = true;
   if (importNameInput) importNameInput.value = "Imported Account";
   if (importPhraseInput) importPhraseInput.value = "";
   if (importPassphraseInput) { importPassphraseInput.value = ""; importPassphraseInput.type = "password"; }
-  showImportStep("form");
+  renderImportSourceList();
+  showImportStep("source");
   if (importAccountModal) importAccountModal.hidden = false;
-  queueMicrotask(() => importPhraseInput?.focus());
 }
 function closeImportAccountModal() {
   if (importAccountModal) importAccountModal.hidden = true;
@@ -9116,7 +10577,12 @@ function closeImportAccountModal() {
 document.querySelectorAll("[data-close-import-account]").forEach((button) => button.addEventListener("click", closeImportAccountModal));
 importAccountModal?.addEventListener("click", (event) => { if (event.target === importAccountModal) closeImportAccountModal(); });
 
-async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "" }) {
+document.querySelector("[data-import-source-continue]")?.addEventListener("click", () => {
+  showImportStep("form");
+  queueMicrotask(() => importPhraseInput?.focus());
+});
+
+async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "", family = "kaspaStandard", chattingIndex = 0 }) {
   if (!engine.kaspa) await ensureRuntimes();
   const cleanName = String(name || "").trim();
   const cleanPhrase = String(recoveryPhrase || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -9126,7 +10592,7 @@ async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "" }) 
 
   let wallet;
   try {
-    wallet = engine.importMnemonic(cleanPhrase, passphrase);
+    wallet = await engine.importMnemonicWithFamily(cleanPhrase, passphrase, { family, index: chattingIndex });
   } catch (error) {
     engine.clearSession();
     throw new Error(`Invalid recovery phrase: ${error?.message || "word list or checksum validation failed."}`);
@@ -9145,7 +10611,14 @@ async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "" }) 
   activateWalletDataScope(wallet.address, { migrateLegacy: false });
   state = { contacts: [], conversations: [] };
   persistState();
-  persistTestingWallet({ mnemonic: wallet.mnemonic, passphrase, derivationPath: wallet.derivationPath, wordCount: words.length });
+  persistTestingWallet({
+    mnemonic: wallet.mnemonic,
+    passphrase,
+    derivationPath: wallet.derivationPath,
+    wordCount: words.length,
+    sourceFamily: wallet.sourceFamily || family,
+    chattingIndex: wallet.chattingIndex ?? chattingIndex,
+  });
 
   if (accountShellPrefs.saveAccount !== false) {
     const saved = loadSavedAccounts().find((entry) => entry.address === wallet.address);
@@ -9185,7 +10658,7 @@ importContinueBtn?.addEventListener("click", async () => {
     if (!engine.kaspa) await ensureRuntimes();
     try { new engine.kaspa.Mnemonic(phrase); }
     catch { showImportError("Invalid recovery phrase — check the words and their order."); return; }
-    pendingImport = { name, recoveryPhrase: phrase };
+    pendingImport = { name, recoveryPhrase: phrase, family: selectedImportSourceFamily() };
     if (importPassphraseInput) { importPassphraseInput.value = ""; importPassphraseInput.type = "password"; }
     if (importPassphraseError) importPassphraseError.hidden = true;
     if (importPassphraseToggle) importPassphraseToggle.textContent = "Show";
@@ -9380,6 +10853,16 @@ const prefBindings = [
   ["[data-pref-show-contact-balance]", "showContactBalance", true],
   ["[data-pref-store-messages]", "storeMessages", true],
   ["[data-pref-show-setup-guides]", "showSetupGuides", true],
+  // Settings > Notifications (iOS NotificationsHubPage port): Chats / Wallet /
+  // KaPosts pages, all default ON.
+  ["[data-pref-chat-notifications]", "chatNotifications", true],
+  ["[data-pref-notification-sound]", "notificationSound", true],
+  ["[data-pref-address-activity]", "addressActivityNotifications", true],
+  ["[data-pref-kaposts-notify-likes]", "kaPostsNotifyLikes", true],
+  ["[data-pref-kaposts-notify-reposts]", "kaPostsNotifyReposts", true],
+  ["[data-pref-kaposts-notify-follows]", "kaPostsNotifyFollows", true],
+  ["[data-pref-kaposts-notify-dislikes]", "kaPostsNotifyDislikes", true],
+  ["[data-pref-kaposts-notify-comments]", "kaPostsNotifyComments", true],
 ];
 prefBindings.forEach(([selector, key, fallback]) => {
   const input = document.querySelector(selector);
@@ -9390,6 +10873,11 @@ prefBindings.forEach(([selector, key, fallback]) => {
     persistAccountShellPreferences();
     if (key === "estimateFees") scheduleFeeEstimate();
     if (key === "showSetupGuides") refreshSetupGuideRow();
+    if ((key === "chatNotifications" || key === "addressActivityNotifications") && input.checked) {
+      ensureNotificationPermission().then((granted) => {
+        if (!granted) showCopyToast("Allow notifications in your browser to receive them.");
+      });
+    }
     if (key === "saveAccount") showCopyToast(input.checked ? "New accounts will be saved on this device." : "New accounts will stay in memory only (not saved).");
     if (key === "keepSignedIn") showCopyToast(input.checked ? "You'll stay signed in on next launch." : "You'll be asked to sign in on next launch.");
   });
@@ -9563,6 +11051,9 @@ queueMicrotask(async () => {
     await refreshBalanceOnly({ quiet: true });
     if (cipherReady) await refreshAllConversations({ quiet: true });
     startAutomaticRefresh();
+    // Seed/diff the Address Activity baselines shortly after startup (first
+    // run per account seeds silently — no notification blast for old funds).
+    scheduleAddressActivityCheck(15_000);
   }
 
   initKaPosts({
@@ -9575,6 +11066,10 @@ queueMicrotask(async () => {
     showToast: showCopyToast,
     appendEngineLog,
     explorerTxUrl,
+    // Background activity pings (Settings > Notifications > KaPosts).
+    shouldNotifyKaPostsAction,
+    postDesktopNotification,
+    kaPostsSuppressed: () => isChildModeEnabled(),
   });
 
   initBroadcasts({
