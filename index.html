@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=238" />
+  <link rel="stylesheet" href="./ui/styles.css?v=239" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -283,15 +283,17 @@
                 <button type="button" class="chat-funding-gate-address" data-funding-gate-address title="Copy address"></button>
                 <button type="button" class="secondary-button" data-funding-gate-copy>Copy Address</button>
               </div>
-              <form class="composer kachat-composer" data-composer>
-                <button class="composer-tool composer-plus" type="button" data-composer-plus aria-label="More message options">+</button>
-                <div class="composer-field-wrap">
-                  <input class="composer-input" name="message" type="text" placeholder="Message" autocomplete="off" />
-                  <button class="composer-send" type="submit" aria-label="Send message">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
-                  </button>
-                </div>
-              </form>
+              <div class="composer-row">
+                <form class="composer kachat-composer" data-composer>
+                  <button class="composer-tool composer-plus" type="button" data-composer-plus aria-label="More message options">+</button>
+                  <div class="composer-field-wrap">
+                    <textarea class="composer-input" name="message" placeholder="Message" autocomplete="off" rows="1"></textarea>
+                    <button class="composer-send" type="submit" aria-label="Send message">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           </article>
 
@@ -748,15 +750,14 @@
             <p class="settings-group-label">Connection Settings</p>
             <div class="settings-list-card">
               <div class="settings-page-form">
-                  <div class="settings-toggle-row settings-segmented-row">
-                    <span><strong>Network</strong></span>
-                    <div class="settings-segmented">
-                      <button type="button" class="settings-segmented-option active" data-mockup-action="network-mainnet">Mainnet</button>
-                      <button type="button" class="settings-segmented-option" data-mockup-action="network-testnet">Testnet</button>
-                    </div>
-                  </div>
                   <label class="field-label compact">Indexer URL
-                    <input class="field-input" data-indexer-url type="url" value="https://indexer.kasia.fyi" autocomplete="off" />
+                    <input class="field-input" type="url" data-endpoint="kasiaIndexer" placeholder="https://indexer.kasia.wtf" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="field-label compact">KaPost Indexer URL
+                    <input class="field-input" type="url" data-endpoint="kapostIndexer" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <label class="field-label compact">Broadcast Indexer URL
+                    <input class="field-input" type="url" data-endpoint="broadcastIndexer" autocomplete="off" spellcheck="false" />
                   </label>
                   <label class="field-label compact">Push Indexer URL
                     <input class="field-input" type="url" data-endpoint="pushIndexer" autocomplete="off" spellcheck="false" />
@@ -768,7 +769,7 @@
                     <input class="field-input" type="url" data-endpoint="kaspaApi" autocomplete="off" spellcheck="false" />
                   </label>
                   <label class="field-label compact">Trusted Node
-                    <input class="field-input" type="text" data-endpoint="trustedNode" placeholder="wss://your-node.duckdns.org — leave empty to auto-search" autocomplete="off" spellcheck="false" />
+                    <input class="field-input" type="text" data-endpoint="trustedNode" placeholder="wss://your-node.duckdns.org (leave empty to auto-search)" autocomplete="off" spellcheck="false" />
                   </label>
                   <p class="field-hint">Leave a field blank to use its default. Trusted Node empty = auto-search over wRPC.</p>
                   <button class="danger-button subtle full" type="button" data-reset-connection-defaults>Reset to Defaults</button>
@@ -1410,8 +1411,10 @@
         </div>
         <button class="modal-close" type="button" data-close-group-create aria-label="Close">×</button>
       </div>
+      <div class="group-create-scroll">
       <input class="group-name-input" type="text" maxlength="40" placeholder="Group name" autocomplete="off" spellcheck="false" data-group-name-input />
       <p class="field-hint" data-group-picker-hint>Add contacts to the group. You control the membership as the group admin.</p>
+      <p class="group-members-title" data-group-members-title>Members</p>
       <input class="group-member-search" type="search" placeholder="Search contacts" autocomplete="off" data-group-member-search />
       <div class="group-member-picker" data-group-member-picker></div>
 
@@ -1439,6 +1442,7 @@
       </div>
 
       <p class="field-error" data-group-create-error hidden></p>
+      </div>
       <div class="modal-actions">
         <button class="secondary-button" type="button" data-close-group-create>Cancel</button>
         <button class="primary-button" type="button" data-group-create-submit disabled>Create Group</button>
@@ -2268,7 +2272,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=222"></script>
+  <script type="module" src="./ui/app.js?v=223"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

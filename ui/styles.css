@@ -128,9 +128,11 @@ button { cursor: pointer; }
 }
 
 .app-sidebar {
-  flex: 0 0 280px;
-  width: 280px;
-  min-width: 280px;
+  /* Wider chats list: its right edge sits roughly halfway between the old 280px and
+     the page centre (responsive, capped so it never dominates a small window). */
+  flex: 0 0 clamp(300px, 34%, 620px);
+  width: clamp(300px, 34%, 620px);
+  min-width: 300px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1296,7 +1298,18 @@ button { cursor: pointer; }
 /* While the dock is revealed it floats over the bottom ~90px of the window — lift the
    message composer clear of it, then settle back as the dock tucks away (same treatment
    as the Cold Storage sticky action bars). */
-body:has(.sidebar-tabbar:not(.dock-hidden)) .composer { margin-bottom: 96px; }
+body:has(.sidebar-tabbar:not(.dock-hidden)) .composer-row { margin-bottom: 96px; }
+
+/* Wrapper around the composer form so it lifts clear of the dock when the dock reveals. */
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  transition: margin-bottom .28s cubic-bezier(.2,.9,.3,1);
+}
+.composer-row .kachat-composer { flex: 1 1 auto; min-width: 0; margin: 0; }
+/* The create-chat button is only for the chat list: hide it while a 1:1 conversation is
+   open, and bring it back once you click off the chat. */
+body:has(.conversation-view:not([hidden])) .new-chat-fab { display: none; }
 
 .composer-input {
   min-width: 0;
@@ -1305,6 +1318,11 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .composer { margin-bottom: 96px; }
   color: var(--text);
   background: transparent;
   padding: 0 4px;
+  /* textarea resets: inherit the UI font (textareas default to monospace), don't let the
+     user drag-resize, and wrap long text onto new lines instead of scrolling sideways. */
+  font-family: inherit;
+  resize: none;
+  line-height: 1.35;
 }
 
 .composer-input::placeholder { color: #737f89; }
@@ -1899,7 +1917,7 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .composer { margin-bottom: 96px; }
   min-height: 44px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
-  align-items: center;
+  align-items: end;
   gap: 4px;
   padding: 3px 4px 3px 0;
   border-radius: 16px;
@@ -1911,8 +1929,13 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .composer { margin-bottom: 96px; }
   width: 100%;
   min-width: 0;
   min-height: 38px;
-  padding: 0 13px;
+  /* Grows with content up to ~6 lines, then scrolls internally. JS sets the exact
+     height from scrollHeight (see the composer input handler). */
+  max-height: 132px;
+  padding: 8px 13px;
   font-size: 15px;
+  overflow-y: auto;
+  display: block;
 }
 
 .composer-tool, .kachat-composer .composer-send {
@@ -6471,9 +6494,25 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
   outline: none;
   border-color: var(--kaspa-ink);
 }
+/* The New Group modal caps its height and scrolls its middle, so the taller content
+   (contact list + add-by-address) never runs off the screen and Cancel/Create stay put. */
+.group-create-modal {
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+.group-create-modal .modal-header,
+.group-create-modal .modal-actions { flex: 0 0 auto; }
+.group-create-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
 .group-member-picker {
   margin-top: 10px;
-  max-height: 46vh;
+  max-height: 34vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -6906,4 +6945,30 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
+}
+
+/* "Members (X)" title above the New Group search field (matches iOS). */
+.group-members-title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: var(--text);
+}
+
+/* Per-message 12-hour send time, tucked in the bottom corner of the bubble. */
+.message-time {
+  display: block;
+  font-size: 10px;
+  line-height: 1;
+  margin-top: 4px;
+  opacity: .55;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Highlight the conversation you are currently viewing in the list. */
+.chat-row.active {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1.5px var(--kaspa-ink);
 }

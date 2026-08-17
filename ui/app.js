@@ -2036,6 +2036,7 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
+    hour12: true, // 12-hour clock (e.g. 3:03 PM), not 24-hour
   }).format(new Date(timestamp));
 }
 
@@ -6965,7 +6966,7 @@ function renderChats() {
       const time = last ? formatTime(last.createdAt) : formatTime(conversationEntry.createdAt);
       const selected = selectedChatConversationIds.has(conversationEntry.id);
       return `
-        <button class="chat-row${chatSelectionModeActive ? " selecting" : ""}${selected ? " selected" : ""}" type="button" data-conversation-id="${escapeHtml(conversationEntry.id)}">
+        <button class="chat-row${chatSelectionModeActive ? " selecting" : ""}${selected ? " selected" : ""}${conversationEntry.id === activeConversationId ? " active" : ""}" type="button" data-conversation-id="${escapeHtml(conversationEntry.id)}">
           ${chatSelectionModeActive ? `<span class="chat-row-select" aria-hidden="true"><span class="chat-row-checkbox${selected ? " checked" : ""}"></span></span>` : ``}
           <span class="chat-row-time">${escapeHtml(time)}</span>
           ${avatarHtmlFor(contact)}
@@ -7265,6 +7266,14 @@ function renderMessages(conversationEntry) {
       }
       pill.addEventListener("click", (event) => event.stopPropagation());
       bubble.append(pill);
+    }
+
+    // 12-hour send time in the corner of every bubble.
+    if (message.createdAt) {
+      const timeEl = document.createElement("span");
+      timeEl.className = "message-time";
+      timeEl.textContent = formatTime(message.createdAt);
+      bubble.append(timeEl);
     }
 
     const deliveryIcon = createDeliveryStatusIcon(message);
@@ -8030,6 +8039,12 @@ chatList.addEventListener("click", (event) => {
     updateChatSelectionBar();
     return;
   }
+  // Clicking the already-open chat again closes it (clears the detail pane).
+  if (conversationId === activeConversationId) {
+    setActiveConversationId(null);
+    renderChats();
+    return;
+  }
   openConversation(conversationId);
 });
 
@@ -8080,6 +8095,10 @@ chatsListTabButtons.forEach((button) => {
     if (tab === activeChatsListTab) return;
     activeChatsListTab = tab;
     chatsListTabButtons.forEach((entry) => entry.classList.toggle("active", entry === button));
+    // Switching tabs is like moving to a new screen: clear whatever chat or group was
+    // open so the new tab starts fresh with only its own items viewable.
+    setActiveConversationId(null);
+    closeGroupChat();
     if (chatSelectionModeActive) setChatSelectionMode(false);
     else renderChats();
   });
@@ -8507,10 +8526,14 @@ function queueConversationMessage(conversationId, text) {
   });
   appendIncomingOrReactionMessage(conversationEntry, message);
 
-  persistState();
+  // Paint the bubble immediately, then do the heavy work. persistState does two full
+  // JSON serializations of the whole chat state plus a verify read, so running it before
+  // the render is what made a sent message feel slow to appear on a large history.
   renderMessages(conversationEntry);
   setStatus("Queued for real Kaspa payload transaction");
   runEngineSendPipeline(conversationEntry.id, message.id);
+  // Defer persistence to the next task so the browser can paint the new bubble first.
+  window.setTimeout(persistState, 0);
 }
 
 
@@ -10545,6 +10568,7 @@ composer.addEventListener("submit", async (event) => {
   if (pendingPhotoAttachment) {
     const attachment = pendingPhotoAttachment;
     input.value = "";
+    autoGrowComposer();
     clearPendingPhoto();
     hideFeeEstimateBanner();
     // "Send Media via Nextcloud": upload the full-quality original and send its share link
@@ -10582,8 +10606,26 @@ composer.addEventListener("submit", async (event) => {
   }
 
   input.value = "";
+  autoGrowComposer();
   hideFeeEstimateBanner();
   queueConversationMessage(activeConversationId, text);
+});
+
+// The composer is a textarea so long messages wrap onto new lines. It grows with the
+// content up to its CSS max-height, then scrolls. Enter sends; Shift+Enter adds a newline.
+const composerInputField = composer?.elements?.message;
+function autoGrowComposer() {
+  if (!composerInputField) return;
+  composerInputField.style.height = "auto";
+  composerInputField.style.height = `${Math.min(composerInputField.scrollHeight, 132)}px`;
+}
+composerInputField?.addEventListener("input", autoGrowComposer);
+composerInputField?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    if (typeof composer.requestSubmit === "function") composer.requestSubmit();
+    else composer.dispatchEvent(new Event("submit", { cancelable: true }));
+  }
 });
 
 
@@ -12336,7 +12378,7 @@ function renderGroupList() {
     const time = last ? formatTime(last.createdAt) : "";
     const unread = groupUnreadFor(g.groupId);
     return `
-      <button class="chat-row group-row" type="button" data-group-open="${escapeHtml(g.groupId)}">
+      <button class="chat-row group-row${g.groupId === activeGroupId ? " active" : ""}" type="button" data-group-open="${escapeHtml(g.groupId)}">
         <span class="chat-row-time">${escapeHtml(time)}</span>
         <span class="chat-avatar">${groupAvatarHtml()}</span>
         <span class="chat-meta">
@@ -12422,6 +12464,13 @@ function renderGroupMessages() {
     const previewable = (linkUrls || []).find(isPreviewableUrl);
     if (previewable) { const card = buildLinkPreviewCard(previewable); if (card) bubble.appendChild(card); }
 
+    if (message.createdAt) {
+      const timeEl = document.createElement("span");
+      timeEl.className = "message-time";
+      timeEl.textContent = formatTime(message.createdAt);
+      bubble.append(timeEl);
+    }
+
     row.append(selector, avatarSlot, bubble);
     groupMessageArea.appendChild(row);
   });
@@ -12474,6 +12523,9 @@ function updateGroupCreateSubmit() {
     const name = String(groupNameInput?.value || "").trim();
     groupCreateSubmit.disabled = !(name && groupCreateSelected.size >= 1);
   }
+  // "Members (X)" title above the search, matching iOS — reflects how many are selected.
+  const membersTitle = document.querySelector("[data-group-members-title]");
+  if (membersTitle) membersTitle.textContent = groupCreateSelected.size ? `Members (${groupCreateSelected.size})` : "Members";
   renderSelectedGroupChips();
 }
 function openGroupCreate() {
@@ -12752,11 +12804,14 @@ groupSelectedChips?.addEventListener("click", (event) => {
   updateGroupCreateSubmit();
 });
 
-// The persistent "+" create button is tab-aware: Group Chats tab opens the group
-// builder, the Chats tab opens the 1:1 create screen.
-newChatFab?.addEventListener("click", () => {
-  if (activeChatsListTab === "groups") openGroupCreate();
-  else showContactModal();
+// The create button is tab-aware: Group Chats tab opens the group builder, the Chats
+// tab opens the 1:1 create screen. There are two instances (the floating one for the
+// empty state, and the inline one next to the composer Send button), so wire both.
+document.querySelectorAll("[data-new-chat-fab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (activeChatsListTab === "groups") openGroupCreate();
+    else showContactModal();
+  });
 });
 groupMemberPicker?.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-group-member-toggle]");
@@ -12803,7 +12858,10 @@ groupCreateSubmit?.addEventListener("click", async () => {
 groupListEl?.addEventListener("click", (event) => {
   const row = event.target.closest("[data-group-open]");
   if (!row) return;
-  openGroupChat(row.dataset.groupOpen);
+  const groupId = row.dataset.groupOpen;
+  // Clicking the already-open group again closes its view.
+  if (groupId === activeGroupId) { closeGroupChat(); return; }
+  openGroupChat(groupId);
 });
 document.querySelector("[data-group-chat-back]")?.addEventListener("click", closeGroupChat);
 document.querySelector("[data-open-group-manage]")?.addEventListener("click", () => { if (activeGroupId) openGroupManage(activeGroupId); });
