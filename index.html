@@ -768,7 +768,7 @@
                     <input class="field-input" type="url" data-endpoint="kaspaApi" autocomplete="off" spellcheck="false" />
                   </label>
                   <label class="field-label compact">Trusted Node
-                    <input class="field-input" type="text" data-endpoint="trustedNode" placeholder="grpcs://host — leave empty to auto-search" autocomplete="off" spellcheck="false" />
+                    <input class="field-input" type="text" data-endpoint="trustedNode" placeholder="wss://your-node.duckdns.org — leave empty to auto-search" autocomplete="off" spellcheck="false" />
                   </label>
                   <p class="field-hint">Leave a field blank to use its default. Trusted Node empty = auto-search over wRPC.</p>
                   <button class="danger-button subtle full" type="button" data-reset-connection-defaults>Reset to Defaults</button>
@@ -1066,8 +1066,8 @@
               <span class="node-mode-radio" aria-hidden="true"></span>
               <span class="node-mode-copy">
                 <strong>Custom Node</strong>
-                <small>Connect to your own Kaspa wRPC endpoint.</small>
-                <input class="node-mode-input" type="text" placeholder="wss://your-node:17110" autocomplete="off" spellcheck="false" data-custom-node-url disabled />
+                <small>Your own Kaspa wRPC endpoint. On the same router/LAN as your node: use its local IP with port 17110 — e.g. ws://192.168.1.50:17110. From outside your network through a TLS reverse proxy: wss://your-domain (no port).</small>
+                <input class="node-mode-input" type="text" placeholder="wss://your-node.duckdns.org" autocomplete="off" spellcheck="false" data-custom-node-url disabled />
               </span>
             </div>
           </div>
