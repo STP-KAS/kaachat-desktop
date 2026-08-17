@@ -2797,7 +2797,7 @@ function renderTransportReadiness() {
     { label: "Live wallet and contact UTXO subscriptions", ready: engine.subscriptionSnapshot?.().status === "ready", note: `${engine.subscriptionSnapshot?.().contactCount || 0} contacts · ${engine.subscriptionSnapshot?.().status || "idle"}` },
     { label: "Real on-chain payload transport", ready: typeof engine.sendMessageOnchain === "function", note: "enabled / 0.2 KAS default" },
     { label: "Incoming Kasia payload decoder", ready: typeof engine.parseKasiaPayloadHex === "function", note: "preview" },
-    { label: "Real Kasia indexer sync", ready: typeof engine.syncConversationFromIndexer === "function", note: indexerUrlInput?.value || "indexer.kasia.fyi" },
+    { label: "Real Kasia indexer sync", ready: typeof engine.syncConversationFromIndexer === "function", note: getEndpointOverride("kasiaIndexer") || ENDPOINT_DEFAULTS.kasiaIndexer },
     { label: "Manual payload import", ready: typeof engine.parseKasiaPayloadHex === "function", note: "decoder" },
   ];
 
