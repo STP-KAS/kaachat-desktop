@@ -3,6 +3,11 @@
 // public /s/TOKEN share links (rendered by the link-preview feature), and back up the account's
 // chat data to the server (manual + automatic with hourly throttle and launch catch-up).
 //
+// The backup is cross-platform: one `kachat-backup.json` per folder in the shared
+// ChatHistoryArchive schema, written and read by iPhone, Android and desktop alike. Every
+// upload first downloads the file already there and uploads the UNION, so restoring on one
+// device never costs another device its history.
+//
 // Browser reality: unlike the native apps, fetches here would be subject to CORS — solved by
 // routing all API traffic through vite.config.mjs's same-origin /nc-proxy passthrough (see
 // apiBase()). The connect screen still detects total-failure shapes and
@@ -11,8 +16,14 @@
 // itself persists there too).
 
 const NC_KEY = "kachat-nextcloud-v1"; // account-scoped: { server, username, appPassword, startFolder, backupFolder, autoBackup, lastAutoBackup }
-const BACKUP_FILENAME = "kachat-backup-desktop.json"; // distinct from iOS's kachat-backup.json — different archive schema
-const PHONE_BACKUP_FILENAME = "kachat-backup.json"; // iOS/Android chat-history archive — merged into desktop state, never a replace
+// ONE shared backup file across iPhone, Android and desktop: same name, same
+// ChatHistoryArchive schema, so any device can restore any other device's
+// backup. Uploads MERGE with whatever is already on the server (see runBackup),
+// so no device can ever delete another's history.
+const BACKUP_FILENAME = "kachat-backup.json";
+// Pre-4.0 desktop-only file. Read on restore so an old backup can still be
+// recovered; never written again.
+const LEGACY_DESKTOP_BACKUP_FILENAME = "kachat-backup-desktop.json";
 const DEFAULT_BACKUP_FOLDER = "KaChat";
 const AUTO_BACKUP_MIN_MS = 3600_000;
 const AUTO_CATCHUP_MS = 86_400_000;
@@ -269,6 +280,20 @@ async function uploadBackup(payloadJson) {
   if (!put.ok) throw new Error(`Backup upload failed (HTTP ${put.status}).`);
 }
 
+/**
+ * One backup run: read what the server already has, hand it to the exporter so
+ * the two archives are unioned, then upload the union.
+ *
+ * Both failure modes deliberately abort BEFORE the PUT, leaving the existing
+ * file untouched: a download error other than 404 throws out of
+ * downloadBackupFile, and an unreadable/foreign/wrong-schema body throws out of
+ * exportBackupPayload.
+ */
+async function runBackup() {
+  const existingRemoteJson = await downloadBackupFile(BACKUP_FILENAME);
+  await uploadBackup(deps.exportBackupPayload(existingRemoteJson));
+}
+
 async function fetchBackupInfo() {
   try {
     const listing = await listFolder(backupFolderPath());
@@ -295,7 +320,7 @@ async function autoBackupIfDue(minMs = AUTO_BACKUP_MIN_MS) {
   const last = Number(nc.lastAutoBackup || 0);
   if (Date.now() - last < minMs) return;
   try {
-    await uploadBackup(deps.exportBackupPayload());
+    await runBackup();
     nc.lastAutoBackup = Date.now();
     saveState();
     renderSettings();
@@ -342,7 +367,8 @@ function renderSettings() {
       <div class="settings-toggle-row"><span><strong>Automatic Backup</strong><small>Uploads hourly while open, plus a daily catch-up at launch.</small></span><label class="switch-control"><input type="checkbox" data-nc-auto ${nc.autoBackup ? "checked" : ""}><span></span></label></div>
       <button class="settings-list-row" type="button" data-nc-pick-backup><span class="settings-row-copy"><strong>Backup Folder</strong><small>${deps.escapeHtml(nc.backupFolder || `${DEFAULT_BACKUP_FOLDER} (default)`)}</small></span></button>
       <button class="settings-list-row" type="button" data-nc-backup-now><span class="settings-row-copy"><strong>Back Up Messages Now</strong><small data-nc-backup-status>Checking last backup…</small></span></button>
-      <button class="settings-list-row" type="button" data-nc-restore><span class="settings-row-copy"><strong>Restore from Backup</strong><small>Restores the desktop backup (replaces this device's chat data) and merges any phone backup found in the folder.</small></span></button>
+      <button class="settings-list-row" type="button" data-nc-restore><span class="settings-row-copy"><strong>Restore from Backup</strong><small>Merges ${deps.escapeHtml(BACKUP_FILENAME)} back into this device's chat history, whichever device wrote it.</small></span></button>
+      <p class="field-hint">One backup, shared across your devices: iPhone, Android and desktop all read and write <strong>${deps.escapeHtml(BACKUP_FILENAME)}</strong> in this folder, in the same format. Every backup merges with what is already there, so no device can erase another's history.</p>
       <button class="settings-list-row danger-row" type="button" data-nc-disconnect><span class="settings-row-copy"><strong>Disconnect</strong><small>Removes the stored app password from this device.</small></span></button>
     </div>`;
   updateComposerButton();
@@ -619,10 +645,10 @@ function wireSettings() {
       const status = settingsEl.querySelector("[data-nc-backup-status]");
       if (status) status.textContent = "Backing up…";
       try {
-        await uploadBackup(deps.exportBackupPayload());
+        await runBackup();
         nc.lastAutoBackup = Date.now();
         saveState();
-        deps.showToast?.("Backup uploaded.");
+        deps.showToast?.("Backup uploaded — merged with what your other devices had already backed up.");
       } catch (error) {
         deps.showToast?.(corsHint(error));
       }
@@ -630,21 +656,28 @@ function wireSettings() {
       return;
     }
     if (event.target.closest("[data-nc-restore]")) {
-      if (!window.confirm("Restore from the backups in that folder? A desktop backup replaces this device's local chat data; a phone backup merges into it.")) return;
+      if (!window.confirm("Restore from the backup in that folder? Chat history from every device merges into this one; any desktop settings stored in the backup replace this device's.")) return;
       try {
-        // The folder can hold either backup flavor (or both): the desktop file
-        // and the iOS/Android archive. A missing file (404) is fine as long as
-        // the other one exists.
-        const desktopJson = await downloadBackupFile(BACKUP_FILENAME);
-        const phoneJson = await downloadBackupFile(PHONE_BACKUP_FILENAME);
-        if (!desktopJson && !phoneJson) throw new Error("No KaChat backup was found in that folder.");
-        if (desktopJson) deps.importBackupPayload(desktopJson);
-        // Merge AFTER the desktop restore so the state replace can't wipe the
-        // phone history that was just merged in.
-        const summary = phoneJson ? deps.importPhoneArchive?.(phoneJson) : null;
+        // Primary: the shared cross-device archive. A pre-4.0 desktop-only file
+        // may still be sitting next to it — read as a fallback for the desktop
+        // half. A missing file (404) is fine as long as one of them exists.
+        const sharedJson = await downloadBackupFile(BACKUP_FILENAME);
+        const legacyJson = await downloadBackupFile(LEGACY_DESKTOP_BACKUP_FILENAME);
+        if (!sharedJson && !legacyJson) throw new Error("No KaChat backup was found in that folder.");
+
+        // Desktop state first (it REPLACES local state), then the archive merge
+        // — that ordering is what stops the replace from wiping the freshly
+        // merged history. A shared file written by a phone has no desktopState,
+        // in which case the legacy desktop file (if any) supplies it.
+        let desktopRestored = sharedJson ? deps.importDesktopState?.(sharedJson) === true : false;
+        if (!desktopRestored && legacyJson) {
+          deps.importBackupPayload(legacyJson);
+          desktopRestored = true;
+        }
+        const summary = sharedJson ? deps.importPhoneArchive?.(sharedJson) : null;
         if (summary) {
-          const merged = `Merged ${summary.messages} message${summary.messages === 1 ? "" : "s"} from ${summary.conversations} chat${summary.conversations === 1 ? "" : "s"} from your phone backup.`;
-          deps.showToast?.(desktopJson ? `Backup restored. ${merged}` : merged);
+          const merged = `Merged ${summary.messages} message${summary.messages === 1 ? "" : "s"} from ${summary.conversations} chat${summary.conversations === 1 ? "" : "s"}.`;
+          deps.showToast?.(desktopRestored ? `Backup restored. ${merged}` : merged);
         } else {
           deps.showToast?.("Backup restored.");
         }

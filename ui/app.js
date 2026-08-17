@@ -9776,6 +9776,392 @@ function importPhoneChatArchive(json) {
   return { conversations: touchedConversationIds.size, messages: mergedMessages };
 }
 
+// ---------------------------------------------------------------------------
+// Shared chat-history archive EXPORT — the exact inverse of the import above.
+//
+// Desktop, iOS and Android all back up to the SAME file (`kachat-backup.json`)
+// in the SAME schema, so any device can restore any other device's backup:
+//
+//   { schemaVersion: 1, exportedAt, walletAddress,
+//     conversations: [{ conversationId, contactAddress, contactAlias,
+//                       unreadCount, messages: [ChatMessage…] }],
+//     desktopState: {…}   // additive, ignored by both phones
+//   }
+//
+// Wire constraints that are NOT negotiable (verified against the real decoders):
+//   * iOS decodes `id` as `UUID` and `conversationId` as `UUID?` — a non-UUID
+//     string throws and takes the WHOLE archive down. Desktop ids are only
+//     UUIDs when crypto.randomUUID() exists, so every id is passed through
+//     archiveUuid() first.
+//   * iOS's JSONDecoder uses .iso8601, i.e. ISO8601DateFormatter with
+//     [.withInternetDateTime] and NO fractional seconds — "…T12:34:56.789Z"
+//     fails to parse. Timestamps are therefore emitted whole-second.
+//   * iOS decodes `messageType` as a strict String enum: exactly one of
+//     handshake | contextual | payment | audio, or the archive throws.
+//   * iOS requires schemaVersion == 1; Android requires it too (and, unlike
+//     Swift, Gson leaves a missing Int at 0, which fails that same check).
+//   * `acceptingBlock` is omitted rather than null — both phones' encoders drop
+//     nil optionals, and neither reads it back.
+// ---------------------------------------------------------------------------
+
+const CHAT_ARCHIVE_SCHEMA_VERSION = 1;
+const SHARED_BACKUP_KIND = "kachat-desktop-backup";
+
+// Desktop status -> archive deliveryStatus. Inverse of PHONE_ARCHIVE_STATUSES;
+// the pre-broadcast working states all collapse to "pending" (the phones have
+// no equivalent for "building"/"signing").
+const ARCHIVE_STATUS_BY_DESKTOP_STATUS = {
+  [MESSAGE_STATUSES.DRAFT]: "pending",
+  [MESSAGE_STATUSES.BUILDING]: "pending",
+  [MESSAGE_STATUSES.SIGNING]: "pending",
+  [MESSAGE_STATUSES.BROADCASTING]: "pending",
+  [MESSAGE_STATUSES.PENDING]: "pending",
+  [MESSAGE_STATUSES.BROADCAST]: "warning",
+  [MESSAGE_STATUSES.CONFIRMED]: "sent",
+  [MESSAGE_STATUSES.FAILED]: "failed",
+};
+
+// iOS's DeliveryStatus.priority — used when the same txId turns up on both
+// sides of a merge with different statuses.
+const ARCHIVE_STATUS_PRIORITY = { pending: 0, warning: 1, failed: 2, sent: 3 };
+
+const ARCHIVE_MESSAGE_TYPES = new Set(["handshake", "contextual", "payment", "audio"]);
+const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** Deterministic 128-bit UUID from an arbitrary string (xmur3 seed -> 4 words),
+ *  so re-exporting the same desktop message always produces the same id and the
+ *  phones' id-keyed dedupe keeps working across backups. */
+function derivedArchiveUuid(seed) {
+  const text = String(seed || "");
+  let h = 1779033703 ^ text.length;
+  for (let i = 0; i < text.length; i += 1) {
+    h = Math.imul(h ^ text.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  const nextWord = () => {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0).toString(16).padStart(8, "0");
+  };
+  const nibbles = [nextWord(), nextWord(), nextWord(), nextWord()].join("").split("");
+  nibbles[12] = "4";                                             // RFC 4122 version
+  nibbles[16] = "89ab"[parseInt(nibbles[16], 16) & 3];           // RFC 4122 variant
+  const flat = nibbles.join("");
+  return `${flat.slice(0, 8)}-${flat.slice(8, 12)}-${flat.slice(12, 16)}-${flat.slice(16, 20)}-${flat.slice(20, 32)}`;
+}
+
+function archiveUuid(value, seed) {
+  const raw = String(value || "").trim();
+  if (UUID_PATTERN.test(raw)) return raw.toLowerCase();
+  return derivedArchiveUuid(raw || seed);
+}
+
+/** Whole-second ISO8601 — Swift's .iso8601 decoding strategy rejects fractional
+ *  seconds, so `new Date().toISOString()` on its own is NOT safe here. */
+function archiveIsoTimestamp(ms) {
+  const value = Number(ms);
+  const date = new Date(Number.isFinite(value) && value > 0 ? value : Date.now());
+  return `${date.toISOString().slice(0, 19)}Z`;
+}
+
+function archiveMessageType(message) {
+  const raw = String(message?.messageType || "").trim().toLowerCase();
+  if (ARCHIVE_MESSAGE_TYPES.has(raw)) return raw;
+  if (raw === "comm") return "contextual";           // Android's internal spelling
+  if (raw === "pay") return "payment";
+  if (parseAudioEnvelope(message?.text)) return "audio";
+  if (message?.paymentAmountKas != null) return "payment";
+  return "contextual";
+}
+
+/** Only a name the desktop user (or a real handshake) actually chose travels as
+ *  contactAlias — the same placeholder test importPhoneChatArchive applies in
+ *  reverse, so a "kaspa:qz…" stand-in never overwrites a real alias on a phone. */
+function archiveContactAlias(contact) {
+  const name = String(contact?.name || "").trim();
+  if (!name) return null;
+  if (contact?.nameIsCustom) return name;
+  const isPlaceholder = name === "Unnamed" || name === shortAddress(contact?.address) || name.startsWith("kaspa");
+  return isPlaceholder ? null : name;
+}
+
+function archiveMessageKey(archiveMessage) {
+  const txId = String(archiveMessage?.txId || "").trim();
+  return txId ? `tx:${txId}` : `id:${String(archiveMessage?.id || "")}`;
+}
+
+function isArchivePlaceholderContent(content) {
+  const text = String(content || "");
+  return !text || text === "📤 Sent via another device" || text === "[Encrypted message]";
+}
+
+/** Mirrors iOS's ChatService.preferMessage: a real body beats a placeholder,
+ *  then the further-along delivery status wins, then the later blockTime. */
+function preferArchiveMessage(existing, candidate) {
+  const existingPlaceholder = isArchivePlaceholderContent(existing?.content);
+  const candidatePlaceholder = isArchivePlaceholderContent(candidate?.content);
+  if (existingPlaceholder !== candidatePlaceholder) return candidatePlaceholder ? existing : candidate;
+
+  const existingPriority = ARCHIVE_STATUS_PRIORITY[String(existing?.deliveryStatus)] ?? 3;
+  const candidatePriority = ARCHIVE_STATUS_PRIORITY[String(candidate?.deliveryStatus)] ?? 3;
+  if (existingPriority !== candidatePriority) return candidatePriority > existingPriority ? candidate : existing;
+
+  return Number(candidate?.blockTime || 0) > Number(existing?.blockTime || 0) ? candidate : existing;
+}
+
+/**
+ * Coerces any archive message — including one another device wrote — into the
+ * strictest shape every decoder accepts, without touching what it says.
+ *
+ * This matters because Android currently writes `id` = the 64-hex txId and
+ * `timestamp` via ISO_INSTANT (fractional seconds), BOTH of which iOS's
+ * JSONDecoder rejects outright (`UUID` / `.iso8601`), taking the whole archive
+ * down with them. Since desktop rewrites the shared file on every backup, it
+ * heals those messages on the way out; Android keys its rows by `txId` and
+ * ignores `id`/`timestamp` on import, so nothing is lost on that side.
+ */
+function normalizeArchiveMessage(message) {
+  const txId = String(message?.txId || "").trim();
+  const rawId = String(message?.id || "").trim();
+  const blockTime = Math.max(0, Math.round(Number(message?.blockTime) || 0));
+  const timestampMs = blockTime > 0 ? blockTime : (Date.parse(String(message?.timestamp || "")) || Date.now());
+  const rawType = String(message?.messageType || "").trim().toLowerCase();
+  const rawStatus = String(message?.deliveryStatus || "").trim().toLowerCase();
+
+  const normalized = {
+    id: archiveUuid(rawId, `${txId}:${rawId}`),
+    txId,
+    senderAddress: String(message?.senderAddress || ""),
+    receiverAddress: String(message?.receiverAddress || ""),
+    content: String(message?.content || ""),
+    timestamp: archiveIsoTimestamp(timestampMs),
+    blockTime,
+    isOutgoing: Boolean(message?.isOutgoing),
+    messageType: archiveMessageType({ messageType: rawType, text: message?.content }),
+    deliveryStatus: ARCHIVE_STATUS_PRIORITY[rawStatus] === undefined ? "sent" : rawStatus,
+  };
+  const acceptingBlock = String(message?.acceptingBlock || "").trim();
+  if (acceptingBlock) normalized.acceptingBlock = acceptingBlock;
+  return normalized;
+}
+
+function sortArchiveMessages(messages) {
+  return messages.sort((a, b) => {
+    const delta = Number(a?.blockTime || 0) - Number(b?.blockTime || 0);
+    return delta !== 0 ? delta : String(a?.txId || a?.id || "").localeCompare(String(b?.txId || b?.id || ""));
+  });
+}
+
+/** This device's live conversations rendered into the shared archive schema. */
+function buildLocalChatArchive() {
+  const myAddress = String(engine.address || "");
+  const conversations = [];
+
+  for (const conversationEntry of state.conversations || []) {
+    const contact = contactForConversation(conversationEntry);
+    const contactAddress = String(contact?.address || "").trim();
+    if (!contactAddress) continue;
+
+    // A message the user deleted on this device stays deleted in what THIS
+    // device contributes; the merge below still preserves any copy another
+    // device already published.
+    const hidden = new Set((conversationEntry.hiddenMessageKeys || []).map(String));
+    const messages = [];
+    for (const message of conversationEntry.messages || []) {
+      const id = String(message?.id || "");
+      const txid = String(message?.txid || "").trim();
+      if (hidden.has(id) || (txid && hidden.has(txid))) continue;
+      const text = String(message?.text || "");
+      if (!text) continue;
+      // Never-broadcast drafts stay out of the SHARED half: iOS drops empty-txId
+      // messages on import anyway, and Android keys its message rows BY txId, so
+      // several of them would collapse into one junk row there. They still ride
+      // along losslessly in `desktopState`.
+      if (!txid) continue;
+
+      const isOutgoing = message?.direction !== "incoming";
+      const createdAt = Number(message?.createdAt || 0) || Date.now();
+      messages.push({
+        id: archiveUuid(id, `${contactAddress}:${txid || id}`),
+        txId: txid,
+        senderAddress: String(message?.sender || "") || (isOutgoing ? myAddress : contactAddress),
+        receiverAddress: String(message?.receiver || "") || (isOutgoing ? contactAddress : myAddress),
+        content: text,
+        timestamp: archiveIsoTimestamp(createdAt),
+        blockTime: Math.max(0, Math.round(createdAt)),
+        isOutgoing,
+        messageType: archiveMessageType(message),
+        deliveryStatus: ARCHIVE_STATUS_BY_DESKTOP_STATUS[String(message?.status || "")] || "sent",
+      });
+    }
+
+    conversations.push({
+      conversationId: archiveUuid(conversationEntry.id, `conversation:${contactAddress}`),
+      contactAddress,
+      contactAlias: archiveContactAlias(contact),
+      unreadCount: Math.max(0, Number(conversationEntry.unreadCount || 0)),
+      messages: sortArchiveMessages(messages),
+    });
+  }
+
+  conversations.sort((a, b) => a.contactAddress.localeCompare(b.contactAddress));
+  return {
+    schemaVersion: CHAT_ARCHIVE_SCHEMA_VERSION,
+    exportedAt: archiveIsoTimestamp(Date.now()),
+    walletAddress: myAddress || null,
+    conversations,
+  };
+}
+
+function archiveExportedAtMs(archive) {
+  const parsed = Date.parse(String(archive?.exportedAt || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Validates the archive already sitting on the server. Every failure path
+ * THROWS — the caller aborts before uploading, so an unreadable or foreign
+ * backup is left exactly as it was rather than being overwritten.
+ */
+function parseRemoteChatArchive(json) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error("The backup already on the server is not readable JSON — nothing was uploaded and that file was left untouched. Move it aside (or pick another backup folder) to start a fresh backup.");
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.conversations)) {
+    throw new Error("The file already on the server is not a KaChat backup — nothing was uploaded and it was left untouched. Pick a different backup folder.");
+  }
+  if (Number(parsed.schemaVersion) !== CHAT_ARCHIVE_SCHEMA_VERSION) {
+    throw new Error(`The backup already on the server uses schema version ${parsed.schemaVersion}, which this version can't merge — nothing was uploaded and it was left untouched.`);
+  }
+  const remoteWallet = String(parsed.walletAddress || "").trim();
+  if (remoteWallet && engine.address && remoteWallet !== engine.address) {
+    throw new Error(`The backup already on the server belongs to a different wallet (${shortAddress(remoteWallet)}) — nothing was uploaded. Choose a separate backup folder for this wallet.`);
+  }
+  return parsed;
+}
+
+/**
+ * Union of the archive on the server and this device's archive — this is what
+ * makes the shared file a sync point rather than last-writer-wins:
+ *   * a conversation present on only ONE side is kept whole;
+ *   * messages are deduped by txId (falling back to id for never-broadcast
+ *     ones), keeping the better copy per iOS's preferMessage ordering;
+ *   * conversation metadata (alias / unreadCount) comes from whichever archive
+ *     was exported more recently, and an empty value never overwrites a real
+ *     one; conversationId keeps the already-published value for stability.
+ * A desktop backup can therefore never delete a phone's history, or vice versa.
+ */
+function mergeChatArchives(remote, local) {
+  const remoteIsNewer = archiveExportedAtMs(remote) > archiveExportedAtMs(local);
+  const merged = new Map();
+
+  const absorb = (conversation, isRemote) => {
+    const contactAddress = String(conversation?.contactAddress || "").trim();
+    if (!contactAddress) return;
+    const metadataWins = isRemote ? remoteIsNewer : !remoteIsNewer;
+    const alias = String(conversation?.contactAlias || "").trim();
+    const conversationId = String(conversation?.conversationId || "").trim();
+    const unreadCount = Math.max(0, Number(conversation?.unreadCount || 0));
+
+    let entry = merged.get(contactAddress);
+    if (!entry) {
+      entry = { conversationId: conversationId || null, contactAddress, contactAlias: alias || null, unreadCount, messages: new Map() };
+      merged.set(contactAddress, entry);
+    } else {
+      if (alias && (metadataWins || !entry.contactAlias)) entry.contactAlias = alias;
+      if (conversationId && !entry.conversationId) entry.conversationId = conversationId;
+      if (metadataWins) entry.unreadCount = unreadCount;
+    }
+
+    for (const message of Array.isArray(conversation?.messages) ? conversation.messages : []) {
+      if (!message || typeof message !== "object") continue;
+      const key = archiveMessageKey(message);
+      const existing = entry.messages.get(key);
+      entry.messages.set(key, existing ? preferArchiveMessage(existing, message) : message);
+    }
+  };
+
+  // Remote first so it seeds identity; local second so this device's newer view
+  // can win the per-field metadata contest when it is in fact newer.
+  for (const conversation of Array.isArray(remote?.conversations) ? remote.conversations : []) absorb(conversation, true);
+  for (const conversation of local.conversations) absorb(conversation, false);
+
+  const conversations = [...merged.values()]
+    .map((entry) => ({
+      // conversationId is normalized too — iOS decodes it as UUID?, so a
+      // non-UUID one from another client would throw on its restore.
+      conversationId: entry.conversationId ? archiveUuid(entry.conversationId, `conversation:${entry.contactAddress}`) : null,
+      contactAddress: entry.contactAddress,
+      contactAlias: entry.contactAlias,
+      unreadCount: entry.unreadCount,
+      messages: sortArchiveMessages([...entry.messages.values()].map(normalizeArchiveMessage)),
+    }))
+    .sort((a, b) => a.contactAddress.localeCompare(b.contactAddress));
+
+  return {
+    schemaVersion: CHAT_ARCHIVE_SCHEMA_VERSION,
+    exportedAt: local.exportedAt,
+    walletAddress: local.walletAddress || String(remote?.walletAddress || "") || null,
+    conversations,
+  };
+}
+
+/** The desktop-only half of the backup, carried in the additive `desktopState`
+ *  key. Both phone decoders skip unknown top-level keys (iOS: synthesized
+ *  Codable init; Android: Gson, which has no strict-unknown mode at all), so
+ *  this rides along without breaking either restore. */
+function buildDesktopStateSnapshot() {
+  return {
+    kind: SHARED_BACKUP_KIND,
+    version: 1,
+    savedAt: new Date().toISOString(),
+    state: JSON.parse(chatStorageGetSync(accountScopedKey(STORAGE_KEY)) || "null"),
+    history: JSON.parse(chatStorageGetSync(accountScopedKey(MESSAGE_HISTORY_KEY)) || "null"),
+  };
+}
+
+/**
+ * Full upload body for `kachat-backup.json`. `existingRemoteJson` is whatever
+ * the server already holds (null when there is no backup yet); it is merged in
+ * so this upload can only ever ADD to the shared history.
+ */
+function buildSharedBackupPayload(existingRemoteJson = null) {
+  const local = buildLocalChatArchive();
+  const remote = existingRemoteJson ? parseRemoteChatArchive(existingRemoteJson) : null;
+  const archive = remote ? mergeChatArchives(remote, local) : local;
+  archive.desktopState = buildDesktopStateSnapshot();
+  return JSON.stringify(archive, null, 2);
+}
+
+/** Write-through of a desktop state snapshot (from `desktopState`, or from a
+ *  legacy kachat-backup-desktop.json body) into the live storage. */
+function applyDesktopStateSnapshot(snapshot) {
+  const serialized = JSON.stringify(snapshot.state);
+  chatStorageSetSync(accountScopedKey(STORAGE_KEY), serialized);
+  chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
+  if (snapshot.history) {
+    chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(snapshot.history));
+  }
+  reloadStateFromBrowserStorage();
+  renderChats();
+}
+
+/** Restores the desktop-only state carried inside a shared archive. Returns
+ *  false when the file has none (i.e. it was written by a phone), which is the
+ *  cue to fall back to a legacy desktop backup file if one is still there. */
+function importDesktopStateFromSharedArchive(json) {
+  let parsed = null;
+  try { parsed = JSON.parse(json); } catch { return false; }
+  const snapshot = parsed?.desktopState;
+  if (!snapshot || typeof snapshot !== "object" || !snapshot.state) return false;
+  applyDesktopStateSnapshot(snapshot);
+  return true;
+}
+
 // Sends a reaction as a real on-chain message (same encrypted pipeline as
 // text), but — matching iOS — never creates a visible bubble for it: applies
 // optimistically to the local reactions store first, then fires the actual
@@ -11519,15 +11905,14 @@ queueMicrotask(async () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.focus();
     },
-    // The backup payload is the desktop's own persisted state (conversations + contacts +
-    // message history), NOT the iOS archive schema — hence the platform-distinct filename.
-    exportBackupPayload: () => JSON.stringify({
-      kind: "kachat-desktop-backup",
-      version: 1,
-      savedAt: new Date().toISOString(),
-      state: JSON.parse(chatStorageGetSync(accountScopedKey(STORAGE_KEY)) || "null"),
-      history: JSON.parse(chatStorageGetSync(accountScopedKey(MESSAGE_HISTORY_KEY)) || "null"),
-    }),
+    // The backup payload is the CROSS-PLATFORM ChatHistoryArchive (same file name
+    // and same schema iOS/Android write), merged with whatever the server already
+    // holds so a desktop upload can only ever add to the shared history. The
+    // desktop's own persisted state rides along in the additive `desktopState`
+    // key, which both phone decoders ignore.
+    exportBackupPayload: (existingRemoteJson = null) => buildSharedBackupPayload(existingRemoteJson),
+    // Legacy `kachat-backup-desktop.json` bodies only — kept so a user with an
+    // old desktop-only backup can still recover from it.
     importBackupPayload: (json) => {
       const parsed = JSON.parse(json);
       if (parsed?.kind !== "kachat-desktop-backup" || !parsed.state) {
@@ -11536,17 +11921,13 @@ queueMicrotask(async () => {
       // Write-through the same storage the live persist path uses (IndexedDB
       // cache when available, localStorage fallback otherwise), then reload
       // synchronously from that cache.
-      const serialized = JSON.stringify(parsed.state);
-      chatStorageSetSync(accountScopedKey(STORAGE_KEY), serialized);
-      chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
-      if (parsed.history) {
-        chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(parsed.history));
-      }
-      reloadStateFromBrowserStorage();
-      renderChats();
+      applyDesktopStateSnapshot(parsed);
     },
-    // Phone (iOS/Android) `kachat-backup.json` found in the same folder:
-    // merged into the desktop conversations, never a state replace.
+    // The desktop-only half of a shared `kachat-backup.json`; false when the
+    // file was written by a phone and carries no desktopState.
+    importDesktopState: importDesktopStateFromSharedArchive,
+    // The shared archive itself (whoever wrote it): merged into the desktop
+    // conversations, never a state replace.
     importPhoneArchive: importPhoneChatArchive,
   });
 
