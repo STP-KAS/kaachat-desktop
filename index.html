@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=237" />
+  <link rel="stylesheet" href="./ui/styles.css?v=238" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -1414,6 +1414,30 @@
       <p class="field-hint" data-group-picker-hint>Add contacts to the group. You control the membership as the group admin.</p>
       <input class="group-member-search" type="search" placeholder="Search contacts" autocomplete="off" data-group-member-search />
       <div class="group-member-picker" data-group-member-picker></div>
+
+      <div class="group-add-by-address">
+        <p class="field-hint">Not in your contacts? Add anyone by Kaspa address or KNS domain:</p>
+        <input class="group-address-input" type="text" placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" data-group-address-input />
+        <div class="group-address-tools" aria-label="Address actions">
+          <button type="button" class="group-address-tool" data-group-address-import>
+            <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="12" cy="8.5" r="5.25"/><path d="M3.5 24.5c.7-5.4 4-8.7 8.5-8.7 2.3 0 4.3.8 5.8 2.3"/><path d="M24.2 18.9v5.8M21.3 21.8h5.8"/></svg>
+            <span>Import</span>
+          </button>
+          <button type="button" class="group-address-tool" data-group-address-paste>
+            <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="9" y="8" width="15" height="19" rx="2.5"/><path d="M13 8V5.5h10V20"/><path d="M18.5 4.5h5v5"/></svg>
+            <span>Paste</span>
+          </button>
+          <button type="button" class="group-address-tool" data-group-address-scan>
+            <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 12V6h6M21 6h6v6M27 20v6h-6M11 26H5v-6"/><rect x="11" y="11" width="4" height="4"/></svg>
+            <span>Scan QR</span>
+          </button>
+        </div>
+        <input type="file" accept=".vcf,text/vcard,text/plain" hidden data-group-address-import-file />
+        <p class="group-address-status" data-group-address-status hidden></p>
+        <button type="button" class="secondary-button group-address-add" data-group-address-add disabled>Add to Group</button>
+        <div class="group-selected-chips" data-group-selected-chips hidden></div>
+      </div>
+
       <p class="field-error" data-group-create-error hidden></p>
       <div class="modal-actions">
         <button class="secondary-button" type="button" data-close-group-create>Cancel</button>
@@ -2244,7 +2268,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=221"></script>
+  <script type="module" src="./ui/app.js?v=222"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

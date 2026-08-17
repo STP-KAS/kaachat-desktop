@@ -12253,8 +12253,18 @@ const groupNameInput = document.querySelector("[data-group-name-input]");
 const groupPickerHint = document.querySelector("[data-group-picker-hint]");
 const groupMemberSearch = document.querySelector("[data-group-member-search]");
 const groupMemberPicker = document.querySelector("[data-group-member-picker]");
+const groupAddressInput = document.querySelector("[data-group-address-input]");
+const groupAddressStatus = document.querySelector("[data-group-address-status]");
+const groupAddressAddButton = document.querySelector("[data-group-address-add]");
+const groupAddressImportButton = document.querySelector("[data-group-address-import]");
+const groupAddressImportFile = document.querySelector("[data-group-address-import-file]");
+const groupAddressPasteButton = document.querySelector("[data-group-address-paste]");
+const groupAddressScanButton = document.querySelector("[data-group-address-scan]");
+const groupSelectedChips = document.querySelector("[data-group-selected-chips]");
 const groupCreateError = document.querySelector("[data-group-create-error]");
 const groupCreateSubmit = document.querySelector("[data-group-create-submit]");
+let groupAddressResolved = null;
+let groupAddressResolveToken = 0;
 const groupChatScreen = document.querySelector("[data-group-chat-screen]");
 const groupChatName = document.querySelector("[data-group-chat-name]");
 const groupChatSub = document.querySelector("[data-group-chat-sub]");
@@ -12464,6 +12474,7 @@ function updateGroupCreateSubmit() {
     const name = String(groupNameInput?.value || "").trim();
     groupCreateSubmit.disabled = !(name && groupCreateSelected.size >= 1);
   }
+  renderSelectedGroupChips();
 }
 function openGroupCreate() {
   if (!getGroupManager()) { setStatus("Load a wallet before creating a group."); return; }
@@ -12477,6 +12488,7 @@ function openGroupCreate() {
   if (groupCreateError) groupCreateError.hidden = true;
   if (groupMemberSearch) groupMemberSearch.value = "";
   groupPickerExclude = [];
+  resetGroupAddressSection();
   renderGroupMemberPicker();
   updateGroupCreateSubmit();
   if (groupCreateModal) groupCreateModal.hidden = false;
@@ -12496,11 +12508,109 @@ function openGroupAddMember(groupId) {
   if (groupCreateError) groupCreateError.hidden = true;
   if (groupMemberSearch) groupMemberSearch.value = "";
   groupPickerExclude = g.members.map((m) => m.address);
+  resetGroupAddressSection();
   renderGroupMemberPicker(groupPickerExclude);
   updateGroupCreateSubmit();
   if (groupCreateModal) groupCreateModal.hidden = false;
 }
 function closeGroupCreate() { if (groupCreateModal) groupCreateModal.hidden = true; }
+
+// --- "Add by address" section: add someone who is not in your contacts at all ---
+
+function setGroupAddressStatus(html) {
+  if (!groupAddressStatus) return;
+  groupAddressStatus.innerHTML = html || "";
+  groupAddressStatus.hidden = !html;
+}
+
+function resetGroupAddressSection() {
+  groupAddressResolved = null;
+  groupAddressResolveToken++;
+  if (groupAddressInput) groupAddressInput.value = "";
+  setGroupAddressStatus("");
+  if (groupAddressAddButton) groupAddressAddButton.disabled = true;
+  renderSelectedGroupChips();
+}
+
+// Chips for selected members that are NOT in the contact list (added by address), so
+// they stay visible and removable even though the picker only lists existing contacts.
+function renderSelectedGroupChips() {
+  if (!groupSelectedChips) return;
+  const contactAddresses = new Set((state.contacts || []).map((c) => c.address));
+  const extras = [...groupCreateSelected].filter((addr) => !contactAddresses.has(addr));
+  if (!extras.length) { groupSelectedChips.hidden = true; groupSelectedChips.innerHTML = ""; return; }
+  groupSelectedChips.hidden = false;
+  groupSelectedChips.innerHTML = extras.map((addr) => `
+    <span class="group-selected-chip">
+      <span class="group-selected-chip-label">${escapeHtml(shortAddress(addr))}</span>
+      <button type="button" class="group-selected-chip-remove" data-group-chip-remove="${escapeHtml(addr)}" aria-label="Remove">&times;</button>
+    </span>`).join("");
+}
+
+// Live validity feedback for the group address field (raw address or KNS domain),
+// mirroring the 1:1 create-chat resolver. Sets groupAddressResolved to the address
+// that "Add to Group" will use.
+function updateGroupAddressState() {
+  if (!groupAddressInput) return;
+  const raw = String(groupAddressInput.value || "").trim();
+  const token = ++groupAddressResolveToken;
+  groupAddressResolved = null;
+  if (groupAddressAddButton) groupAddressAddButton.disabled = true;
+
+  if (!raw) { setGroupAddressStatus(""); return; }
+
+  if (raw.startsWith("kaspa:") || raw.startsWith("kaspatest:")) {
+    let valid = false;
+    try { validateContactAddress(raw); valid = true; } catch { valid = false; }
+    if (valid) {
+      groupAddressResolved = raw;
+      setGroupAddressStatus('<span class="create-chat-status-good">✓ Valid address</span>');
+      if (groupAddressAddButton) groupAddressAddButton.disabled = false;
+    } else {
+      setGroupAddressStatus('<span class="create-chat-status-bad">✕ Invalid address format</span>');
+    }
+    return;
+  }
+
+  if (engine.knsLooksLikeDomain(raw)) {
+    setGroupAddressStatus('<span class="create-chat-status-muted">Resolving KNS domain…</span>');
+    window.setTimeout(async () => {
+      if (token !== groupAddressResolveToken) return;
+      try {
+        const resolution = await engine.resolveKnsDomain(raw);
+        if (token !== groupAddressResolveToken) return;
+        if (resolution?.ownerAddress) {
+          groupAddressResolved = resolution.ownerAddress;
+          setGroupAddressStatus(`<span class="create-chat-status-good">✓ Resolved: ${escapeHtml(resolution.domain || raw)}</span><span class="create-chat-status-mono">${escapeHtml(resolution.ownerAddress)}</span>`);
+          if (groupAddressAddButton) groupAddressAddButton.disabled = false;
+        } else {
+          setGroupAddressStatus('<span class="create-chat-status-bad">✕ KNS domain not found</span>');
+        }
+      } catch {
+        if (token !== groupAddressResolveToken) return;
+        setGroupAddressStatus('<span class="create-chat-status-bad">✕ KNS domain not found</span>');
+      }
+    }, 300);
+    return;
+  }
+
+  setGroupAddressStatus('<span class="create-chat-status-bad">✕ Invalid address format</span>');
+}
+
+function addResolvedGroupAddress() {
+  const addr = groupAddressResolved;
+  if (!addr) return;
+  if (addr === engine.address) { setGroupAddressStatus('<span class="create-chat-status-bad">✕ That is your own address</span>'); return; }
+  if (groupPickerExclude.includes(addr)) { setGroupAddressStatus('<span class="create-chat-status-muted">Already in this group</span>'); return; }
+  if (groupCreateSelected.has(addr)) { setGroupAddressStatus('<span class="create-chat-status-muted">Already added</span>'); return; }
+  if (groupCreateSelected.size >= 50) { setGroupAddressStatus('<span class="create-chat-status-bad">✕ A group can have at most 50 members</span>'); return; }
+  groupCreateSelected.add(addr);
+  resetGroupAddressSection();
+  // If the address happens to be a contact, its row checkmark updates; otherwise it
+  // shows as a chip (rendered inside resetGroupAddressSection).
+  renderGroupMemberPicker(groupPickerExclude);
+  updateGroupCreateSubmit();
+}
 
 // --- manage / group info ---
 function openGroupManage(groupId) {
@@ -12586,6 +12696,62 @@ groupCreateModal?.addEventListener("click", (event) => { if (event.target === gr
 groupNameInput?.addEventListener("input", updateGroupCreateSubmit);
 // Live-filter the member list as the user types (uses the current exclude set).
 groupMemberSearch?.addEventListener("input", () => renderGroupMemberPicker(groupPickerExclude));
+
+// "Add by address" section: resolve + add a member who is not in your contacts.
+groupAddressInput?.addEventListener("input", updateGroupAddressState);
+groupAddressInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); addResolvedGroupAddress(); }
+});
+groupAddressAddButton?.addEventListener("click", addResolvedGroupAddress);
+groupAddressPasteButton?.addEventListener("click", async () => {
+  try {
+    if (!navigator.clipboard?.readText) return;
+    const pasted = String(await navigator.clipboard.readText() || "").trim();
+    if (!pasted || !groupAddressInput) return;
+    groupAddressInput.value = pasted;
+    updateGroupAddressState();
+    groupAddressInput.focus();
+  } catch { /* clipboard denied/empty: leave the field unchanged */ }
+});
+groupAddressImportButton?.addEventListener("click", async () => {
+  try {
+    if (navigator.contacts?.select) {
+      const selected = await navigator.contacts.select(["name", "address", "email", "tel"], { multiple: false });
+      const entry = selected?.[0];
+      if (!entry) return;
+      const addressMatch = JSON.stringify(entry).match(/kaspa:[a-z0-9]+/i);
+      if (!addressMatch) { setGroupAddressStatus('<span class="create-chat-status-bad">✕ No Kaspa address in that contact</span>'); return; }
+      if (groupAddressInput) { groupAddressInput.value = addressMatch[0]; updateGroupAddressState(); }
+      return;
+    }
+    groupAddressImportFile?.click();
+  } catch (error) {
+    setGroupAddressStatus(`<span class="create-chat-status-bad">✕ ${escapeHtml(error?.message || "Import unavailable")}</span>`);
+  }
+});
+groupAddressImportFile?.addEventListener("change", async () => {
+  const file = groupAddressImportFile.files?.[0];
+  groupAddressImportFile.value = "";
+  if (!file) return;
+  try {
+    const addressMatch = (await file.text()).match(/kaspa:[a-z0-9]+/i);
+    if (!addressMatch) { setGroupAddressStatus('<span class="create-chat-status-bad">✕ No Kaspa address in that file</span>'); return; }
+    if (groupAddressInput) { groupAddressInput.value = addressMatch[0]; updateGroupAddressState(); }
+  } catch (error) {
+    setGroupAddressStatus(`<span class="create-chat-status-bad">✕ ${escapeHtml(error?.message || "Could not read that file")}</span>`);
+  }
+});
+groupAddressScanButton?.addEventListener("click", () => {
+  // Matches the 1:1 create-chat flow: camera QR scanning is not wired on desktop yet.
+  setGroupAddressStatus('<span class="create-chat-status-muted">QR scanning is available on the mobile apps.</span>');
+});
+groupSelectedChips?.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("[data-group-chip-remove]");
+  if (!removeButton) return;
+  groupCreateSelected.delete(removeButton.dataset.groupChipRemove);
+  updateGroupCreateSubmit();
+});
+
 // The persistent "+" create button is tab-aware: Group Chats tab opens the group
 // builder, the Chats tab opens the 1:1 create screen.
 newChatFab?.addEventListener("click", () => {
