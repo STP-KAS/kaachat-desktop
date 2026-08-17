@@ -4416,11 +4416,13 @@ body.session-logged-out [data-account-rename-modal] {
 .chat-select-row {
   display: flex;
   justify-content: flex-end;
+  gap: 16px;
   padding: 10px 18px 0;
   flex: 0 0 auto;
 }
 
-.chat-select-toggle {
+.chat-select-toggle,
+.chat-select-all {
   border: 0;
   background: transparent;
   color: var(--kaspa-ink);
@@ -6395,4 +6397,362 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
   font-size: 10.5px;
   font-weight: 700;
   color: var(--kaspa-ink, var(--kaspa));
+}
+
+/* ============================================================================
+   Group chat (self-contained; reuses message-bubble / conversation CSS where it
+   can, adds its own list rows, create modal, full-screen thread, and manage view)
+   ============================================================================ */
+
+/* Sidebar: New Group action, shown only on the Group Chats tab. */
+.group-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 18px 0;
+  flex: 0 0 auto;
+}
+.new-group-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--kaspa-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.new-group-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Group rows in the sidebar list reuse the 1:1 chat-row layout wholesale. */
+.group-list .chat-row { cursor: pointer; }
+.group-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--kaspa-dim);
+  color: var(--kaspa-ink);
+}
+.group-avatar-fallback svg {
+  width: 55%;
+  height: 55%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Create Group modal. */
+.group-name-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text);
+  font-size: 15px;
+}
+.group-name-input:focus {
+  outline: none;
+  border-color: var(--kaspa-ink);
+}
+.group-member-picker {
+  margin-top: 10px;
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.group-member-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.group-member-option:hover { background: var(--surface-2); }
+.group-member-option.selected {
+  border-color: var(--kaspa-ink);
+  background: var(--kaspa-dim);
+}
+.group-member-option .chat-avatar,
+.group-member-option .group-member-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+}
+.group-member-option-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.group-member-option-meta strong {
+  font-size: 14px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-member-option-meta span {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-member-check {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.group-member-option.selected .group-member-check {
+  border-color: var(--kaspa-ink);
+  background: var(--kaspa);
+  color: #062c24;
+}
+.group-member-check svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.group-member-option.selected .group-member-check svg { opacity: 1; }
+.group-picker-empty {
+  padding: 22px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Full-screen group thread. */
+.group-chat-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  background: var(--bg);
+  display: flex;
+}
+.group-chat-inner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.group-chat-header .group-chat-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+}
+.group-chat-header .group-chat-heading h1 {
+  font-size: 17px;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-chat-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 1px 0 0;
+}
+.group-chat-avatar .group-avatar-fallback { border-radius: 50%; }
+/* Override the 1:1 message-area's fixed max-height (260px, sized for the compact
+   conversation grid) so the full-screen group thread fills the available space. */
+.group-message-area {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  align-content: start;
+}
+.group-message-sender {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--kaspa-ink);
+  margin: 0 0 3px 4px;
+}
+.group-message-area .message-row.incoming .message-bubble { position: relative; }
+.group-readonly-note {
+  margin: 0 0 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Manage / Group Info screen. */
+.group-manage-body { display: flex; flex-direction: column; gap: 16px; }
+.group-manage-section { display: flex; flex-direction: column; gap: 8px; }
+.group-manage-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 4px 2px 0;
+}
+.group-manage-name-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.group-manage-name-row .group-name-input { margin: 0; }
+.group-member-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+}
+.group-member-line-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.group-member-line-meta strong { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-member-line-meta span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-member-admin-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--kaspa-ink);
+  background: var(--kaspa-dim);
+  border-radius: 999px;
+  padding: 2px 8px;
+  flex: 0 0 auto;
+}
+.group-member-remove {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: #ff6b6b;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.group-manage-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px dashed var(--line);
+  background: var(--surface-1);
+  color: var(--kaspa-ink);
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.group-manage-danger {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,107,107,.4);
+  background: rgba(255,107,107,.08);
+  color: #ff6b6b;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+/* ============================================================================
+   Node Connection screen — KasWare-style Automatic/Custom node selector
+   ============================================================================ */
+.node-mode-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.node-mode-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+.node-mode-card:hover { background: var(--surface-2); }
+.node-mode-card.selected {
+  border-color: var(--kaspa-ink);
+  background: var(--kaspa-dim);
+}
+.node-mode-radio {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+  position: relative;
+}
+.node-mode-card.selected .node-mode-radio {
+  border-color: var(--kaspa-ink);
+}
+.node-mode-card.selected .node-mode-radio::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--kaspa-ink);
+}
+.node-mode-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.node-mode-copy strong { font-size: 14px; font-weight: 650; }
+.node-mode-copy small { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.node-mode-input {
+  margin-top: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.node-mode-input:focus { outline: none; border-color: var(--kaspa-ink); }
+.node-mode-input:disabled { opacity: .5; cursor: not-allowed; }
+.node-mode-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }

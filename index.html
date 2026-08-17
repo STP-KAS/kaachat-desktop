@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=232" />
+  <link rel="stylesheet" href="./ui/styles.css?v=235" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -87,7 +87,15 @@
         </nav>
 
         <div class="chat-select-row">
+          <button type="button" class="chat-select-all" data-chat-select-all hidden>Select All</button>
           <button type="button" class="chat-select-toggle" data-chat-select-toggle>Select</button>
+        </div>
+
+        <div class="group-actions-row" data-group-actions-row hidden>
+          <button type="button" class="new-group-button" data-new-group>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M2.5 19.5c.6-3.9 3-6.3 6.5-6.3 1.6 0 3 .5 4.1 1.4"/><path d="M17.5 13.5v6M14.5 16.5h6"/></svg>
+            <span>New Group</span>
+          </button>
         </div>
 
         <section class="search-wrap" data-search-wrap aria-label="Search chats">
@@ -125,11 +133,19 @@
               </svg>
             </div>
             <h1>No Group Chats Yet</h1>
-            <span class="architecture-badge">Coming Soon</span>
-            <p>Group conversations are coming in a future release.</p>
+            <p>Create an encrypted group and add contacts you have already exchanged a handshake with.</p>
+            <button class="add-contact-button" type="button" data-new-group>
+              <svg class="add-contact-icon person-plus-icon" viewBox="0 0 32 32" focusable="false" aria-hidden="true">
+                <circle cx="12" cy="8.5" r="5.25"/>
+                <path d="M3.5 24.5c.7-5.4 4-8.7 8.5-8.7 2.3 0 4.3.8 5.8 2.3"/>
+                <path d="M24.2 18.9v5.8M21.3 21.8h5.8"/>
+              </svg>
+              <span>New Group</span>
+            </button>
           </div>
 
           <div class="chat-list" data-chat-list hidden></div>
+          <div class="chat-list group-list" data-group-list hidden></div>
         </div>
 
         <div class="chat-selection-bar" data-chat-selection-bar hidden>
@@ -1004,32 +1020,30 @@
     </div>
   </div>
 
-  <div class="account-overlay" data-connection-overlay hidden role="dialog" aria-modal="true" aria-label="Connection Status">
+  <div class="account-overlay" data-connection-overlay hidden role="dialog" aria-modal="true" aria-label="Node Connection">
     <div class="account-overlay-card">
       <header class="account-overlay-header">
-        <h2 class="account-overlay-title">Connection Status</h2>
+        <h2 class="account-overlay-title">Node Connection</h2>
         <button class="modal-close" type="button" data-close-connection-overlay aria-label="Close">×</button>
       </header>
       <div class="account-overlay-body">
         <section class="settings-group">
-          <p class="settings-group-label">Connection Status</p>
+          <p class="settings-group-label">Status</p>
           <div class="settings-list-card">
             <div class="settings-list-row settings-info-row">
               <span class="settings-row-copy"><strong>Status</strong></span>
               <span class="connection-status-value"><span class="connection-status-dot" data-connection-status-dot aria-hidden="true"></span><span data-connection-status-text>Starting…</span></span>
             </div>
             <div class="settings-list-row settings-info-row">
-              <span class="settings-row-copy"><strong>Primary RPC</strong><small data-connection-primary-endpoint>Not connected</small></span>
+              <span class="settings-row-copy"><strong>Connected Node</strong><small data-connection-primary-endpoint>Not connected</small></span>
             </div>
             <div class="settings-list-row settings-info-row">
-              <span class="settings-row-copy"><strong>Warm Standby</strong><small data-connection-standby-endpoint>Not connected</small></span>
+              <span class="settings-row-copy"><strong>Backup Node</strong><small data-connection-standby-endpoint>Not connected</small></span>
+              <span class="architecture-badge ready" data-connection-standby-badge hidden>Ready</span>
             </div>
             <div class="settings-list-row settings-info-row">
               <span class="settings-row-copy"><strong>Latency</strong></span>
               <span data-connection-latency>--</span>
-            </div>
-            <div class="settings-list-row settings-info-row">
-              <span class="settings-row-copy"><strong>Indexer</strong><small data-connection-indexer>--</small></span>
             </div>
             <div class="settings-list-row settings-info-row">
               <span class="settings-row-copy"><strong>Last Sync</strong></span>
@@ -1039,44 +1053,45 @@
         </section>
 
         <section class="settings-group">
-          <p class="settings-group-label">Pool Status</p>
-          <div class="settings-list-card">
-            <div class="connection-pool-stats">
-              <div class="connection-pool-stat"><span class="connection-pool-dot active" aria-hidden="true"></span><strong data-connection-pool-active>0</strong><small>Active</small></div>
-              <div class="connection-pool-stat"><span class="connection-pool-dot known" aria-hidden="true"></span><strong data-connection-pool-known>0</strong><small>Known</small></div>
-              <div class="connection-pool-stat"><span class="connection-pool-dot failovers" aria-hidden="true"></span><strong data-connection-pool-failovers>0</strong><small>Failovers</small></div>
+          <p class="settings-group-label">Node Selection</p>
+          <div class="node-mode-cards" data-node-mode-cards>
+            <div class="node-mode-card" role="button" tabindex="0" data-node-mode="auto">
+              <span class="node-mode-radio" aria-hidden="true"></span>
+              <span class="node-mode-copy">
+                <strong>Automatic</strong>
+                <small>KaChat picks a healthy public node and keeps a warm backup ready. If your node stops responding, it switches to a good one right away.</small>
+              </span>
             </div>
-            <div class="settings-list-row settings-info-row">
-              <span class="settings-row-copy"><strong>Pool Health</strong></span>
-              <span data-connection-pool-health>--</span>
+            <div class="node-mode-card" role="button" tabindex="0" data-node-mode="custom">
+              <span class="node-mode-radio" aria-hidden="true"></span>
+              <span class="node-mode-copy">
+                <strong>Custom Node</strong>
+                <small>Connect to your own Kaspa wRPC endpoint.</small>
+                <input class="node-mode-input" type="text" placeholder="wss://your-node:17110" autocomplete="off" spellcheck="false" data-custom-node-url disabled />
+              </span>
             </div>
+          </div>
+          <p class="field-error" data-node-mode-error hidden></p>
+          <div class="node-mode-actions">
+            <button type="button" class="primary-button" data-node-apply>Apply and Reconnect</button>
           </div>
         </section>
 
         <section class="settings-group">
           <p class="settings-group-label">Actions</p>
           <div class="settings-list-card">
-            <button class="settings-list-row" type="button" data-connection-reconnect><span class="settings-row-copy"><strong>Reconnect</strong></span></button>
-            <button class="settings-list-row" type="button" data-connection-refresh-standby><span class="settings-row-copy"><strong>Refresh Standby</strong></span></button>
-            <button class="settings-list-row danger-row" type="button" data-connection-clear-pool><span class="settings-row-copy"><strong>Clear Connection Pool</strong></span></button>
+            <button class="settings-list-row" type="button" data-connection-reconnect><span class="settings-row-copy"><strong>Reconnect</strong><small>Drop and re-establish the current connection.</small></span></button>
+            <button class="settings-list-row" type="button" data-connection-scan><span class="settings-row-copy"><strong>Scan for a Better Node</strong><small>Re-check nodes and switch to a fast, healthy one.</small></span></button>
           </div>
         </section>
 
         <section class="settings-group">
           <div class="settings-group-heading">
-            <p class="settings-group-label" style="margin:0;">Known Endpoints</p>
-            <span class="architecture-badge" data-connection-endpoints-count>0</span>
-          </div>
-          <div class="settings-list-card" data-connection-endpoints-list></div>
-          <p class="settings-group-footer">Tap an endpoint to copy host:port.</p>
-        </section>
-
-        <section class="settings-group">
-          <div class="settings-group-heading">
-            <p class="settings-group-label" style="margin:0;">Failover History</p>
+            <p class="settings-group-label" style="margin:0;">Recent Auto-Reconnects</p>
             <span class="architecture-badge" data-connection-failovers-count>0</span>
           </div>
           <div class="settings-list-card" data-connection-failovers-list></div>
+          <p class="settings-group-footer">Logged each time KaChat automatically moved you to a healthier node.</p>
         </section>
       </div>
     </div>
@@ -1383,6 +1398,72 @@
         <button class="primary-button" type="button" data-save-photo-quality>Save</button>
       </div>
     </section>
+  </div>
+
+  <!-- New Group: name + a checklist of contacts you can add (encrypted group chat). -->
+  <div class="modal-backdrop" data-group-create-modal hidden>
+    <section class="contact-modal group-create-modal" role="dialog" aria-modal="true" aria-label="New Group">
+      <div class="modal-header">
+        <div>
+          <p class="screen-kicker">Group Chats</p>
+          <h2 data-group-create-title>New Group</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-group-create aria-label="Close">×</button>
+      </div>
+      <input class="group-name-input" type="text" maxlength="40" placeholder="Group name" autocomplete="off" spellcheck="false" data-group-name-input />
+      <p class="field-hint" data-group-picker-hint>Add contacts to the group. You control the membership as the group admin.</p>
+      <div class="group-member-picker" data-group-member-picker></div>
+      <p class="field-error" data-group-create-error hidden></p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-group-create>Cancel</button>
+        <button class="primary-button" type="button" data-group-create-submit disabled>Create Group</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Group chat: standalone full-screen thread (mirrors the 1:1 conversation view,
+       but driven entirely by the group store so none of the 1:1 systems are touched). -->
+  <div class="group-chat-screen" data-group-chat-screen hidden role="dialog" aria-modal="true" aria-label="Group chat">
+    <div class="group-chat-inner">
+      <div class="conversation-header group-chat-header">
+        <button class="back-button" type="button" data-group-chat-back aria-label="Back to chats">‹</button>
+        <button class="conversation-identity group-chat-identity" type="button" data-open-group-manage aria-label="Group info">
+          <span class="conversation-avatar group-chat-avatar" aria-hidden="true" data-group-chat-avatar></span>
+          <span class="group-chat-heading">
+            <h1 data-group-chat-name>Group</h1>
+            <p class="conversation-bio group-chat-sub" data-group-chat-sub></p>
+          </span>
+        </button>
+      </div>
+      <div class="message-area group-message-area" data-group-message-area>
+        <div class="message-empty group-message-empty" data-group-message-empty hidden></div>
+      </div>
+      <div class="composer-shell group-composer-shell">
+        <p class="group-readonly-note" data-group-readonly-note hidden>You are no longer a member of this group.</p>
+        <form class="composer kachat-composer" data-group-composer>
+          <div class="composer-field-wrap">
+            <input class="composer-input" name="message" type="text" placeholder="Message" autocomplete="off" data-group-composer-input />
+            <button class="composer-send" type="submit" aria-label="Send message">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Group Info / manage: roster, plus admin controls (add/remove/rename) and leave/delete. -->
+  <div class="chatting-address-screen manage-address-screen group-manage-screen" data-group-manage-screen hidden role="dialog" aria-modal="true" aria-label="Group Info">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-group-manage-back aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Group Info</span>
+        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+      </header>
+      <div class="manage-address-body group-manage-body" data-group-manage-body></div>
+    </div>
   </div>
 
   <div class="modal-backdrop" data-kns-register-modal hidden>
@@ -2155,7 +2236,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=210"></script>
+  <script type="module" src="./ui/app.js?v=217"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

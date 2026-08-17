@@ -1,14 +1,15 @@
 import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
 import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
-import { getBalance, sendKaspa, estimateOnchainFee } from "./transactions.js";
+import { getBalance, sendKaspa, estimateOnchainFee, sendPayloadTransaction } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
 import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
 import { KASIA_PROTOCOL, KASIA_INTEGRATION_STATUS, buildCommMessage, buildEncryptedCommMessage, makeKasiaCommPayload, parseKasiaPayloadHex, decodePayload } from "./kasia-protocol.js";
-import { loadKasiaCipher, isKasiaCipherLoaded, decryptKasiaMessage, deriveKasiaAliases } from "./kasia-cipher.js";
+import { loadKasiaCipher, isKasiaCipherLoaded, encryptKasiaMessage, decryptKasiaMessage, deriveKasiaAliases } from "./kasia-cipher.js";
 import { requireKaspa, NETWORK_ID } from "./utils.js";
 import { getEndpoint } from "./endpoints.js";
+import { queryGroupMessages, queryGroupControlByRecipient, queryGroupControlBySender } from "./group-indexer.js";
 import {
   KNS_DEFAULT_MAINNET_URL,
   normalizeDomainName as knsNormalizeDomainName,
@@ -53,7 +54,11 @@ export class KaspaEngine {
     this.standbyConnectPromise = null;
     this.failoverPromise = null;
     this.rpcHeartbeatTimer = null;
-    this.rpcHeartbeatMs = 20000;
+    // Backstop poll that catches a silently-wedged node. The primary "node dropped"
+    // signal is now the subscription disconnect event (see scheduleImmediateFailover),
+    // so this can be relatively relaxed without hurting recovery speed.
+    this.rpcHeartbeatMs = 10000;
+    this.immediateFailoverTimer = null;
     this.connectionListeners = new Set();
     this.subscriptionListeners = new Set();
     this.walletActivityListeners = new Set();
@@ -172,6 +177,12 @@ export class KaspaEngine {
           this.emitWalletActivity(event);
         } else if (["disconnect", "utxo-proc-error", "error", "utxo-index-not-enabled"].includes(type)) {
           this.setSubscriptionState({ status: "error", lastEventType: type, lastEventAt: Date.now(), lastError: event?.data?.message || type });
+          // A dropped subscription socket is the earliest signal the node died, well
+          // before the periodic heartbeat would notice. Hop to the warm standby (or
+          // re-resolve a fresh node) right away instead of waiting up to a full poll.
+          if (type === "disconnect" || type === "utxo-proc-error" || type === "error") {
+            this.scheduleImmediateFailover(`Wallet subscription ${type}`);
+          }
         }
       });
       await processor.start();
@@ -223,6 +234,14 @@ export class KaspaEngine {
 
   async ensureStandby() {
     if (!this.kaspa || !this.rpc) return null;
+    // In strict custom-node mode there is no public backup by design: a warm standby
+    // would be a public node, which contradicts "use only my node". Failover in this
+    // mode just retries the custom node.
+    if (getEndpoint("trustedNode")) {
+      if (this.standbyRpc) { await disconnectRpc(this.standbyRpc); this.standbyRpc = null; }
+      this.setConnectionState({ standby: "unavailable", standbyEndpoint: "" });
+      return null;
+    }
     if (this.standbyRpc && await probeRpc(this.standbyRpc)) {
       this.setConnectionState({ standby: "ready", standbyEndpoint: this.standbyRpc.url || "", lastError: "" });
       return this.standbyRpc;
@@ -318,6 +337,51 @@ export class KaspaEngine {
     return this.kaspa;
   }
 
+  // Strict reachability check for a user-supplied wRPC endpoint. Connects DIRECTLY to
+  // the given URL (no resolver, no last-good, no fallback), confirms the node answers
+  // and is a synced mainnet node, then disconnects. Throws a clear error if the node
+  // can't be used, so the UI can tell the user their own node is down instead of
+  // silently connecting them to a public one.
+  async verifyNode(url, { timeoutMs = 8000 } = {}) {
+    this.requireSdk();
+    const endpoint = String(url || "").trim();
+    if (!/^wss?:\/\/.+/i.test(endpoint)) throw new Error("Enter a valid wRPC URL that starts with wss:// or ws://.");
+    const { RpcClient, Encoding, ConnectStrategy } = this.kaspa;
+    const rpc = new RpcClient({ url: endpoint, encoding: Encoding?.Borsh, networkId: NETWORK_ID });
+    const withTimeout = (promise, ms, label) => {
+      let timer;
+      const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out.`)), ms); });
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+    };
+    try {
+      // Single-shot connect: ConnectStrategy.Fallback returns on the FIRST failed attempt
+      // instead of retrying the socket forever, so a bad URL fails fast and cleanly (one
+      // WebSocket error in the console, not a storm).
+      await withTimeout(
+        rpc.connect({ blockAsyncConnect: true, strategy: ConnectStrategy?.Fallback ?? 1, timeoutDuration: timeoutMs }),
+        timeoutMs + 1500,
+        "Node connection",
+      );
+      const info = await withTimeout(rpc.getServerInfo(), 6000, "Node verification");
+      if (info?.isSynced === false) throw new Error("That node is reachable but not fully synced yet.");
+      const net = String(info?.networkId ?? "").toLowerCase();
+      if (net && !net.includes("mainnet")) throw new Error(`That node is on ${info.networkId}, not mainnet.`);
+      return { ok: true, url: rpc.url || endpoint };
+    } catch (error) {
+      // A missing wRPC port is the most common cause of a timeout: a bare wss://host
+      // resolves to :443, but Borsh wRPC usually listens on :17110. Add a hint when the
+      // URL carries no explicit port.
+      const message = String(error?.message || error || "");
+      const hasPort = /:\d{2,5}(\/|$)/.test(endpoint);
+      if (!hasPort && /timed out|failed|refused|closed|unreachable|connect/i.test(message)) {
+        throw new Error(`${message} If your node uses a specific wRPC port, include it, for example wss://host:17110.`);
+      }
+      throw new Error(message || "Could not reach that node.");
+    } finally {
+      try { await rpc.disconnect(); } catch {}
+    }
+  }
+
   async connect({ force = false } = {}) {
     this.requireSdk();
     if (!force && this.rpc && await probeRpc(this.rpc)) {
@@ -347,6 +411,10 @@ export class KaspaEngine {
       } catch (error) {
         this.rpc = null;
         this.setConnectionState({ primary: "error", failover: "failed", primaryEndpoint: "", lastError: error?.message || String(error) });
+        // Keep the heartbeat running even though this attempt failed, so its
+        // reconnect loop keeps retrying and recovers automatically once a healthy
+        // node is reachable (matters most for a strict custom node that is down).
+        this.startRpcHeartbeat();
         throw error;
       }
     })();
@@ -358,10 +426,43 @@ export class KaspaEngine {
     }
   }
 
+  // Fast-path failover triggered by a subscription drop event. Debounced (coalesces
+  // a burst of disconnect/error events) and probe-confirmed (so a transient blip
+  // while the node is actually fine doesn't needlessly switch nodes). This is what
+  // makes a dropped node reconnect to a healthy one right away rather than after the
+  // next heartbeat tick.
+  scheduleImmediateFailover(reason = "Node connection dropped") {
+    if (typeof window === "undefined") return;
+    if (this.failoverPromise || this.immediateFailoverTimer) return;
+    this.immediateFailoverTimer = window.setTimeout(async () => {
+      this.immediateFailoverTimer = null;
+      if (!this.rpc || this.failoverPromise) return;
+      // Confirm the primary is genuinely unreachable before switching.
+      let healthy = false;
+      try { healthy = await probeRpc(this.rpc); } catch { healthy = false; }
+      if (healthy) {
+        this.setConnectionState({ primary: "ready", primaryEndpoint: this.rpc?.url || "", lastError: "" });
+        return;
+      }
+      this.log(`Immediate failover: ${reason}`);
+      try { await this.handlePrimaryFailure(reason); }
+      catch (error) { this.log("Immediate failover failed:", error?.message || error); }
+    }, 400);
+  }
+
   startRpcHeartbeat() {
     if (this.rpcHeartbeatTimer || typeof window === "undefined") return;
     this.rpcHeartbeatTimer = window.setInterval(async () => {
-      if (!this.rpc) return;
+      if (this.failoverPromise) return; // a failover is already working the problem
+      if (!this.rpc) {
+        // Fully disconnected (e.g. a strict custom node that went down and had no public
+        // backup to promote). Keep trying to reconnect so we recover automatically the
+        // moment a healthy node is reachable again, instead of staying dark.
+        if (!this.address) return;
+        try { await this.connect({ force: true }); await this.rebuildWalletSubscription(); }
+        catch { /* still unreachable; retry on the next tick */ }
+        return;
+      }
       const [primaryHealthy, standbyHealthy] = await Promise.all([
         probeRpc(this.rpc),
         this.standbyRpc ? probeRpc(this.standbyRpc) : Promise.resolve(false),
@@ -419,6 +520,10 @@ export class KaspaEngine {
 
   async disconnect() {
     this.stopRpcHeartbeat();
+    if (this.immediateFailoverTimer && typeof window !== "undefined") {
+      window.clearTimeout(this.immediateFailoverTimer);
+      this.immediateFailoverTimer = null;
+    }
     await this.stopWalletSubscription();
     await disconnectRpc(this.rpc);
     await disconnectRpc(this.standbyRpc);
@@ -595,6 +700,67 @@ export class KaspaEngine {
   async decryptKasiaMessage(encryptedHex) {
     if (!this.privateKeyHex) throw new Error("Generate or import a private key first.");
     return decryptKasiaMessage(encryptedHex, this.privateKeyHex);
+  }
+
+  // --- Group chat adapters (thin wiring over the wallet, cipher, and indexer;
+  // the crypto/codec lives in group.js, orchestration/state in group-store.js). ---
+
+  // x-only (32-byte) Schnorr pubkey hex for a kaspa: address, used to derive a
+  // member's blinded group id and to address gctl control messages. The cipher
+  // WASM already needs this for ECIES, so we reuse its extractor and normalize a
+  // 33-byte compressed key down to x-only.
+  async xOnlyPubKeyForAddress(address) {
+    const cipher = await loadKasiaCipher();
+    if (typeof cipher.debug_address_to_pubkey !== "function") {
+      throw new Error("Kasia cipher runtime is missing address to pubkey support. Re-run npm run setup:cipher.");
+    }
+    let hex = String(cipher.debug_address_to_pubkey(String(address)) || "").trim().toLowerCase().replace(/^0x/, "");
+    if (hex.length === 66 && (hex.startsWith("02") || hex.startsWith("03"))) hex = hex.slice(2); // compressed to x-only
+    if (hex.length !== 64) throw new Error(`Unexpected pubkey length for ${address}.`);
+    return hex;
+  }
+
+  // Broadcasts a group payload string (ciph_msg:1:gcomm: or :gctl:) as a
+  // pay-to-self transaction with the string in the native payload field, the
+  // same self-stash mechanism 1:1 COMM messages use.
+  async sendGroupPayload(payloadString, { amountKas = KASIA_INTEGRATION_STATUS.defaultMessageAmountKas, feeKas = "0" } = {}) {
+    this.requireWallet();
+    await this.connect();
+    return sendPayloadTransaction({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      privateKey: this.privateKey,
+      sourceAddress: this.address,
+      destinationAddress: this.address,
+      amountKas,
+      feeKas,
+      payload: new TextEncoder().encode(String(payloadString)),
+      log: this.log,
+    });
+  }
+
+  // gctl control messages ride the existing 1:1 ECIES channel: encrypt the JSON
+  // to a member's address, decrypt an incoming one with our own key.
+  async encryptGroupControl(memberAddress, json) {
+    const { encryptedHex } = await encryptKasiaMessage(memberAddress, json);
+    return encryptedHex;
+  }
+  async decryptGroupControl(encryptedHex) {
+    this.requireWallet();
+    return decryptKasiaMessage(encryptedHex, this.privateKeyHex);
+  }
+
+  // Indexer scans (delegate to group-indexer, defaulting to the configured indexer).
+  async scanGroupMessages(blindedGroupIdHex, cursor = null, limit = 50) {
+    return queryGroupMessages({ indexerUrl: getEndpoint("kasiaIndexer"), blindedGroupIdHex, cursor, limit });
+  }
+  async scanGroupControlByRecipient(cursor = null, limit = 50) {
+    this.requireWallet();
+    return queryGroupControlByRecipient({ indexerUrl: getEndpoint("kasiaIndexer"), recipient: this.address, cursor, limit });
+  }
+  async scanGroupControlBySender(sender, cursor = null, limit = 50) {
+    return queryGroupControlBySender({ indexerUrl: getEndpoint("kasiaIndexer"), sender, cursor, limit });
   }
 
   kasiaProtocol() {

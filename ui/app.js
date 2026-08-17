@@ -1,4 +1,5 @@
 import { KaspaEngine } from "../engine/index.js";
+import { createGroupManager } from "../engine/group-store.js";
 import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount } from "./kaposts.js";
 import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling } from "./broadcasts.js";
 import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
@@ -1077,10 +1078,16 @@ const chatsListTabButtons = document.querySelectorAll("[data-chats-list-tab]");
 const chatsTabBadge = document.querySelector("[data-chats-tab-badge]");
 const groupsTabBadge = document.querySelector("[data-groups-tab-badge]");
 const chatSelectToggle = document.querySelector("[data-chat-select-toggle]");
+const chatSelectAll = document.querySelector("[data-chat-select-all]");
 const chatSelectionBar = document.querySelector("[data-chat-selection-bar]");
 let activeChatsListTab = "chats";
 let chatSelectionModeActive = false;
 const selectedChatConversationIds = new Set();
+// Group-chat manager state. Declared here (not in the group module at the end of the
+// file) because the boot-time renderChats path reaches getGroupManager before the tail
+// of the module has evaluated, and a `let` in the tail would be in its temporal dead zone.
+let groupManager = null;
+let groupManagerForAddress = null;
 const conversation = document.querySelector("[data-conversation]");
 const conversationName = document.querySelector("[data-conversation-name]");
 const conversationAddress = document.querySelector("[data-conversation-address]");
@@ -2732,6 +2739,8 @@ async function refreshAllConversations({ quiet = true } = {}) {
       try { added += await syncOneConversation(conversationEntry, { quiet }); }
       catch (error) { appendEngineLog(`Automatic message sync failed for ${conversationEntry.id}: ${error.message}`); }
     }
+    try { added += await syncGroupsNow(); }
+    catch (error) { appendEngineLog(`Group sync failed: ${error.message}`); }
     persistState();
     if (!activeConversationId) renderChats();
     return added;
@@ -2795,6 +2804,7 @@ const connectionOverlay = document.querySelector("[data-connection-overlay]");
 
 function openConnectionOverlay() {
   connectionOverlay.hidden = false;
+  selectedNodeMode = null; // re-sync the node-mode cards to the saved setting
   renderConnectionStatus();
 }
 
@@ -2815,18 +2825,105 @@ document.querySelector("[data-connection-reconnect]")?.addEventListener("click",
   finally { button.disabled = false; renderConnectionStatus(); }
 });
 
-document.querySelector("[data-connection-refresh-standby]")?.addEventListener("click", async (event) => {
+// "Scan for a Better Node": force a fresh primary (re-resolves in Automatic mode) and
+// warm a new standby, so the user can manually hop to a fast, healthy node.
+document.querySelector("[data-connection-scan]")?.addEventListener("click", async (event) => {
   const button = event.currentTarget;
+  const label = button.textContent;
   button.disabled = true;
-  try { await engine.ensureStandby?.(); }
-  finally { button.disabled = false; renderConnectionStatus(); }
+  button.textContent = "Scanning…";
+  try {
+    setStatus("Scanning for a healthy node…");
+    if (!engine.kaspa) await engine.loadWasm();
+    await engine.connect({ force: true });
+    await engine.ensureStandby?.();
+    await connectAndRefresh({ quiet: true });
+    showCopyToast("Reconnected to a healthy node");
+  } catch (error) {
+    setStatus("Scan failed");
+    showCopyToast(`Scan failed. ${error.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+    renderConnectionStatus();
+  }
 });
 
-document.querySelector("[data-connection-clear-pool]")?.addEventListener("click", () => {
-  if (!confirm("Clear the connection pool? This removes all recorded endpoints and failover history from this browser. Your active connection is not affected.")) return;
-  engine.clearNodeRegistry?.();
-  showCopyToast("Connection pool cleared");
-  renderConnectionStatus();
+// Node-selection cards: Automatic (resolver) vs Custom (a specific wRPC URL). The
+// selection is staged in the UI and only committed to the trustedNode endpoint on Apply.
+let selectedNodeMode = null;
+function currentSavedNodeMode() {
+  return getEndpointOverride("trustedNode").trim() ? "custom" : "auto";
+}
+function renderNodeModeCards() {
+  if (selectedNodeMode == null) selectedNodeMode = currentSavedNodeMode();
+  document.querySelectorAll("[data-node-mode]").forEach((card) => {
+    card.classList.toggle("selected", card.dataset.nodeMode === selectedNodeMode);
+  });
+  const input = document.querySelector("[data-custom-node-url]");
+  if (input) {
+    input.disabled = selectedNodeMode !== "custom";
+    if (document.activeElement !== input) input.value = getEndpointOverride("trustedNode") || "";
+  }
+}
+
+function selectNodeModeCard(card) {
+  if (!card) return;
+  selectedNodeMode = card.dataset.nodeMode;
+  renderNodeModeCards();
+  if (selectedNodeMode === "custom") document.querySelector("[data-custom-node-url]")?.focus();
+}
+document.querySelector("[data-node-mode-cards]")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-custom-node-url]")) return; // let the input handle its own clicks
+  selectNodeModeCard(event.target.closest("[data-node-mode]"));
+});
+document.querySelector("[data-node-mode-cards]")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const card = event.target.closest("[data-node-mode]");
+  if (!card || event.target.closest("[data-custom-node-url]")) return;
+  event.preventDefault();
+  selectNodeModeCard(card);
+});
+
+document.querySelector("[data-node-apply]")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const errorEl = document.querySelector("[data-node-mode-error]");
+  const input = document.querySelector("[data-custom-node-url]");
+  const mode = selectedNodeMode || currentSavedNodeMode();
+  let url = "";
+  if (mode === "custom") {
+    url = String(input?.value || "").trim();
+    if (!/^wss?:\/\/.+/i.test(url)) {
+      if (errorEl) { errorEl.textContent = "Enter a valid wRPC URL that starts with wss:// or ws://"; errorEl.hidden = false; }
+      return;
+    }
+  }
+  if (errorEl) errorEl.hidden = true;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = mode === "custom" ? "Checking your node…" : "Reconnecting…";
+  try {
+    if (!engine.kaspa) await engine.loadWasm();
+    if (mode === "custom") {
+      // Strict: confirm the user's node is reachable, synced, and on mainnet BEFORE we
+      // switch to it. If it fails we surface the error and leave the current node as-is,
+      // never silently falling back to a public one.
+      setStatus("Checking your node…");
+      await engine.verifyNode(url);
+    }
+    setEndpoint("trustedNode", url); // "" clears the override, returning to Automatic
+    setStatus(mode === "custom" ? "Connecting to your node…" : "Finding a healthy node…");
+    await engine.connect({ force: true });
+    await connectAndRefresh({ quiet: true });
+    showCopyToast(mode === "custom" ? "Connected to your node" : "Connected automatically");
+  } catch (error) {
+    if (errorEl) { errorEl.textContent = `Could not connect: ${error.message}`; errorEl.hidden = false; }
+    setStatus("Connection failed");
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+    renderConnectionStatus();
+  }
 });
 
 // Step 102/104 — 5-tab bottom-center navigation. Cold Storage/Portfolio/Swaps
@@ -6030,7 +6127,14 @@ function renderConnectionStatus() {
   if (primaryEl) primaryEl.textContent = connection.primaryEndpoint ? hostFromEndpoint(connection.primaryEndpoint) : (connection.primary === "connecting" ? "Connecting…" : "Not connected");
 
   const standbyEl = document.querySelector("[data-connection-standby-endpoint]");
-  if (standbyEl) standbyEl.textContent = connection.standbyEndpoint ? hostFromEndpoint(connection.standbyEndpoint) : (connection.standby === "connecting" ? "Connecting…" : "Not connected");
+  if (standbyEl) {
+    const customConfigured = Boolean(getEndpointOverride("trustedNode").trim());
+    standbyEl.textContent = connection.standbyEndpoint
+      ? hostFromEndpoint(connection.standbyEndpoint)
+      : customConfigured
+        ? "Not used with a custom node"
+        : (connection.standby === "connecting" ? "Preparing…" : "Not ready");
+  }
 
   const lastGoodRecord = (registry.endpoints || []).find((entry) => entry.endpoint === (connection.primaryEndpoint || registry.lastGoodEndpoint));
   const latencyEl = document.querySelector("[data-connection-latency]");
@@ -6042,94 +6146,15 @@ function renderConnectionStatus() {
     if (color) latencyEl.classList.add(color);
   }
 
-  const indexerEl = document.querySelector("[data-connection-indexer]");
-  if (indexerEl) indexerEl.textContent = indexerUrlInput?.value ? hostFromEndpoint(indexerUrlInput.value) : "--";
-
   const lastSyncEl = document.querySelector("[data-connection-last-sync]");
   if (lastSyncEl) lastSyncEl.textContent = subscription.status === "connecting" ? "In progress" : formatRelativeTime(subscription.updatedAt);
 
-  const activeCount = (primaryReady ? 1 : 0) + (standbyReady ? 1 : 0);
-  const activeEl = document.querySelector("[data-connection-pool-active]");
-  if (activeEl) activeEl.textContent = String(activeCount);
-  const knownEl = document.querySelector("[data-connection-pool-known]");
-  if (knownEl) knownEl.textContent = String(registry.endpointCount || 0);
-  const failoversEl = document.querySelector("[data-connection-pool-failovers]");
-  if (failoversEl) failoversEl.textContent = String((registry.successfulFailovers || 0) + (registry.failedFailovers || 0));
+  // Warm-standby readiness badge (the standby is what makes a drop recover instantly).
+  const standbyBadge = document.querySelector("[data-connection-standby-badge]");
+  if (standbyBadge) standbyBadge.hidden = !standbyReady;
 
-  const poolHealthEl = document.querySelector("[data-connection-pool-health]");
-  if (poolHealthEl) {
-    poolHealthEl.classList.remove("good", "warn", "bad");
-    let health = "Healthy";
-    let healthColor = "good";
-    if (connection.primary === "error") { health = "Failed"; healthColor = "bad"; }
-    else if (!primaryReady) { health = "Connecting"; healthColor = "warn"; }
-    else if (!standbyReady) { health = "Degraded"; healthColor = "warn"; }
-    poolHealthEl.textContent = health;
-    poolHealthEl.classList.add(healthColor);
-  }
-
-  const endpointsCountEl = document.querySelector("[data-connection-endpoints-count]");
-  if (endpointsCountEl) endpointsCountEl.textContent = String(registry.endpointCount || 0);
-
-  const endpointsList = document.querySelector("[data-connection-endpoints-list]");
-  if (endpointsList) {
-    endpointsList.replaceChildren();
-    if (!registry.endpoints?.length) {
-      const empty = document.createElement("div");
-      empty.className = "settings-list-row settings-info-row";
-      const copy = document.createElement("span");
-      copy.className = "settings-row-copy";
-      const small = document.createElement("small");
-      small.textContent = "No endpoints recorded yet.";
-      copy.appendChild(small);
-      empty.appendChild(copy);
-      endpointsList.appendChild(empty);
-    } else {
-      registry.endpoints.forEach((entry) => {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "settings-list-row connection-endpoint-row";
-
-        const copy = document.createElement("span");
-        copy.className = "settings-row-copy";
-        const strong = document.createElement("strong");
-        strong.className = "connection-endpoint-host";
-        strong.textContent = hostFromEndpoint(entry.endpoint);
-        const small = document.createElement("small");
-        const latencyColor = connectionLatencyColor(entry.averageLatencyMs);
-        let smallText = `${entry.successes || 0} ok · ${entry.failures || 0} failed`;
-        if (entry.averageLatencyMs) {
-          const latencySpan = document.createElement("span");
-          if (latencyColor) latencySpan.className = latencyColor;
-          latencySpan.textContent = `${entry.averageLatencyMs} ms`;
-          small.textContent = `${smallText} · `;
-          small.appendChild(latencySpan);
-          small.appendChild(document.createTextNode(` · ${formatRelativeTime(entry.lastSuccessAt || entry.lastFailureAt)}`));
-        } else {
-          small.textContent = `${smallText} · ${formatRelativeTime(entry.lastSuccessAt || entry.lastFailureAt)}`;
-        }
-        copy.appendChild(strong);
-        copy.appendChild(small);
-        row.appendChild(copy);
-
-        const isPrimary = entry.endpoint === connection.primaryEndpoint;
-        const isStandby = entry.endpoint === connection.standbyEndpoint;
-        const badgeText = isPrimary ? "Primary" : isStandby ? "Standby" : entry.endpoint === registry.lastGoodEndpoint ? "Last good" : "";
-        if (badgeText) {
-          const badge = document.createElement("span");
-          badge.className = "architecture-badge ready";
-          badge.textContent = badgeText;
-          row.appendChild(badge);
-        }
-
-        row.addEventListener("click", async () => {
-          await navigator.clipboard.writeText(entry.endpoint);
-          showCopyToast("Endpoint copied");
-        });
-        endpointsList.appendChild(row);
-      });
-    }
-  }
+  // Node-selection cards reflect the saved trustedNode override ("" = Automatic).
+  renderNodeModeCards();
 
   const failoversCountEl = document.querySelector("[data-connection-failovers-count]");
   if (failoversCountEl) failoversCountEl.textContent = String(registry.failovers?.length || 0);
@@ -6143,7 +6168,7 @@ function renderConnectionStatus() {
       const copy = document.createElement("span");
       copy.className = "settings-row-copy";
       const small = document.createElement("small");
-      small.textContent = "No failovers recorded yet.";
+      small.textContent = "No automatic reconnects yet.";
       copy.appendChild(small);
       empty.appendChild(copy);
       failoversList.appendChild(empty);
@@ -6154,7 +6179,7 @@ function renderConnectionStatus() {
         const copy = document.createElement("span");
         copy.className = "settings-row-copy";
         const strong = document.createElement("strong");
-        strong.textContent = `${event.success ? "✓" : "✗"} ${hostFromEndpoint(event.from) || "resolver"} → ${hostFromEndpoint(event.to) || "none"}`;
+        strong.textContent = `${event.success ? "✓" : "✗"} ${hostFromEndpoint(event.from) || "auto"} → ${hostFromEndpoint(event.to) || "none"}`;
         const small = document.createElement("small");
         small.textContent = event.error ? `${formatRelativeTime(event.at)} · ${event.error}` : formatRelativeTime(event.at);
         copy.appendChild(strong);
@@ -6838,8 +6863,29 @@ function updateChatsListTabBadges() {
     chatsTabBadge.textContent = totalUnread > 99 ? "99+" : String(totalUnread);
     chatsTabBadge.hidden = totalUnread <= 0;
   }
-  // Group Chats has no real backend yet, so its badge stays hidden at 0.
-  if (groupsTabBadge) groupsTabBadge.hidden = true;
+  // Group Chats badge reflects unread decoded group messages (see the group module).
+  if (groupsTabBadge) {
+    const groupUnread = typeof totalGroupUnread === "function" ? totalGroupUnread() : 0;
+    groupsTabBadge.textContent = groupUnread > 99 ? "99+" : String(groupUnread);
+    groupsTabBadge.hidden = groupUnread <= 0;
+  }
+}
+
+// The conversations currently shown in the chat list, honoring the active tab and
+// the search filter. Shared by renderChats and the Select All action so both agree.
+function visibleChatConversations() {
+  if (activeChatsListTab === "groups") return [];
+  const query = searchInput.value.trim().toLowerCase();
+  return sortedConversations().filter((conversationEntry) => {
+    const contact = contactForConversation(conversationEntry);
+    if (!contact) return false;
+    const preview = conversationPreview(conversationEntry);
+    return (
+      contact.name.toLowerCase().includes(query) ||
+      contact.address.toLowerCase().includes(query) ||
+      preview.toLowerCase().includes(query)
+    );
+  });
 }
 
 function renderChats() {
@@ -6853,22 +6899,14 @@ function renderChats() {
     if (emptyState) emptyState.hidden = true;
     chatList.hidden = true;
     chatList.innerHTML = "";
-    if (groupChatsPlaceholder) groupChatsPlaceholder.hidden = false;
+    setChatToolRowsForGroupsTab(true);
+    renderGroupList();
     return;
   }
   if (groupChatsPlaceholder) groupChatsPlaceholder.hidden = true;
+  setChatToolRowsForGroupsTab(false);
 
-  const query = searchInput.value.trim().toLowerCase();
-  const visibleConversations = sortedConversations().filter((conversationEntry) => {
-    const contact = contactForConversation(conversationEntry);
-    if (!contact) return false;
-    const preview = conversationPreview(conversationEntry);
-    return (
-      contact.name.toLowerCase().includes(query) ||
-      contact.address.toLowerCase().includes(query) ||
-      preview.toLowerCase().includes(query)
-    );
-  });
+  const visibleConversations = visibleChatConversations();
 
   if (state.conversations.length === 0) {
     emptyState.hidden = false;
@@ -7916,18 +7954,37 @@ function updateChatSelectionBar() {
   if (markRead) markRead.disabled = disabled;
   if (markUnread) markUnread.disabled = disabled;
   if (deleteButton) deleteButton.disabled = disabled;
+  if (chatSelectAll) {
+    const visible = visibleChatConversations();
+    const allSelected = visible.length > 0 && visible.every((entry) => selectedChatConversationIds.has(entry.id));
+    chatSelectAll.textContent = allSelected ? "Deselect All" : "Select All";
+    chatSelectAll.disabled = visible.length === 0;
+  }
 }
 
 function setChatSelectionMode(active) {
   chatSelectionModeActive = active;
   if (!active) selectedChatConversationIds.clear();
   if (chatSelectToggle) chatSelectToggle.textContent = active ? "Cancel" : "Select";
+  if (chatSelectAll) chatSelectAll.hidden = !active;
   if (appSidebar) appSidebar.classList.toggle("selecting-chats", active);
   updateChatSelectionBar();
   renderChats();
 }
 
 chatSelectToggle?.addEventListener("click", () => setChatSelectionMode(!chatSelectionModeActive));
+
+chatSelectAll?.addEventListener("click", () => {
+  if (!chatSelectionModeActive) return;
+  const visible = visibleChatConversations();
+  const allSelected = visible.length > 0 && visible.every((entry) => selectedChatConversationIds.has(entry.id));
+  for (const entry of visible) {
+    if (allSelected) selectedChatConversationIds.delete(entry.id);
+    else selectedChatConversationIds.add(entry.id);
+  }
+  renderChats();
+  updateChatSelectionBar();
+});
 
 chatsListTabButtons.forEach((button) => {
   button.addEventListener("click", () => {
@@ -11971,4 +12028,536 @@ queueMicrotask(async () => {
 
   setStatus(wasmReady ? "Services ready" : "Open Diagnostics for setup help");
   updateServiceSummary();
+});
+
+
+/* ============================================================================
+   GROUP CHAT (self-contained)
+   ---------------------------------------------------------------------------
+   Groups never enter state.conversations (that store drops any entry without a
+   contactId). Instead the roster/keys live in the GroupManager (engine layer,
+   localStorage kachat-groups-v1) and decoded messages live in their own store
+   here. The thread/list/manage UI reuses the message-bubble and chat-row CSS
+   but has its own render/send paths, so none of the 1:1 systems are touched.
+   ============================================================================ */
+
+let activeGroupId = null;
+const groupCreateSelected = new Set();
+let groupModalMode = "create"; // "create" | "add"
+let groupModalTargetId = null;
+
+// Lazily create (or recreate on wallet switch) the GroupManager bound to the engine.
+// (groupManager / groupManagerForAddress are declared near the top of the file so the
+// boot-time renderChats -> updateChatsListTabBadges path can reach this safely.)
+function getGroupManager() {
+  if (!engine.address || !engine.privateKeyHex) return null;
+  if (!groupManager || groupManagerForAddress !== engine.address) {
+    groupManager = createGroupManager(engine);
+    groupManagerForAddress = engine.address;
+  }
+  return groupManager;
+}
+
+// --- decoded-message store (per wallet, per group) ---
+const GROUP_MSG_KEY = "kachat-group-messages-v1";
+const GROUP_UNREAD_KEY = "kachat-group-unread-v1";
+
+function loadGroupMsgAll() { try { return JSON.parse(localStorage.getItem(GROUP_MSG_KEY) || "{}") || {}; } catch { return {}; } }
+function saveGroupMsgAll(all) { try { localStorage.setItem(GROUP_MSG_KEY, JSON.stringify(all)); } catch {} }
+function groupMessages(groupId) {
+  const all = loadGroupMsgAll();
+  const list = all?.[engine.address || ""]?.[groupId];
+  return Array.isArray(list) ? list : [];
+}
+function saveGroupMessages(groupId, list) {
+  const all = loadGroupMsgAll();
+  const wallet = engine.address || "";
+  if (!all[wallet]) all[wallet] = {};
+  all[wallet][groupId] = list;
+  saveGroupMsgAll(all);
+}
+// Returns true if this was a new message (deduped by msgIdHex, then txId, then id).
+function appendGroupMessage(groupId, message) {
+  const list = groupMessages(groupId);
+  const key = message.msgIdHex || message.txId || message.id;
+  if (key && list.some((m) => (m.msgIdHex || m.txId || m.id) === key)) return false;
+  list.push(message);
+  list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  saveGroupMessages(groupId, list);
+  return true;
+}
+
+function loadGroupUnreadAll() { try { return JSON.parse(localStorage.getItem(GROUP_UNREAD_KEY) || "{}") || {}; } catch { return {}; } }
+function groupUnreadFor(groupId) { const all = loadGroupUnreadAll(); return Number(all?.[engine.address || ""]?.[groupId] || 0); }
+function setGroupUnread(groupId, count) {
+  const all = loadGroupUnreadAll();
+  const wallet = engine.address || "";
+  if (!all[wallet]) all[wallet] = {};
+  all[wallet][groupId] = Math.max(0, count | 0);
+  try { localStorage.setItem(GROUP_UNREAD_KEY, JSON.stringify(all)); } catch {}
+}
+function totalGroupUnread() {
+  const mgr = getGroupManager();
+  if (!mgr) return 0;
+  return mgr.listGroups().reduce((sum, g) => sum + groupUnreadFor(g.groupId), 0);
+}
+
+// --- element refs ---
+const groupListEl = document.querySelector("[data-group-list]");
+const groupActionsRow = document.querySelector("[data-group-actions-row]");
+const chatSelectRow = document.querySelector(".chat-select-row");
+const groupCreateModal = document.querySelector("[data-group-create-modal]");
+const groupCreateTitle = document.querySelector("[data-group-create-title]");
+const groupNameInput = document.querySelector("[data-group-name-input]");
+const groupPickerHint = document.querySelector("[data-group-picker-hint]");
+const groupMemberPicker = document.querySelector("[data-group-member-picker]");
+const groupCreateError = document.querySelector("[data-group-create-error]");
+const groupCreateSubmit = document.querySelector("[data-group-create-submit]");
+const groupChatScreen = document.querySelector("[data-group-chat-screen]");
+const groupChatName = document.querySelector("[data-group-chat-name]");
+const groupChatSub = document.querySelector("[data-group-chat-sub]");
+const groupChatAvatar = document.querySelector("[data-group-chat-avatar]");
+const groupMessageArea = document.querySelector("[data-group-message-area]");
+const groupMessageEmpty = document.querySelector("[data-group-message-empty]");
+const groupComposer = document.querySelector("[data-group-composer]");
+const groupComposerInput = document.querySelector("[data-group-composer-input]");
+const groupReadonlyNote = document.querySelector("[data-group-readonly-note]");
+const groupManageScreen = document.querySelector("[data-group-manage-screen]");
+const groupManageBody = document.querySelector("[data-group-manage-body]");
+
+function setChatToolRowsForGroupsTab(isGroups) {
+  // Queries the DOM directly (rather than the module-tail consts) so this stays safe
+  // when renderChats runs during the synchronous boot, before those consts initialize.
+  const selectRow = document.querySelector(".chat-select-row");
+  const actionsRow = document.querySelector("[data-group-actions-row]");
+  const listEl = document.querySelector("[data-group-list]");
+  if (selectRow) selectRow.hidden = isGroups;
+  if (actionsRow) actionsRow.hidden = !isGroups;
+  if (!isGroups && listEl) listEl.hidden = true;
+}
+
+const GROUP_AVATAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M2.5 19.5c.6-3.9 3-6.3 6.5-6.3s5.9 2.4 6.5 6.3"/><path d="M16.3 6.2a3.2 3.2 0 1 1 1.9 5.8"/><path d="M15.8 13.3c2.9.4 4.7 2.3 5.2 5.4"/></svg>';
+function groupAvatarHtml() { return `<span class="group-avatar-fallback">${GROUP_AVATAR_SVG}</span>`; }
+
+function groupPreviewText(text) {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  return raw.length > 42 ? `${raw.slice(0, 41)}…` : raw;
+}
+function groupSenderLabel(address) {
+  if (address === engine.address) return "You";
+  const contact = (state.contacts || []).find((c) => c.address === address);
+  if (contact) return displayNameForAddress(contact);
+  return shortAddress(address);
+}
+function memberAvatarHtml(address, className = "chat-avatar") {
+  const contact = (state.contacts || []).find((c) => c.address === address);
+  if (contact) return avatarHtmlFor(contact, className);
+  if (address === engine.address) return selfAvatarHtml(className);
+  return `<span class="${className}">${escapeHtml(initialsFor(shortAddress(address)))}</span>`;
+}
+
+// --- sidebar group list ---
+function renderGroupList() {
+  const mgr = getGroupManager();
+  const groups = mgr ? mgr.listGroups() : [];
+  // groups-tab badge (base hides it by default; we drive it from group unread).
+  if (groupsTabBadge) {
+    const total = totalGroupUnread();
+    groupsTabBadge.textContent = total > 99 ? "99+" : String(total);
+    groupsTabBadge.hidden = total <= 0;
+  }
+  if (activeChatsListTab !== "groups") return;
+  if (!groups.length) {
+    if (groupChatsPlaceholder) groupChatsPlaceholder.hidden = false;
+    if (groupListEl) { groupListEl.hidden = true; groupListEl.innerHTML = ""; }
+    return;
+  }
+  if (groupChatsPlaceholder) groupChatsPlaceholder.hidden = true;
+  if (!groupListEl) return;
+  groupListEl.hidden = false;
+  groupListEl.innerHTML = groups.map((g) => {
+    const msgs = groupMessages(g.groupId);
+    const last = msgs[msgs.length - 1];
+    const preview = last
+      ? `${last.direction === "local" ? "You: " : ""}${groupPreviewText(last.text)}`
+      : `${g.members.length} member${g.members.length === 1 ? "" : "s"}`;
+    const time = last ? formatTime(last.createdAt) : "";
+    const unread = groupUnreadFor(g.groupId);
+    return `
+      <button class="chat-row group-row" type="button" data-group-open="${escapeHtml(g.groupId)}">
+        <span class="chat-row-time">${escapeHtml(time)}</span>
+        <span class="chat-avatar">${groupAvatarHtml()}</span>
+        <span class="chat-meta">
+          <strong>${escapeHtml(g.name || "Group")}</strong>
+          <span>${escapeHtml(preview)}</span>
+        </span>
+        ${unread > 0 ? `<b class="unread-badge">${unread > 99 ? "99+" : unread}</b>` : ``}
+      </button>`;
+  }).join("");
+}
+
+// --- group thread ---
+function openGroupChat(groupId) {
+  const mgr = getGroupManager();
+  const g = mgr && mgr.getGroup(groupId);
+  if (!g) return;
+  activeGroupId = groupId;
+  setGroupUnread(groupId, 0);
+  if (groupChatName) groupChatName.textContent = g.name || "Group";
+  if (groupChatSub) groupChatSub.textContent = `${g.members.length} member${g.members.length === 1 ? "" : "s"}`;
+  if (groupChatAvatar) groupChatAvatar.innerHTML = groupAvatarHtml();
+  const amMember = g.members.some((m) => m.address === engine.address);
+  if (groupReadonlyNote) groupReadonlyNote.hidden = amMember;
+  if (groupComposer) groupComposer.hidden = !amMember;
+  renderGroupMessages();
+  if (groupChatScreen) groupChatScreen.hidden = false;
+  window.setTimeout(() => groupComposerInput?.focus(), 0);
+  renderGroupList();
+}
+function closeGroupChat() {
+  activeGroupId = null;
+  if (groupChatScreen) groupChatScreen.hidden = true;
+  renderGroupList();
+}
+
+function renderGroupMessages() {
+  if (!activeGroupId || !groupMessageArea) return;
+  const msgs = groupMessages(activeGroupId);
+  groupMessageArea.innerHTML = "";
+  if (!msgs.length) {
+    if (groupMessageEmpty) {
+      groupMessageEmpty.hidden = false;
+      groupMessageEmpty.textContent = "No messages yet. Say hello to the group.";
+      groupMessageArea.appendChild(groupMessageEmpty);
+    }
+    return;
+  }
+  msgs.forEach((message, index) => {
+    const incoming = message.direction === "incoming";
+    const row = document.createElement("div");
+    row.className = `message-row ${incoming ? "incoming" : "local"}`;
+
+    const selector = document.createElement("span");
+    selector.className = "message-selector";
+    selector.setAttribute("aria-hidden", "true");
+
+    const avatarSlot = document.createElement("span");
+    avatarSlot.className = "message-avatar-slot";
+
+    const bubble = document.createElement("div");
+    bubble.className = `message-bubble ${incoming ? "incoming" : "local"}`;
+
+    if (incoming) {
+      const prev = msgs[index - 1];
+      const firstInRun = !prev || prev.senderAddress !== message.senderAddress || prev.direction !== message.direction;
+      if (firstInRun) {
+        const sender = document.createElement("p");
+        sender.className = "group-message-sender";
+        sender.textContent = groupSenderLabel(message.senderAddress);
+        bubble.appendChild(sender);
+      }
+      const next = msgs[index + 1];
+      const lastInRun = !next || next.senderAddress !== message.senderAddress || next.direction !== message.direction;
+      if (lastInRun) avatarSlot.innerHTML = memberAvatarHtml(message.senderAddress, "message-avatar");
+    } else {
+      avatarSlot.innerHTML = selfAvatarHtml("message-avatar");
+    }
+
+    const text = document.createElement("span");
+    text.className = "message-text";
+    const linkUrls = renderTextWithLinks(text, message.text);
+    bubble.appendChild(text);
+    const previewable = (linkUrls || []).find(isPreviewableUrl);
+    if (previewable) { const card = buildLinkPreviewCard(previewable); if (card) bubble.appendChild(card); }
+
+    row.append(selector, avatarSlot, bubble);
+    groupMessageArea.appendChild(row);
+  });
+  groupMessageArea.scrollTop = groupMessageArea.scrollHeight;
+}
+
+// --- create / add-member modal ---
+function eligibleGroupContacts(excludeAddresses = []) {
+  const exclude = new Set([engine.address, ...excludeAddresses].filter(Boolean));
+  return (state.contacts || []).filter((c) => c.address && !exclude.has(c.address));
+}
+function renderGroupMemberPicker(excludeAddresses = []) {
+  if (!groupMemberPicker) return;
+  const contacts = eligibleGroupContacts(excludeAddresses);
+  if (!contacts.length) {
+    groupMemberPicker.innerHTML = `<p class="group-picker-empty">No contacts to add yet. Start a 1:1 chat with someone first, then you can add them to a group.</p>`;
+    return;
+  }
+  groupMemberPicker.innerHTML = contacts.map((c) => {
+    const selected = groupCreateSelected.has(c.address);
+    return `
+      <button type="button" class="group-member-option${selected ? " selected" : ""}" data-group-member-toggle="${escapeHtml(c.address)}">
+        ${avatarHtmlFor(c, "chat-avatar")}
+        <span class="group-member-option-meta">
+          <strong>${escapeHtml(displayNameForAddress(c))}</strong>
+          <span>${escapeHtml(shortAddress(c.address))}</span>
+        </span>
+        <span class="group-member-check"><svg viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></svg></span>
+      </button>`;
+  }).join("");
+}
+function updateGroupCreateSubmit() {
+  if (!groupCreateSubmit) return;
+  if (groupModalMode === "add") {
+    groupCreateSubmit.disabled = groupCreateSelected.size < 1;
+  } else {
+    const name = String(groupNameInput?.value || "").trim();
+    groupCreateSubmit.disabled = !(name && groupCreateSelected.size >= 1);
+  }
+}
+function openGroupCreate() {
+  if (!getGroupManager()) { setStatus("Load a wallet before creating a group."); return; }
+  groupModalMode = "create";
+  groupModalTargetId = null;
+  groupCreateSelected.clear();
+  if (groupCreateTitle) groupCreateTitle.textContent = "New Group";
+  if (groupCreateSubmit) groupCreateSubmit.textContent = "Create Group";
+  if (groupNameInput) { groupNameInput.value = ""; groupNameInput.hidden = false; }
+  if (groupPickerHint) groupPickerHint.textContent = "Add contacts to the group. You control the membership as the group admin.";
+  if (groupCreateError) groupCreateError.hidden = true;
+  renderGroupMemberPicker();
+  updateGroupCreateSubmit();
+  if (groupCreateModal) groupCreateModal.hidden = false;
+  window.setTimeout(() => groupNameInput?.focus(), 0);
+}
+function openGroupAddMember(groupId) {
+  const mgr = getGroupManager();
+  const g = mgr && mgr.getGroup(groupId);
+  if (!g) return;
+  groupModalMode = "add";
+  groupModalTargetId = groupId;
+  groupCreateSelected.clear();
+  if (groupCreateTitle) groupCreateTitle.textContent = "Add Member";
+  if (groupCreateSubmit) groupCreateSubmit.textContent = "Add";
+  if (groupNameInput) { groupNameInput.value = ""; groupNameInput.hidden = true; }
+  if (groupPickerHint) groupPickerHint.textContent = "Adding a member issues a fresh group key to everyone.";
+  if (groupCreateError) groupCreateError.hidden = true;
+  renderGroupMemberPicker(g.members.map((m) => m.address));
+  updateGroupCreateSubmit();
+  if (groupCreateModal) groupCreateModal.hidden = false;
+}
+function closeGroupCreate() { if (groupCreateModal) groupCreateModal.hidden = true; }
+
+// --- manage / group info ---
+function openGroupManage(groupId) {
+  const mgr = getGroupManager();
+  const g = mgr && mgr.getGroup(groupId);
+  if (!g || !groupManageBody) return;
+  const isAdmin = Boolean(g.isAdmin);
+  const memberRows = g.members.map((m) => {
+    const canRemove = isAdmin && m.address !== g.adminAddress;
+    return `
+      <div class="group-member-line">
+        ${memberAvatarHtml(m.address, "chat-avatar")}
+        <span class="group-member-line-meta">
+          <strong>${escapeHtml(groupSenderLabel(m.address))}</strong>
+          <span>${escapeHtml(shortAddress(m.address))}</span>
+        </span>
+        ${m.isAdmin ? `<span class="group-member-admin-badge">Admin</span>` : ``}
+        ${canRemove ? `<button type="button" class="group-member-remove" data-group-remove-member="${escapeHtml(m.address)}">Remove</button>` : ``}
+      </div>`;
+  }).join("");
+  const nameSection = isAdmin
+    ? `<div class="group-manage-name-row"><input class="group-name-input" type="text" maxlength="40" value="${escapeHtml(g.name || "")}" data-group-rename-input /><button type="button" class="secondary-button" data-group-rename-save>Save</button></div>`
+    : `<div class="group-member-line"><span class="group-member-line-meta"><strong>${escapeHtml(g.name || "Group")}</strong></span></div>`;
+  groupManageBody.innerHTML = `
+    <div class="group-manage-section">
+      <p class="group-manage-section-title">Name</p>
+      ${nameSection}
+    </div>
+    <div class="group-manage-section">
+      <p class="group-manage-section-title">${g.members.length} member${g.members.length === 1 ? "" : "s"}</p>
+      ${memberRows}
+      ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-add-member><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add Member</button>` : ``}
+    </div>
+    <div class="group-manage-section">
+      ${isAdmin
+        ? `<button type="button" class="group-manage-danger" data-group-delete>Delete Group</button>`
+        : `<button type="button" class="group-manage-danger" data-group-leave>Leave Group</button>`}
+    </div>`;
+  if (groupManageScreen) groupManageScreen.hidden = false;
+}
+function closeGroupManage() { if (groupManageScreen) groupManageScreen.hidden = true; }
+
+// --- background sync: pull invites + new messages into the store ---
+async function syncGroupsNow() {
+  const mgr = getGroupManager();
+  if (!mgr || !engine.isKasiaCipherLoaded?.()) return 0;
+  let result;
+  try { result = await mgr.syncGroups(); } catch { return 0; }
+  let changed = 0;
+  for (const decoded of result.messages || []) {
+    const direction = decoded.senderAddress === engine.address ? "local" : "incoming";
+    const bt = Number(decoded.blockTime || 0);
+    const createdAt = bt > 1e12 ? bt : (bt > 0 ? bt * 1000 : Date.now());
+    const added = appendGroupMessage(decoded.groupId, {
+      id: nowId(),
+      senderAddress: decoded.senderAddress,
+      direction,
+      text: decoded.plaintext,
+      createdAt,
+      txId: decoded.txId || null,
+      msgIdHex: decoded.msgIdHex || null,
+      senderIsAdmin: Boolean(decoded.senderIsAdmin),
+    });
+    if (added) {
+      changed++;
+      if (direction === "incoming" && decoded.groupId !== activeGroupId) {
+        setGroupUnread(decoded.groupId, groupUnreadFor(decoded.groupId) + 1);
+      }
+    }
+  }
+  if ((result.controls || []).length) changed++;
+  if (changed) {
+    if (activeGroupId) renderGroupMessages();
+    renderGroupList();
+  }
+  return changed;
+}
+
+// --- events ---
+document.querySelectorAll("[data-new-group]").forEach((btn) => btn.addEventListener("click", openGroupCreate));
+document.querySelector("[data-close-group-create]")?.addEventListener("click", closeGroupCreate);
+groupCreateModal?.addEventListener("click", (event) => { if (event.target === groupCreateModal) closeGroupCreate(); });
+groupNameInput?.addEventListener("input", updateGroupCreateSubmit);
+groupMemberPicker?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-group-member-toggle]");
+  if (!btn) return;
+  const address = btn.dataset.groupMemberToggle;
+  if (groupCreateSelected.has(address)) groupCreateSelected.delete(address);
+  else groupCreateSelected.add(address);
+  btn.classList.toggle("selected", groupCreateSelected.has(address));
+  updateGroupCreateSubmit();
+});
+groupCreateSubmit?.addEventListener("click", async () => {
+  const mgr = getGroupManager();
+  if (!mgr) { setStatus("Load a wallet first."); return; }
+  const members = [...groupCreateSelected];
+  if (!members.length) return;
+  groupCreateSubmit.disabled = true;
+  if (groupCreateError) groupCreateError.hidden = true;
+  try {
+    if (groupModalMode === "add" && groupModalTargetId) {
+      setStatus("Adding member(s) to the group…");
+      for (const address of members) await mgr.addMember(groupModalTargetId, address);
+      closeGroupCreate();
+      if (activeGroupId === groupModalTargetId) { openGroupChat(groupModalTargetId); openGroupManage(groupModalTargetId); }
+      renderGroupList();
+      setStatus("Group updated");
+    } else {
+      const name = String(groupNameInput?.value || "").trim();
+      if (!name) { updateGroupCreateSubmit(); return; }
+      setStatus("Creating group and inviting members…");
+      const record = await mgr.createGroup({ name, memberAddresses: members });
+      closeGroupCreate();
+      renderGroupList();
+      setStatus("Group created");
+      openGroupChat(record.groupId);
+    }
+  } catch (error) {
+    if (groupCreateError) { groupCreateError.textContent = error.message; groupCreateError.hidden = false; }
+    setStatus(`Group action failed: ${error.message}`);
+  } finally {
+    updateGroupCreateSubmit();
+  }
+});
+
+groupListEl?.addEventListener("click", (event) => {
+  const row = event.target.closest("[data-group-open]");
+  if (!row) return;
+  openGroupChat(row.dataset.groupOpen);
+});
+document.querySelector("[data-group-chat-back]")?.addEventListener("click", closeGroupChat);
+document.querySelector("[data-open-group-manage]")?.addEventListener("click", () => { if (activeGroupId) openGroupManage(activeGroupId); });
+document.querySelector("[data-group-manage-back]")?.addEventListener("click", closeGroupManage);
+
+groupComposer?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!activeGroupId) return;
+  const mgr = getGroupManager();
+  if (!mgr) return;
+  const text = String(groupComposerInput?.value || "").trim();
+  if (!text) return;
+  groupComposerInput.value = "";
+  const createdAt = Date.now();
+  try {
+    setStatus("Sending group message…");
+    const res = await mgr.sendGroupMessage(activeGroupId, text);
+    appendGroupMessage(activeGroupId, {
+      id: nowId(),
+      senderAddress: engine.address,
+      direction: "local",
+      text,
+      createdAt,
+      txId: res?.txid || null,
+      msgIdHex: res?.msgIdHex || null,
+      senderIsAdmin: Boolean(mgr.getGroup(activeGroupId)?.isAdmin),
+    });
+    renderGroupMessages();
+    renderGroupList();
+    setStatus("Group message sent");
+  } catch (error) {
+    groupComposerInput.value = text; // don't lose the draft on failure
+    setStatus(`Group send failed: ${error.message}`);
+    showCopyToast(`Group send failed. ${error.message}`);
+  }
+});
+
+groupManageBody?.addEventListener("click", async (event) => {
+  const target = event.target.closest("[data-group-remove-member],[data-group-add-member],[data-group-rename-save],[data-group-delete],[data-group-leave]");
+  if (!target || !activeGroupId) return;
+  const mgr = getGroupManager();
+  if (!mgr) return;
+  try {
+    if (target.dataset.groupRemoveMember) {
+      if (!confirm("Remove this member? A fresh group key is issued to everyone who stays.")) return;
+      setStatus("Removing member…");
+      await mgr.removeMember(activeGroupId, target.dataset.groupRemoveMember);
+      openGroupManage(activeGroupId);
+      openGroupChat(activeGroupId);
+      setStatus("Member removed");
+    } else if (target.dataset.groupAddMember != null) {
+      openGroupAddMember(activeGroupId);
+    } else if (target.dataset.groupRenameSave != null) {
+      const input = groupManageBody.querySelector("[data-group-rename-input]");
+      const name = String(input?.value || "").trim();
+      if (!name) return;
+      setStatus("Renaming group…");
+      await mgr.renameGroup(activeGroupId, name);
+      openGroupManage(activeGroupId);
+      openGroupChat(activeGroupId);
+      setStatus("Group renamed");
+    } else if (target.dataset.groupDelete != null) {
+      if (!confirm("Delete this group from this device? Members you invited keep their copy.")) return;
+      const id = activeGroupId;
+      closeGroupManage();
+      closeGroupChat();
+      mgr.deleteGroup(id);
+      renderGroupList();
+      setStatus("Group deleted");
+    } else if (target.dataset.groupLeave != null) {
+      if (!confirm("Leave this group? You will stop receiving its messages on this device.")) return;
+      const id = activeGroupId;
+      closeGroupManage();
+      closeGroupChat();
+      mgr.deleteGroup(id);
+      renderGroupList();
+      setStatus("Left group");
+    }
+  } catch (error) {
+    setStatus(`Group action failed: ${error.message}`);
+    showCopyToast(`Group action failed. ${error.message}`);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (groupManageScreen && !groupManageScreen.hidden) { closeGroupManage(); return; }
+  if (groupCreateModal && !groupCreateModal.hidden) { closeGroupCreate(); return; }
+  if (groupChatScreen && !groupChatScreen.hidden) { closeGroupChat(); }
 });

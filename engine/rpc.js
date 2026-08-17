@@ -134,13 +134,20 @@ async function connectCandidate(kaspa, {
   log = () => {},
   role = "primary",
   excludedEndpoints = [],
+  singleShot = false,
 } = {}) {
   const rpc = makeRpc(kaspa, { endpoint });
   const source = endpoint ? `${role} endpoint` : `Rusty Kaspa resolver for ${role}`;
   const startedAt = globalThis.performance?.now?.() ?? now();
   log(`Connecting ${role} through ${source}${endpoint ? `: ${endpoint}` : ""}...`);
+  // Single-shot (ConnectStrategy.Fallback) makes connect() reject on the first failed
+  // attempt instead of retrying the socket in a tight loop. Used for a strict custom
+  // node so a down node fails fast and quietly rather than spamming reconnect attempts.
+  const connectArgs = singleShot
+    ? { blockAsyncConnect: true, strategy: kaspa.ConnectStrategy?.Fallback ?? 1, timeoutDuration: timeoutMs }
+    : undefined;
   try {
-    await withTimeout(rpc.connect(), timeoutMs, source);
+    await withTimeout(rpc.connect(connectArgs), timeoutMs, source);
     const info = await withTimeout(rpc.getServerInfo(), 6000, `${role} RPC server verification`);
     if (info?.isSynced === false) throw new Error(`Connected ${role} node is not synced.`);
     const activeEndpoint = rpc.url || endpoint || "resolver-selected RPC";
@@ -188,20 +195,19 @@ export function getNodeRegistrySnapshot() {
 export async function createRpc(kaspa, log = () => {}) {
   const registry = loadRegistry();
 
-  // A user-configured trusted node (Settings > Connectivity) is tried first;
-  // failures fall through to the last-good endpoint and then the resolver.
+  // A user-configured custom node (Node Connection > Custom) is authoritative and
+  // STRICT: connect only to it. If it is unreachable we throw rather than silently
+  // falling back to a public node, so the user always knows when their own node is
+  // down. Automatic mode (no trusted node) uses last-good + the resolver pool below.
   const trustedNode = getEndpoint("trustedNode");
   if (trustedNode) {
-    try {
-      return await connectCandidate(kaspa, {
-        endpoint: trustedNode,
-        timeoutMs: DIRECT_CONNECT_TIMEOUT_MS,
-        log,
-        role: "primary",
-      });
-    } catch (error) {
-      log(`Configured trusted node (${trustedNode}) failed: ${error?.message || error}`);
-    }
+    return connectCandidate(kaspa, {
+      endpoint: trustedNode,
+      timeoutMs: DIRECT_CONNECT_TIMEOUT_MS,
+      log,
+      role: "primary",
+      singleShot: true,
+    });
   }
 
   const lastGoodEndpoint = registry.lastGoodEndpoint;

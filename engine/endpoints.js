@@ -12,13 +12,22 @@ const ENDPOINTS_KEY = "kachat-endpoints-v1";
 
 export const ENDPOINT_DEFAULTS = Object.freeze({
   kaspaApi: "https://api.kaspa.org",
-  kasiaIndexer: "https://indexer.kasia.fyi",
+  // Group chat lives only on the .wtf indexer; .fyi never got the group-chat REST
+  // endpoints (/group-messages, /group-control) and 404s on them. Matches iOS's
+  // AppSettings.defaultIndexerURL.
+  kasiaIndexer: "https://indexer.kasia.wtf",
   kapostIndexer: "https://kachat.duckdns.org",
   broadcastIndexer: "https://kachat.duckdns.org",
   pushIndexer: "https://indexer.kasia.fyi",
   knsApi: "https://api.knsdomains.org/mainnet/api/v1",
   trustedNode: "",
 });
+
+// The old shipped indexer default, retired because it lacks the group-chat REST
+// endpoints. Anyone still pinned to it via a stored override is migrated to the new
+// default once, so existing installs gain group chat (mirrors iOS's one-time
+// legacyDefaultIndexerURL migration in SettingsViewModel.load).
+const LEGACY_INDEXER_URL = "https://indexer.kasia.fyi";
 
 function loadStored() {
   try {
@@ -28,6 +37,17 @@ function loadStored() {
 }
 
 let overrides = loadStored();
+
+// One-time migration: drop a kasiaIndexer override that still points at the legacy
+// default so it falls through to the new group-capable default. A user who set a
+// genuinely custom indexer keeps it.
+(function migrateLegacyIndexer() {
+  const current = overrides.kasiaIndexer;
+  if (current != null && String(current).trim().replace(/\/+$/, "") === LEGACY_INDEXER_URL) {
+    delete overrides.kasiaIndexer;
+    try { localStorage.setItem(ENDPOINTS_KEY, JSON.stringify(overrides)); } catch {}
+  }
+})();
 
 function persist() {
   try { localStorage.setItem(ENDPOINTS_KEY, JSON.stringify(overrides)); } catch {}
