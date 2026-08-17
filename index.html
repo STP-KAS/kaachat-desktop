@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=235" />
+  <link rel="stylesheet" href="./ui/styles.css?v=237" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -164,7 +164,7 @@
         </div>
       </aside>
 
-      <button class="new-chat-fab js-open-contact" type="button" data-new-chat-fab aria-label="Create chat" title="Create chat">
+      <button class="new-chat-fab" type="button" data-new-chat-fab aria-label="Create chat" title="Create chat">
         <svg class="person-plus-icon" viewBox="0 0 32 32" focusable="false" aria-hidden="true">
           <circle cx="12" cy="8.5" r="5.25"/>
           <path d="M3.5 24.5c.7-5.4 4-8.7 8.5-8.7 2.3 0 4.3.8 5.8 2.3"/>
@@ -1412,6 +1412,7 @@
       </div>
       <input class="group-name-input" type="text" maxlength="40" placeholder="Group name" autocomplete="off" spellcheck="false" data-group-name-input />
       <p class="field-hint" data-group-picker-hint>Add contacts to the group. You control the membership as the group admin.</p>
+      <input class="group-member-search" type="search" placeholder="Search contacts" autocomplete="off" data-group-member-search />
       <div class="group-member-picker" data-group-member-picker></div>
       <p class="field-error" data-group-create-error hidden></p>
       <div class="modal-actions">
@@ -2161,10 +2162,17 @@
       </header>
       <div class="account-overlay-body">
         <div class="profile-card chat-info-header-card">
-          <span class="chat-info-avatar" data-chat-info-avatar aria-hidden="true">
-            <span data-chat-info-avatar-initials></span>
-            <img class="chat-info-avatar-image" data-chat-info-avatar-image alt="" hidden />
-          </span>
+          <button type="button" class="chat-info-avatar-button" data-chat-info-photo-pick aria-label="Set contact photo">
+            <span class="chat-info-avatar" data-chat-info-avatar aria-hidden="true">
+              <span data-chat-info-avatar-initials></span>
+              <img class="chat-info-avatar-image" data-chat-info-avatar-image alt="" hidden />
+            </span>
+            <span class="chat-info-avatar-edit" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L16 8h4v11H4z"/><circle cx="12" cy="13" r="3.3"/></svg>
+            </span>
+          </button>
+          <input type="file" accept="image/*" hidden data-chat-info-photo-input />
+          <button type="button" class="chat-info-remove-photo" data-chat-info-remove-photo hidden>Remove Photo</button>
           <input class="chat-info-name-input" data-chat-info-name-input type="text" placeholder="Name" maxlength="48" autocomplete="off" aria-label="Contact name" />
           <span class="chat-info-address-caption" data-chat-info-address-caption></span>
           <div class="chat-info-profile-extra" data-chat-info-profile-section hidden>
@@ -2236,7 +2244,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=217"></script>
+  <script type="module" src="./ui/app.js?v=221"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

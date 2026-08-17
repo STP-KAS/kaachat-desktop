@@ -223,6 +223,11 @@ let balanceRefreshTimer = null;
 let messageRefreshTimer = null;
 let balanceRefreshInFlight = false;
 let messageRefreshInFlight = false;
+// True until the first full message sweep after a wallet is loaded, switched, or a
+// backup is restored. That first sweep BACKFILLS existing history from the indexer, so
+// its messages are not "new" arrivals: we add them silently and read (no notification,
+// no unread badge). Later sweeps are live and notify/mark-unread normally.
+let pendingInitialCatchUp = true;
 let walletActivityRefreshTimer = null;
 let activeMessageActionId = null;
 let messageSelectionMode = false;
@@ -1112,6 +1117,8 @@ function updateConversationBio(contact) {
 // for the sidebar row template (which re-renders via innerHTML, not live DOM
 // nodes it can update in place).
 function avatarHtmlFor(contact, className = "chat-avatar") {
+  // A user-assigned photo wins over the live KNS avatar, which wins over initials.
+  if (contact?.photo) return `<span class="${className}"><img src="${escapeHtml(contact.photo)}" alt="" /></span>`;
   const avatarUrl = engine.peekKnsAddressProfile?.(contact.address)?.profile?.avatarUrl;
   if (avatarUrl) return `<span class="${className}"><img src="${escapeHtml(avatarUrl)}" alt="" /></span>`;
   return `<span class="${className}">${escapeHtml(initialsFor(contact.name))}</span>`;
@@ -1131,9 +1138,10 @@ function selfAvatarHtml(className = "chat-avatar") {
 function updateAvatarElement(initialsEl, imageEl, contact) {
   if (initialsEl) initialsEl.textContent = initialsFor(contact.name);
   if (!imageEl) return;
-  const avatarUrl = engine.peekKnsAddressProfile?.(contact.address)?.profile?.avatarUrl;
-  if (avatarUrl) {
-    imageEl.src = avatarUrl;
+  // User-assigned photo takes priority over the live KNS avatar.
+  const src = contact?.photo || engine.peekKnsAddressProfile?.(contact.address)?.profile?.avatarUrl;
+  if (src) {
+    imageEl.src = src;
     imageEl.hidden = false;
   } else {
     imageEl.hidden = true;
@@ -1142,6 +1150,9 @@ function updateAvatarElement(initialsEl, imageEl, contact) {
 }
 const chatInfoOverlay = document.querySelector("[data-chat-info-overlay]");
 const chatInfoAvatar = document.querySelector("[data-chat-info-avatar]");
+const chatInfoPhotoPick = document.querySelector("[data-chat-info-photo-pick]");
+const chatInfoPhotoInput = document.querySelector("[data-chat-info-photo-input]");
+const chatInfoRemovePhoto = document.querySelector("[data-chat-info-remove-photo]");
 const chatInfoAvatarInitials = document.querySelector("[data-chat-info-avatar-initials]");
 const chatInfoAvatarImage = document.querySelector("[data-chat-info-avatar-image]");
 const chatInfoNameInput = document.querySelector("[data-chat-info-name-input]");
@@ -1248,6 +1259,7 @@ function maybeNotifyIncoming(conversationEntry, contact, message) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   if (getContactNotify(contact?.address) === "muted") return;
   if (parseReactionEnvelope(message.text)) return; // reactions aren't standalone messages
+  if (parsePaymentPoolEnvelope(message.text)) return; // fresh-address pool control envelopes are silent (matches iOS)
   // Don't notify for the conversation you're already looking at in a focused window.
   if (activeConversationId === conversationEntry.id && !document.hidden) return;
   const title = displayNameForAddress(contact) || contact?.name || shortAddress(contact?.address || "");
@@ -1598,6 +1610,9 @@ function normalizeContact(contact) {
     nameIsCustom: Boolean(contact?.nameIsCustom),
     address: String(contact?.address || contact?.kaspaAddress || "").trim(),
     avatar: String(contact?.avatar || initialsFor(name)),
+    // A user-assigned photo (compressed data URL) for contacts without a KNS avatar.
+    // Lives on the contact, so it rides along in the desktopState backup automatically.
+    photo: String(contact?.photo || ""),
     createdAt,
     updatedAt: Number(contact?.updatedAt || createdAt),
     relationshipState: String(contact?.relationshipState || "legacy-manual"),
@@ -2005,6 +2020,9 @@ function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
   }
 
   setActiveConversationId(null);
+  // A freshly activated wallet re-syncs its whole history from the indexer; treat that
+  // next sweep as a silent, already-read backfill rather than a burst of new messages.
+  pendingInitialCatchUp = true;
   state = buildFullyRestoredState();
   refreshSubscriptionAddresses({ restart: false });
   // Per-account Chats Payment Privacy: switching accounts applies that
@@ -2574,7 +2592,7 @@ async function refreshBalanceOnly({ quiet = true } = {}) {
   }
 }
 
-async function syncOneConversation(conversationEntry, { quiet = true } = {}) {
+async function syncOneConversation(conversationEntry, { quiet = true, catchUp = false } = {}) {
   const contact = contactForConversation(conversationEntry);
   if (!contact || !engine.address || !engine.isKasiaCipherLoaded?.()) return 0;
   const knownTxids = (conversationEntry.messages || []).map((message) => message.txid).filter(Boolean);
@@ -2590,9 +2608,14 @@ async function syncOneConversation(conversationEntry, { quiet = true } = {}) {
     if ((conversationEntry.messages || []).some((m) => m.txid && m.txid === incoming.txid)) continue;
     const message = createMessage({ ...incoming, conversationId: conversationEntry.id, contactId: contact.id });
     applyMessagePatch(message, incoming);
-    appendIncomingOrReactionMessage(conversationEntry, message);
-    maybeNotifyIncoming(conversationEntry, contact, message);
-    added += 1;
+    // Only a real, visible bubble notifies and counts as unread. Reactions and the
+    // fresh-address payment-pool control envelopes are swallowed (return null).
+    const visible = appendIncomingOrReactionMessage(conversationEntry, message);
+    if (visible) {
+      // Backfill (restore / first sweep) arrives silently; only live messages notify.
+      if (!catchUp) maybeNotifyIncoming(conversationEntry, contact, message);
+      added += 1;
+    }
   }
   try {
     const paymentResult = await engine.syncIncomingPayments({
@@ -2606,8 +2629,7 @@ async function syncOneConversation(conversationEntry, { quiet = true } = {}) {
       if ((conversationEntry.messages || []).some((message) => message.txid && message.txid === incoming.txid)) continue;
       const message = createMessage({ ...incoming, conversationId: conversationEntry.id, contactId: contact.id });
       applyMessagePatch(message, incoming);
-      appendIncomingOrReactionMessage(conversationEntry, message);
-      added += 1;
+      if (appendIncomingOrReactionMessage(conversationEntry, message)) added += 1;
     }
   } catch (error) {
     appendEngineLog(`Payment sync failed for ${contact.name}: ${error.message}`);
@@ -2623,7 +2645,8 @@ async function syncOneConversation(conversationEntry, { quiet = true } = {}) {
     lastNote: result.note || "Automatic Kasia sync complete.",
     scannedCount: Number(result.scannedCount || 0), decryptFailures: Number(result.decryptFailures || 0), indexerUrl,
   };
-  if (added && activeConversationId !== conversationEntry.id) conversationEntry.unreadCount = Number(conversationEntry.unreadCount || 0) + added;
+  // Backfill (restore / first sweep) is added as read; only live messages bump unread.
+  if (!catchUp && added && activeConversationId !== conversationEntry.id) conversationEntry.unreadCount = Number(conversationEntry.unreadCount || 0) + added;
   if ((added || paymentStatusChanged) && activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
   if (!quiet && added) setStatus(`${added} new message${added === 1 ? "" : "s"}`);
   return added;
@@ -2726,6 +2749,9 @@ async function syncIncomingHandshakeRequests({ quiet = true } = {}) {
 async function refreshAllConversations({ quiet = true } = {}) {
   if (messageRefreshInFlight || !engine.address || !engine.isKasiaCipherLoaded?.()) return 0;
   messageRefreshInFlight = true;
+  // The first real sweep after a load/switch/restore is a history backfill, not live
+  // traffic — suppress its notifications and unread badges (see pendingInitialCatchUp).
+  const catchUp = pendingInitialCatchUp;
   let added = 0;
   try {
     try { added += await syncIncomingHandshakeRequests({ quiet }); }
@@ -2736,7 +2762,7 @@ async function refreshAllConversations({ quiet = true } = {}) {
       // handshake must not import that unknown sender's historical contextual
       // messages before the user accepts the request.
       if (contact?.relationshipState === "incoming-request" || contact?.relationshipState === "declined") continue;
-      try { added += await syncOneConversation(conversationEntry, { quiet }); }
+      try { added += await syncOneConversation(conversationEntry, { quiet, catchUp }); }
       catch (error) { appendEngineLog(`Automatic message sync failed for ${conversationEntry.id}: ${error.message}`); }
     }
     try { added += await syncGroupsNow(); }
@@ -2746,6 +2772,9 @@ async function refreshAllConversations({ quiet = true } = {}) {
     return added;
   } finally {
     messageRefreshInFlight = false;
+    // Only the sweep that actually ran as the backfill clears the flag, so a restore
+    // that arms it mid-sweep still gets its own silent sweep next time.
+    if (catchUp) pendingInitialCatchUp = false;
   }
 }
 
@@ -7348,8 +7377,15 @@ function openChatInfo() {
   chatInfoContactAddress = contact.address;
   resetChatInfoAliases();
   refreshChatInfoContactControls();
-  if (chatInfoAvatarInitials) { chatInfoAvatarInitials.textContent = initialsFor(contact.name); chatInfoAvatarInitials.hidden = false; }
-  if (chatInfoAvatarImage) { chatInfoAvatarImage.hidden = true; chatInfoAvatarImage.src = ""; }
+  if (chatInfoAvatarInitials) chatInfoAvatarInitials.textContent = initialsFor(contact.name);
+  if (contact.photo) {
+    if (chatInfoAvatarImage) { chatInfoAvatarImage.src = contact.photo; chatInfoAvatarImage.hidden = false; }
+    if (chatInfoAvatarInitials) chatInfoAvatarInitials.hidden = true;
+  } else {
+    if (chatInfoAvatarInitials) chatInfoAvatarInitials.hidden = false;
+    if (chatInfoAvatarImage) { chatInfoAvatarImage.hidden = true; chatInfoAvatarImage.src = ""; }
+  }
+  if (chatInfoRemovePhoto) chatInfoRemovePhoto.hidden = !contact.photo;
   if (chatInfoNameInput) chatInfoNameInput.value = contact.name || "";
   if (chatInfoAddressCaption) chatInfoAddressCaption.textContent = shortAddress(contact.address);
   if (chatInfoAddressMono) chatInfoAddressMono.textContent = contact.address;
@@ -7403,7 +7439,8 @@ async function refreshChatInfoKnsSections(contact) {
   if (token !== chatInfoRequestToken || chatInfoContactId !== contact.id) return;
 
   const profile = profileInfo?.profile;
-  if (chatInfoAvatarImage && chatInfoAvatarInitials) {
+  // A user-assigned photo overrides KNS, so never let a late KNS fetch replace it.
+  if (chatInfoAvatarImage && chatInfoAvatarInitials && !contact.photo) {
     if (profile?.avatarUrl) {
       chatInfoAvatarImage.src = profile.avatarUrl;
       chatInfoAvatarImage.hidden = false;
@@ -7484,6 +7521,57 @@ function saveChatInfo() {
 document.querySelector("[data-open-chat-info]")?.addEventListener("click", openChatInfo);
 document.querySelector("[data-chat-info-cancel]")?.addEventListener("click", closeChatInfo);
 document.querySelector("[data-chat-info-save]")?.addEventListener("click", saveChatInfo);
+
+// Re-render the open chat info avatar + every avatar of this contact across the app.
+function refreshContactAvatars(contact) {
+  if (chatInfoRemovePhoto) chatInfoRemovePhoto.hidden = !contact.photo;
+  if (contact.photo) {
+    if (chatInfoAvatarImage) { chatInfoAvatarImage.src = contact.photo; chatInfoAvatarImage.hidden = false; }
+    if (chatInfoAvatarInitials) chatInfoAvatarInitials.hidden = true;
+  } else {
+    if (chatInfoAvatarInitials) chatInfoAvatarInitials.hidden = false;
+    if (chatInfoAvatarImage) { chatInfoAvatarImage.hidden = true; chatInfoAvatarImage.src = ""; }
+  }
+  if (activeConversationId) {
+    const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
+    if (conversationEntry && conversationEntry.contactId === contact.id) {
+      updateAvatarElement(conversationAvatarInitials, conversationAvatarImage, contact);
+    }
+  }
+  renderChats();
+}
+
+chatInfoPhotoPick?.addEventListener("click", () => chatInfoPhotoInput?.click());
+chatInfoPhotoInput?.addEventListener("change", async () => {
+  const file = chatInfoPhotoInput.files?.[0];
+  chatInfoPhotoInput.value = "";
+  if (!file) return;
+  const contact = state.contacts.find((entry) => entry.id === chatInfoContactId);
+  if (!contact) return;
+  try {
+    setStatus("Preparing photo…");
+    // A small square thumbnail keeps the backup/state light (avatars don't need the
+    // full message-photo budget).
+    const compressed = await compressImageBlob(file, { targetBytes: 48 * 1024, maxDimension: 256 });
+    contact.photo = compressed.dataUrl;
+    contact.updatedAt = Date.now();
+    persistState();
+    refreshContactAvatars(contact);
+    setStatus("Contact photo updated");
+  } catch (error) {
+    setStatus(`Could not set photo: ${error.message}`);
+    showCopyToast(`Could not set photo. ${error.message}`);
+  }
+});
+chatInfoRemovePhoto?.addEventListener("click", () => {
+  const contact = state.contacts.find((entry) => entry.id === chatInfoContactId);
+  if (!contact || !contact.photo) return;
+  contact.photo = "";
+  contact.updatedAt = Date.now();
+  persistState();
+  refreshContactAvatars(contact);
+  setStatus("Contact photo removed");
+});
 chatInfoOverlay?.addEventListener("click", (event) => {
   if (event.target === chatInfoOverlay) closeChatInfo();
 });
@@ -9567,6 +9655,10 @@ function removeLocalReaction(conversationEntry, targetTxId, reactorAddress) {
 // chat bubble. Every real addMessageToConversation call in this file goes
 // through this wrapper instead, so reactions arriving via any path (real
 // sync, preview simulation, self-stash recovery, etc.) are always caught.
+// Returns the added message ONLY when a real, visible chat bubble was created.
+// Intercepted control envelopes (reactions, fresh-address payment-pool messages)
+// return null so callers know not to notify or count them as unread — matching iOS,
+// where these are processed silently and never surface as messages.
 function appendIncomingOrReactionMessage(conversationEntry, message) {
   const reaction = parseReactionEnvelope(message.text);
   if (reaction) {
@@ -9576,7 +9668,7 @@ function appendIncomingOrReactionMessage(conversationEntry, message) {
     persistState();
     if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
     renderChats();
-    return message;
+    return null;
   }
   // Fresh-address payment pool envelopes ride the same encrypted pipeline and
   // are intercepted the same way reactions are — they never render as bubbles
@@ -9587,7 +9679,10 @@ function appendIncomingOrReactionMessage(conversationEntry, message) {
   if (poolEnvelope) {
     try { handlePaymentPoolEnvelope(poolEnvelope, conversationEntry, message); }
     catch (error) { appendEngineLog(`Pool envelope handling failed: ${error.message}`); }
-    return message;
+    // Swallowed control message: no bubble, so the caller must not notify or count it.
+    // (A payment_notice produces its own payment bubble + notification inside
+    // handlePaymentPoolEnvelope, so it is handled there, not here.)
+    return null;
   }
   return addMessageToConversation(conversationEntry, message);
 }
@@ -9656,6 +9751,9 @@ function importPhoneChatArchive(json) {
   if (!archive || !Array.isArray(archive.conversations)) {
     throw new Error("That file is not a KaChat phone chat backup.");
   }
+  // Merging a backup is a backfill: keep the next sync sweep silent and its messages
+  // read (see pendingInitialCatchUp).
+  pendingInitialCatchUp = true;
   const archiveWallet = String(archive.walletAddress || "").trim();
   if (archiveWallet && engine.address && archiveWallet !== engine.address) {
     throw new Error(`That phone backup belongs to a different wallet (${shortAddress(archiveWallet)}).`);
@@ -9675,6 +9773,7 @@ function importPhoneChatArchive(json) {
     if (!archivedMessages.length) continue;
 
     const alias = String(archived?.contactAlias || "").trim();
+    const archivePhoto = archivePhotoToDataUrl(archived?.contactPhoto);
     let contact = state.contacts.find((entry) => entry.address === contactAddress);
     let conversationEntry = contact ? state.conversations.find((entry) => entry.contactId === contact.id) : null;
     if (!contact) {
@@ -9682,7 +9781,7 @@ function importPhoneChatArchive(json) {
       const displayName = alias || shortAddress(contactAddress);
       contact = {
         id: nowId(), name: displayName, nameIsCustom: false, address: contactAddress,
-        avatar: initialsFor(displayName), createdAt, updatedAt: createdAt,
+        avatar: initialsFor(displayName), photo: archivePhoto || "", createdAt, updatedAt: createdAt,
         relationshipState: "legacy-manual", handshakeTxid: "", incomingHandshakeTxid: "", peerConversationId: "",
       };
       state.contacts.push(contact);
@@ -9696,6 +9795,9 @@ function importPhoneChatArchive(json) {
         contact.avatar = initialsFor(alias);
       }
     }
+    // Adopt a backed-up photo only when this device has none of its own (never
+    // overwrite a photo the user picked here).
+    if (archivePhoto && !contact.photo) contact.photo = archivePhoto;
     if (!conversationEntry) {
       conversationEntry = createConversation({ contactId: contact.id, createdAt: Number(contact.createdAt || Date.now()) });
       state.conversations.push(conversationEntry);
@@ -9943,6 +10045,21 @@ function archiveContactAlias(contact) {
   return isPlaceholder ? null : name;
 }
 
+// Cross-platform contact photo codec for the shared archive. On the wire it is RAW
+// base64 JPEG (no data: prefix) so iOS/Android can decode it directly; desktop stores
+// it locally as a full data URL, so strip/re-add the prefix at the boundary.
+function contactPhotoToArchive(photo) {
+  const s = String(photo || "");
+  if (!s) return null;
+  const comma = s.indexOf(",");
+  return s.startsWith("data:") && comma >= 0 ? s.slice(comma + 1) : s;
+}
+function archivePhotoToDataUrl(base64) {
+  const s = String(base64 || "").trim();
+  if (!s) return "";
+  return s.startsWith("data:") ? s : `data:image/jpeg;base64,${s}`;
+}
+
 function archiveMessageKey(archiveMessage) {
   const txId = String(archiveMessage?.txId || "").trim();
   return txId ? `tx:${txId}` : `id:${String(archiveMessage?.id || "")}`;
@@ -10053,13 +10170,17 @@ function buildLocalChatArchive() {
       });
     }
 
-    conversations.push({
+    const entry = {
       conversationId: archiveUuid(conversationEntry.id, `conversation:${contactAddress}`),
       contactAddress,
       contactAlias: archiveContactAlias(contact),
       unreadCount: Math.max(0, Number(conversationEntry.unreadCount || 0)),
       messages: sortArchiveMessages(messages),
-    });
+    };
+    // Only carry a photo when one is set, to keep the shared file lean.
+    const archivePhoto = contactPhotoToArchive(contact.photo);
+    if (archivePhoto) entry.contactPhoto = archivePhoto;
+    conversations.push(entry);
   }
 
   conversations.sort((a, b) => a.contactAddress.localeCompare(b.contactAddress));
@@ -10121,15 +10242,18 @@ function mergeChatArchives(remote, local) {
     if (!contactAddress) return;
     const metadataWins = isRemote ? remoteIsNewer : !remoteIsNewer;
     const alias = String(conversation?.contactAlias || "").trim();
+    const photo = String(conversation?.contactPhoto || "").trim();
     const conversationId = String(conversation?.conversationId || "").trim();
     const unreadCount = Math.max(0, Number(conversation?.unreadCount || 0));
 
     let entry = merged.get(contactAddress);
     if (!entry) {
-      entry = { conversationId: conversationId || null, contactAddress, contactAlias: alias || null, unreadCount, messages: new Map() };
+      entry = { conversationId: conversationId || null, contactAddress, contactAlias: alias || null, contactPhoto: photo || null, unreadCount, messages: new Map() };
       merged.set(contactAddress, entry);
     } else {
       if (alias && (metadataWins || !entry.contactAlias)) entry.contactAlias = alias;
+      // Same rule as alias: the newer export wins, and an empty photo never clears a real one.
+      if (photo && (metadataWins || !entry.contactPhoto)) entry.contactPhoto = photo;
       if (conversationId && !entry.conversationId) entry.conversationId = conversationId;
       if (metadataWins) entry.unreadCount = unreadCount;
     }
@@ -10154,6 +10278,7 @@ function mergeChatArchives(remote, local) {
       conversationId: entry.conversationId ? archiveUuid(entry.conversationId, `conversation:${entry.contactAddress}`) : null,
       contactAddress: entry.contactAddress,
       contactAlias: entry.contactAlias,
+      ...(entry.contactPhoto ? { contactPhoto: entry.contactPhoto } : {}),
       unreadCount: entry.unreadCount,
       messages: sortArchiveMessages([...entry.messages.values()].map(normalizeArchiveMessage)),
     }))
@@ -10178,6 +10303,9 @@ function buildDesktopStateSnapshot() {
     savedAt: new Date().toISOString(),
     state: JSON.parse(chatStorageGetSync(accountScopedKey(STORAGE_KEY)) || "null"),
     history: JSON.parse(chatStorageGetSync(accountScopedKey(MESSAGE_HISTORY_KEY)) || "null"),
+    // Per-contact prefs (mute + photo-display toggle) live in a separate global key,
+    // so they must be carried explicitly or a restore would lose them.
+    contactPrefs: (() => { try { return JSON.parse(localStorage.getItem(CONTACT_PREFS_KEY) || "{}") || {}; } catch { return {}; } })(),
   };
 }
 
@@ -10197,11 +10325,23 @@ function buildSharedBackupPayload(existingRemoteJson = null) {
 /** Write-through of a desktop state snapshot (from `desktopState`, or from a
  *  legacy kachat-backup-desktop.json body) into the live storage. */
 function applyDesktopStateSnapshot(snapshot) {
+  // Restoring is a backfill: the next sync sweep must not notify or mark its messages
+  // unread (see pendingInitialCatchUp).
+  pendingInitialCatchUp = true;
   const serialized = JSON.stringify(snapshot.state);
   chatStorageSetSync(accountScopedKey(STORAGE_KEY), serialized);
   chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
   if (snapshot.history) {
     chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(snapshot.history));
+  }
+  // Restore per-contact prefs by MERGING (never clobber prefs for contacts outside
+  // this backup, e.g. another account's contacts sharing the global store).
+  if (snapshot.contactPrefs && typeof snapshot.contactPrefs === "object") {
+    try {
+      const current = JSON.parse(localStorage.getItem(CONTACT_PREFS_KEY) || "{}") || {};
+      contactPrefs = { ...current, ...snapshot.contactPrefs };
+      localStorage.setItem(CONTACT_PREFS_KEY, JSON.stringify(contactPrefs));
+    } catch { /* leave existing prefs untouched on parse failure */ }
   }
   reloadStateFromBrowserStorage();
   renderChats();
@@ -12045,6 +12185,7 @@ let activeGroupId = null;
 const groupCreateSelected = new Set();
 let groupModalMode = "create"; // "create" | "add"
 let groupModalTargetId = null;
+let groupPickerExclude = []; // addresses excluded from the member picker (existing members in "add" mode)
 
 // Lazily create (or recreate on wallet switch) the GroupManager bound to the engine.
 // (groupManager / groupManagerForAddress are declared near the top of the file so the
@@ -12110,6 +12251,7 @@ const groupCreateModal = document.querySelector("[data-group-create-modal]");
 const groupCreateTitle = document.querySelector("[data-group-create-title]");
 const groupNameInput = document.querySelector("[data-group-name-input]");
 const groupPickerHint = document.querySelector("[data-group-picker-hint]");
+const groupMemberSearch = document.querySelector("[data-group-member-search]");
 const groupMemberPicker = document.querySelector("[data-group-member-picker]");
 const groupCreateError = document.querySelector("[data-group-create-error]");
 const groupCreateSubmit = document.querySelector("[data-group-create-submit]");
@@ -12283,9 +12425,22 @@ function eligibleGroupContacts(excludeAddresses = []) {
 }
 function renderGroupMemberPicker(excludeAddresses = []) {
   if (!groupMemberPicker) return;
-  const contacts = eligibleGroupContacts(excludeAddresses);
-  if (!contacts.length) {
+  const all = eligibleGroupContacts(excludeAddresses);
+  if (!all.length) {
     groupMemberPicker.innerHTML = `<p class="group-picker-empty">No contacts to add yet. Start a 1:1 chat with someone first, then you can add them to a group.</p>`;
+    return;
+  }
+  // Filter by the search box (name, nickname, or address). Selection persists across
+  // filtering because it is tracked by address in groupCreateSelected, not by the DOM.
+  const query = String(groupMemberSearch?.value || "").trim().toLowerCase();
+  const contacts = query
+    ? all.filter((c) =>
+        displayNameForAddress(c).toLowerCase().includes(query) ||
+        String(c.name || "").toLowerCase().includes(query) ||
+        String(c.address || "").toLowerCase().includes(query))
+    : all;
+  if (!contacts.length) {
+    groupMemberPicker.innerHTML = `<p class="group-picker-empty">No contacts match that search.</p>`;
     return;
   }
   groupMemberPicker.innerHTML = contacts.map((c) => {
@@ -12320,6 +12475,8 @@ function openGroupCreate() {
   if (groupNameInput) { groupNameInput.value = ""; groupNameInput.hidden = false; }
   if (groupPickerHint) groupPickerHint.textContent = "Add contacts to the group. You control the membership as the group admin.";
   if (groupCreateError) groupCreateError.hidden = true;
+  if (groupMemberSearch) groupMemberSearch.value = "";
+  groupPickerExclude = [];
   renderGroupMemberPicker();
   updateGroupCreateSubmit();
   if (groupCreateModal) groupCreateModal.hidden = false;
@@ -12337,7 +12494,9 @@ function openGroupAddMember(groupId) {
   if (groupNameInput) { groupNameInput.value = ""; groupNameInput.hidden = true; }
   if (groupPickerHint) groupPickerHint.textContent = "Adding a member issues a fresh group key to everyone.";
   if (groupCreateError) groupCreateError.hidden = true;
-  renderGroupMemberPicker(g.members.map((m) => m.address));
+  if (groupMemberSearch) groupMemberSearch.value = "";
+  groupPickerExclude = g.members.map((m) => m.address);
+  renderGroupMemberPicker(groupPickerExclude);
   updateGroupCreateSubmit();
   if (groupCreateModal) groupCreateModal.hidden = false;
 }
@@ -12425,6 +12584,14 @@ document.querySelectorAll("[data-new-group]").forEach((btn) => btn.addEventListe
 document.querySelector("[data-close-group-create]")?.addEventListener("click", closeGroupCreate);
 groupCreateModal?.addEventListener("click", (event) => { if (event.target === groupCreateModal) closeGroupCreate(); });
 groupNameInput?.addEventListener("input", updateGroupCreateSubmit);
+// Live-filter the member list as the user types (uses the current exclude set).
+groupMemberSearch?.addEventListener("input", () => renderGroupMemberPicker(groupPickerExclude));
+// The persistent "+" create button is tab-aware: Group Chats tab opens the group
+// builder, the Chats tab opens the 1:1 create screen.
+newChatFab?.addEventListener("click", () => {
+  if (activeChatsListTab === "groups") openGroupCreate();
+  else showContactModal();
+});
 groupMemberPicker?.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-group-member-toggle]");
   if (!btn) return;
