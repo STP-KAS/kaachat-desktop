@@ -853,8 +853,143 @@ function isDirectImageUrl(url) {
   return /\.(png|jpe?g|gif|webp|avif)(\?[^#]*)?$/i.test(url);
 }
 
+// Any http(s) link is a preview candidate now (matches iOS, which previews the first link of a
+// message): direct images and YouTube render CORS-free, Nextcloud stays privacy-gated, and every
+// other URL gets an Open-Graph card scraped through the same-origin dev proxy.
 function isPreviewableUrl(url) {
-  return isDirectImageUrl(url) || Boolean(nextcloudShareDownloadUrl(url));
+  return /^https?:\/\//i.test(String(url || ""));
+}
+
+// YouTube video id from watch/youtu.be/shorts/embed URLs, else null.
+function youtubeVideoId(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^(www|m|music)\./, "");
+    if (host === "youtu.be") return u.pathname.slice(1).split(/[/?]/)[0] || null;
+    if (host === "youtube.com") {
+      if (u.pathname === "/watch") return u.searchParams.get("v");
+      const m = u.pathname.match(/^\/(shorts|embed|v|live)\/([^/?]+)/);
+      if (m) return m[2];
+    }
+    return null;
+  } catch { return null; }
+}
+
+// --- Open-Graph link previews (proxied HTML scrape, cached) ------------------
+const linkPreviewCache = new Map();   // url -> {title,description,image,site} | null (resolved)
+const linkPreviewPending = new Map(); // url -> Promise, so concurrent renders don't refetch
+let linkPreviewRerenderTimer = null;
+
+// Fetch a page through the same-origin /nc-proxy dev middleware (browsers can't read cross-origin
+// HTML directly). `x-preview: 1` asks the proxy to use a crawler UA so more sites emit og:image.
+async function proxiedFetchHtml(url) {
+  let dev = false;
+  try { dev = Boolean(import.meta.env.DEV); } catch { dev = false; }
+  if (!dev) return null; // no proxy outside the dev server
+  const parsed = new URL(url);
+  const proxied = `/nc-proxy/${encodeURIComponent(parsed.origin)}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}`;
+  const res = await fetch(proxied, { headers: { Accept: "text/html,application/xhtml+xml", "x-preview": "1" } });
+  if (!res.ok) return null;
+  const type = res.headers.get("content-type") || "";
+  if (!/text\/html|xml/i.test(type)) return null;
+  return (await res.text()).slice(0, 400_000); // <head> metadata lives up top; cap the read
+}
+
+function metaContent(html, prop) {
+  const a = new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]*content=["']([^"']*)["']`, "i");
+  const b = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${prop}["']`, "i");
+  return (html.match(a)?.[1] || html.match(b)?.[1] || "").trim();
+}
+
+async function fetchOpenGraph(url) {
+  const html = await proxiedFetchHtml(url);
+  if (!html) return null;
+  const decode = (s) => String(s || "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;|&#x27;/gi, "'");
+  const title = decode(metaContent(html, "og:title") || metaContent(html, "twitter:title") || (html.match(/<title[^>]*>([^<]{1,300})<\/title>/i)?.[1] || "").trim());
+  const description = decode(metaContent(html, "og:description") || metaContent(html, "twitter:description") || metaContent(html, "description"));
+  let image = metaContent(html, "og:image") || metaContent(html, "og:image:url") || metaContent(html, "twitter:image");
+  if (image) { try { image = new URL(decode(image), url).href; } catch { image = ""; } }
+  let site = decode(metaContent(html, "og:site_name"));
+  if (!site) { try { site = new URL(url).hostname.replace(/^www\./, ""); } catch { site = ""; } }
+  if (!title && !image) return null;
+  return { title, description, image, site };
+}
+
+// YouTube: use the oEmbed JSON API for the real video title (matches iOS). oEmbed needs no
+// crawler UA and is far more reliable than scraping the consent-walled watch page. The
+// thumbnail is derived directly from the video id (CORS-free).
+async function fetchYouTubeMeta(url, id) {
+  const image = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+  let title = "";
+  let dev = false;
+  try { dev = Boolean(import.meta.env.DEV); } catch { dev = false; }
+  if (dev) {
+    try {
+      const oe = new URL(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+      const proxied = `/nc-proxy/${encodeURIComponent(oe.origin)}${oe.pathname}${oe.search}`;
+      const res = await fetch(proxied, { headers: { Accept: "application/json" } });
+      if (res.ok) { const d = await res.json(); title = String(d.title || ""); }
+    } catch { /* oEmbed unreachable — keep the thumbnail-only card */ }
+  }
+  return { title, description: "", image, site: "YouTube" };
+}
+
+function resolveLinkPreview(url) {
+  if (linkPreviewCache.has(url)) return Promise.resolve(linkPreviewCache.get(url));
+  if (linkPreviewPending.has(url)) return linkPreviewPending.get(url);
+  const ytId = youtubeVideoId(url);
+  const fetcher = ytId ? fetchYouTubeMeta(url, ytId) : fetchOpenGraph(url);
+  const p = fetcher.catch(() => null).then((data) => {
+    linkPreviewCache.set(url, data || null);
+    linkPreviewPending.delete(url);
+    return data || null;
+  });
+  linkPreviewPending.set(url, p);
+  return p;
+}
+
+// Re-render the open thread once a preview resolves (debounced) so the card appears in place.
+function scheduleActiveThreadRerender() {
+  if (linkPreviewRerenderTimer) return;
+  linkPreviewRerenderTimer = window.setTimeout(() => {
+    linkPreviewRerenderTimer = null;
+    try {
+      if (activeGroupId) renderGroupMessages();
+      else if (activeConversationId) {
+        const ce = state.conversations.find((e) => e.id === activeConversationId);
+        if (ce) renderMessages(ce);
+      }
+    } catch { /* thread closed mid-fetch */ }
+  }, 80);
+}
+
+// Rich card: thumbnail (optional) + site + title + description, linking out.
+function buildRichLinkCard(url, data) {
+  const card = document.createElement("a");
+  card.className = "message-link-card";
+  card.href = url; card.target = "_blank"; card.rel = "noopener noreferrer";
+  card.addEventListener("click", (event) => event.stopPropagation());
+  if (data.image) {
+    const thumb = document.createElement("div");
+    thumb.className = "message-link-card-thumb";
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = "";
+    img.addEventListener("error", () => thumb.remove(), { once: true });
+    img.src = data.image;
+    thumb.append(img);
+    if (data.site === "YouTube") { const play = document.createElement("span"); play.className = "message-link-play"; play.textContent = "▶"; thumb.append(play); }
+    card.append(thumb);
+  }
+  const meta = document.createElement("div");
+  meta.className = "message-link-card-meta";
+  if (data.site) { const s = document.createElement("small"); s.className = "message-link-card-site"; s.textContent = data.site; meta.append(s); }
+  const titleEl = document.createElement("strong");
+  titleEl.className = "message-link-card-title";
+  titleEl.textContent = data.title || data.site || url;
+  meta.append(titleEl);
+  if (data.description) { const d = document.createElement("span"); d.className = "message-link-card-desc"; d.textContent = data.description; meta.append(d); }
+  card.append(meta);
+  return card;
 }
 
 /** Renders `text` into `container` with URLs as clickable links; returns the URLs found. */
@@ -883,7 +1018,7 @@ function renderTextWithLinks(container, text) {
   return urls;
 }
 
-/** Preview card for the first previewable link in a message, or null. */
+/** Preview card for the first link in a message, or null. */
 function buildLinkPreviewCard(url) {
   const nextcloud = nextcloudShareDownloadUrl(url);
   if (nextcloud) return buildNextcloudRevealCard(url, nextcloud.downloadUrl);
@@ -897,6 +1032,26 @@ function buildLinkPreviewCard(url) {
     img.src = url;
     return img;
   }
+  // YouTube: the thumbnail is derivable from the id (no fetch/CORS); enrich the title from the
+  // page's og:title in the background if the proxy can reach it.
+  const ytId = youtubeVideoId(url);
+  if (ytId) {
+    const cached = linkPreviewCache.get(url);
+    const card = buildRichLinkCard(url, {
+      image: `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`,
+      site: "YouTube",
+      title: cached?.title || "",
+      description: cached?.description || "",
+    });
+    if (!linkPreviewCache.has(url)) resolveLinkPreview(url).then(() => scheduleActiveThreadRerender());
+    return card;
+  }
+  // Any other link: render from cached Open-Graph data, or fetch it and re-render when ready.
+  if (linkPreviewCache.has(url)) {
+    const data = linkPreviewCache.get(url);
+    return (data && (data.image || data.title)) ? buildRichLinkCard(url, data) : null;
+  }
+  resolveLinkPreview(url).then(() => scheduleActiveThreadRerender());
   return null;
 }
 
@@ -7379,6 +7534,8 @@ function renderMessages(conversationEntry) {
         reveal.addEventListener("click", (event) => { event.stopPropagation(); revealedPhotoIds.add(message.id); renderMessages(conversationEntry); });
         bubble.append(reveal);
       } else {
+        // Photo-only bubble: no chat-bubble background, just the image (timestamp overlays it).
+        bubble.classList.add("photo-bubble");
         const img = document.createElement("img");
         img.className = "message-photo";
         img.src = imageEnvelope.content;
@@ -7401,40 +7558,23 @@ function renderMessages(conversationEntry) {
       text.className = "message-text";
       const bodyText = replyEnvelope ? replyEnvelope.text : message.text;
       const linkUrls = renderTextWithLinks(text, bodyText);
-      bubble.append(text);
       const previewable = linkUrls.find(isPreviewableUrl);
-      if (previewable) {
-        const card = buildLinkPreviewCard(previewable);
+      const card = previewable ? buildLinkPreviewCard(previewable) : null;
+      // A link-only message renders as just the preview card (no chat bubble, timestamp below),
+      // matching iOS. With a caption or other text, show the text bubble + card beneath it.
+      const linkOnly = card && !replyEnvelope && linkUrls.length === 1 && String(bodyText).trim() === linkUrls[0];
+      if (linkOnly) {
+        bubble.classList.add("link-card-bubble");
+        bubble.append(card);
+      } else {
+        bubble.append(text);
         if (card) bubble.append(card);
       }
     }
     }
     }
-    // Hover reaction bar — desktop's equivalent of iOS's double-tap
-    // quick-reaction bar. Skipped for messages with no real txid yet
-    // (nothing to target on the wire) and while in selection mode.
-    if (message.txid || message.id) {
-      const reactionBar = document.createElement("div");
-      reactionBar.className = "message-reaction-bar";
-      const pill = document.createElement("div");
-      pill.className = "message-reaction-bar-pill";
-      const myAddress = engine.address || "";
-      const myCurrentEmoji = (conversationEntry.reactionsByTxId?.[message.txid || message.id] || [])
-        .find((entry) => entry.reactorAddress === myAddress)?.emoji;
-      for (const emoji of QUICK_REACTION_EMOJIS) {
-        const emojiButton = document.createElement("button");
-        emojiButton.type = "button";
-        emojiButton.textContent = emoji;
-        if (emoji === myCurrentEmoji) emojiButton.classList.add("active");
-        emojiButton.addEventListener("click", (event) => {
-          event.stopPropagation();
-          sendReaction(conversationEntry, message, emoji);
-        });
-        pill.append(emojiButton);
-      }
-      reactionBar.append(pill);
-      bubble.append(reactionBar);
-    }
+    // Reactions and all message actions live on the right-click menu now (Telegram-style),
+    // wired below via the bubble's "contextmenu" handler.
 
     const reactions = conversationEntry.reactionsByTxId?.[message.txid || message.id] || [];
     if (reactions.length) {
@@ -7465,6 +7605,13 @@ function renderMessages(conversationEntry) {
       timeEl.textContent = formatTime(message.createdAt);
       bubble.append(timeEl);
     }
+
+    // Right-click opens the Telegram-style actions menu (reactions + reply/copy/select/etc.).
+    bubble.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (messageSelectionMode) return;
+      openOneToOneMessageMenu(message.id, event.clientX, event.clientY);
+    });
 
     const deliveryIcon = createDeliveryStatusIcon(message);
     row.append(selector, avatarSlot, bubble);
@@ -8596,8 +8743,9 @@ searchInput.addEventListener("input", renderChats);
 messageArea.addEventListener("click", (event) => {
   const bubble = event.target.closest("[data-message-id]");
   if (!bubble) return;
+  // In selection mode a left-click toggles the checkbox. Otherwise message actions live on
+  // the right-click (context) menu now, Telegram-style, so a normal left-click does nothing.
   if (messageSelectionMode) toggleSelectedMessage(bubble.dataset.messageId);
-  else openMessageDetails(bubble.dataset.messageId);
 });
 
 messageArea.addEventListener("keydown", (event) => {
@@ -8605,8 +8753,14 @@ messageArea.addEventListener("keydown", (event) => {
   const bubble = event.target.closest("[data-message-id]");
   if (!bubble) return;
   event.preventDefault();
-  if (messageSelectionMode) toggleSelectedMessage(bubble.dataset.messageId);
-  else openMessageDetails(bubble.dataset.messageId);
+  // Keyboard parity with right-click: Enter/Space toggles selection, or opens the actions
+  // menu (anchored to the bubble) in normal mode.
+  if (messageSelectionMode) {
+    toggleSelectedMessage(bubble.dataset.messageId);
+  } else {
+    const rect = bubble.getBoundingClientRect();
+    openOneToOneMessageMenu(bubble.dataset.messageId, rect.left, rect.bottom);
+  }
 });
 
 document.querySelectorAll("[data-close-message-details]").forEach((button) => {
@@ -8777,13 +8931,14 @@ function queueConversationMessage(conversationId, text) {
   });
   appendIncomingOrReactionMessage(conversationEntry, message);
 
-  // Paint the bubble immediately, then do the heavy work. persistState does two full
-  // JSON serializations of the whole chat state plus a verify read, so running it before
-  // the render is what made a sent message feel slow to appear on a large history.
+  // Paint the bubble immediately, then do the heavy work. persistState does two full JSON
+  // serializations of the whole chat state, AND runEngineSendPipeline runs the synchronous
+  // ECIES message encryption at its start — both block the browser paint if run inline, which
+  // is what made a sent 1:1 message feel slow to appear. Defer both to the next task so the
+  // new bubble paints first (matching the snappier group-chat send).
   renderMessages(conversationEntry);
   setStatus("Queued for real Kaspa payload transaction");
-  runEngineSendPipeline(conversationEntry.id, message.id);
-  // Defer persistence to the next task so the browser can paint the new bubble first.
+  window.setTimeout(() => runEngineSendPipeline(conversationEntry.id, message.id), 0);
   window.setTimeout(persistState, 0);
 }
 
@@ -12564,6 +12719,135 @@ function appendGroupMessage(groupId, message) {
   return true;
 }
 
+// Stable per-message reaction/reply target key (prefer the on-chain txId so it matches
+// across clients; fall back to msgId/local id before the tx confirms).
+function groupMsgKey(message) { return message?.txId || message?.msgIdHex || message?.id || ""; }
+
+// --- group reactions store (per wallet, per group, keyed by target message key) ---
+// Reactions ride the SAME {type:"reaction",...} envelope as 1:1 chats — a normal group
+// message intercepted before it renders (see syncGroupsNow), so this stays interop-compatible.
+const GROUP_REACTIONS_KEY = "kachat-group-reactions-v1";
+function loadGroupReactionsAll() { try { return JSON.parse(localStorage.getItem(GROUP_REACTIONS_KEY) || "{}") || {}; } catch { return {}; } }
+function saveGroupReactionsAll(all) { try { localStorage.setItem(GROUP_REACTIONS_KEY, JSON.stringify(all)); } catch {} }
+function groupReactionsFor(groupId, targetKey) {
+  const list = loadGroupReactionsAll()?.[engine.address || ""]?.[groupId]?.[targetKey];
+  return Array.isArray(list) ? list : [];
+}
+// One emoji per reactor per target: add replaces, remove clears.
+function applyGroupReaction(groupId, targetKey, reactorAddress, emoji, action) {
+  if (!targetKey || !reactorAddress) return;
+  const all = loadGroupReactionsAll();
+  const wallet = engine.address || "";
+  if (!all[wallet]) all[wallet] = {};
+  if (!all[wallet][groupId]) all[wallet][groupId] = {};
+  const bucket = all[wallet][groupId];
+  const list = Array.isArray(bucket[targetKey]) ? bucket[targetKey] : [];
+  const without = list.filter((e) => e.reactorAddress !== reactorAddress);
+  if (action !== "remove" && emoji) without.push({ reactorAddress, emoji });
+  bucket[targetKey] = without;
+  saveGroupReactionsAll(all);
+}
+
+// Tapback on a group message. Toggles off if you tap your current emoji again.
+async function sendGroupReaction(groupId, targetMessage, emoji) {
+  const mgr = getGroupManager();
+  if (!mgr || !engine.address) return;
+  const targetKey = groupMsgKey(targetMessage);
+  if (!targetKey) return;
+  const mine = groupReactionsFor(groupId, targetKey).find((e) => e.reactorAddress === engine.address);
+  const action = mine?.emoji === emoji ? "remove" : "add";
+  applyGroupReaction(groupId, targetKey, engine.address, action === "remove" ? null : emoji, action);
+  if (activeGroupId === groupId) renderGroupMessages();
+  const payload = JSON.stringify({ type: "reaction", targetTxId: targetKey, emoji, action });
+  try { await mgr.sendGroupMessage(groupId, payload); }
+  catch (error) { appendEngineLog(`Group reaction send failed (local applied): ${error.message}`); }
+}
+
+// --- hidden group members (per wallet, per group): filters a member's messages from view ---
+// (iOS also has mute + mentions-only, but those are notification-only and desktop pushes no
+// group notifications, so they'd be dead UI here — hide is the one that actually does something.)
+const GROUP_HIDDEN_MEMBERS_KEY = "kachat-group-hidden-members-v1";
+function loadGroupHiddenAll() { try { return JSON.parse(localStorage.getItem(GROUP_HIDDEN_MEMBERS_KEY) || "{}") || {}; } catch { return {}; } }
+function saveGroupHiddenAll(all) { try { localStorage.setItem(GROUP_HIDDEN_MEMBERS_KEY, JSON.stringify(all)); } catch {} }
+function groupHiddenMembersFor(groupId) {
+  const list = loadGroupHiddenAll()?.[engine.address || ""]?.[groupId];
+  return Array.isArray(list) ? list : [];
+}
+function isGroupMemberHidden(groupId, address) { return groupHiddenMembersFor(groupId).includes(address); }
+function setGroupMemberHidden(groupId, address, hidden) {
+  const all = loadGroupHiddenAll();
+  const wallet = engine.address || "";
+  if (!all[wallet]) all[wallet] = {};
+  const current = new Set(Array.isArray(all[wallet][groupId]) ? all[wallet][groupId] : []);
+  if (hidden) current.add(address); else current.delete(address);
+  all[wallet][groupId] = [...current];
+  saveGroupHiddenAll(all);
+}
+
+// Open (or create) a 1:1 conversation with a group member, and switch to the Chats tab.
+function openOrCreateOneToOne(address) {
+  const addr = String(address || "").trim();
+  if (!addr || addr === engine.address) return;
+  let contact = (state.contacts || []).find((c) => c.address === addr);
+  let conversationEntry = contact ? state.conversations.find((e) => e.contactId === contact.id) : null;
+  if (!contact) {
+    const createdAt = Date.now();
+    const name = displayNameForAddress({ address: addr }) || shortAddress(addr);
+    contact = { id: nowId(), name, nameIsCustom: false, address: addr, avatar: initialsFor(name), createdAt, updatedAt: createdAt, relationshipState: "legacy-manual", handshakeTxid: "" };
+    conversationEntry = createConversation({ contactId: contact.id, createdAt });
+    state.contacts.push(contact);
+    state.conversations.push(conversationEntry);
+    refreshSubscriptionAddresses({ restart: true });
+    persistState();
+  } else if (!conversationEntry) {
+    conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
+    state.conversations.push(conversationEntry);
+    persistState();
+  }
+  closeGroupChat();
+  if (activeChatsListTab !== "chats") {
+    activeChatsListTab = "chats";
+    chatsListTabButtons.forEach((b) => b.classList.toggle("active", b.dataset.chatsListTab === "chats"));
+  }
+  renderChats();
+  openConversation(conversationEntry.id);
+}
+
+// Per-member menu opened from a message avatar: Message / Copy Address / Hide-or-Unhide.
+function openGroupMemberMenu(address, x, y) {
+  document.querySelector(".group-msg-menu")?.remove();
+  if (!address) return;
+  const menu = document.createElement("div");
+  menu.className = "group-msg-menu";
+  const add = (label, fn, danger = false) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (danger) b.className = "danger";
+    b.textContent = label;
+    b.addEventListener("click", () => { menu.remove(); fn(); });
+    menu.append(b);
+  };
+  if (address !== engine.address) {
+    add("Message", () => openOrCreateOneToOne(address));
+    add("Copy Address", () => copyTextToClipboard(address).then(() => showCopyToast("Address copied")).catch(() => {}));
+    const hidden = activeGroupId && isGroupMemberHidden(activeGroupId, address);
+    add(hidden ? "Unhide messages" : "Hide messages", () => {
+      if (!activeGroupId) return;
+      setGroupMemberHidden(activeGroupId, address, !hidden);
+      renderGroupMessages();
+    }, !hidden);
+  } else {
+    add("Copy Address", () => copyTextToClipboard(address).then(() => showCopyToast("Address copied")).catch(() => {}));
+  }
+  document.body.append(menu);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, vw - rect.width - 8)}px`;
+  menu.style.top = `${Math.min(y, vh - rect.height - 8)}px`;
+  const close = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("mousedown", close, true); } };
+  window.setTimeout(() => document.addEventListener("mousedown", close, true), 0);
+}
+
 function loadGroupUnreadAll() { try { return JSON.parse(localStorage.getItem(GROUP_UNREAD_KEY) || "{}") || {}; } catch { return {}; } }
 function groupUnreadFor(groupId) { const all = loadGroupUnreadAll(); return Number(all?.[engine.address || ""]?.[groupId] || 0); }
 function setGroupUnread(groupId, count) {
@@ -12652,10 +12936,19 @@ function memberAvatarHtml(address, className = "chat-avatar") {
   return `<span class="${className}">${escapeHtml(initialsFor(shortAddress(address)))}</span>`;
 }
 
+// Most-recent activity for a group: its newest message time, falling back to the group
+// record's own timestamps so a brand-new (message-less) group still sorts sensibly.
+function groupLastActivityAt(g) {
+  const msgs = groupMessages(g.groupId);
+  const last = msgs[msgs.length - 1];
+  return Number(last?.createdAt || g.updatedAt || g.createdAt || 0);
+}
+
 // --- sidebar group list ---
 function renderGroupList() {
   const mgr = getGroupManager();
-  const groups = mgr ? mgr.listGroups() : [];
+  // Order by the chat with the most recent message (newest first), like the 1:1 list.
+  const groups = (mgr ? mgr.listGroups() : []).slice().sort((a, b) => groupLastActivityAt(b) - groupLastActivityAt(a));
   // groups-tab badge (base hides it by default; we drive it from group unread).
   if (groupsTabBadge) {
     const total = totalGroupUnread();
@@ -12716,11 +13009,17 @@ function openGroupChat(groupId) {
   if (conversation) conversation.hidden = true;
   if (groupChatScreen) groupChatScreen.hidden = false;
   appBody?.classList.add("conversation-open", "detail-active");
+  // Fresh composer state per group open.
+  try {
+    cancelGroupReply(); groupDraftMentions.clear(); closeGroupMentions(); closeGroupPlusMenu(); clearGroupPendingPhoto();
+    if (groupComposerInput) { groupComposerInput.value = ""; autoGrowGroupComposer(); }
+  } catch { /* composer wiring not ready during boot */ }
   window.setTimeout(() => groupComposerInput?.focus(), 0);
   renderGroupList();
 }
 function closeGroupChat() {
   const wasOpen = Boolean(activeGroupId);
+  try { cancelGroupVoice(); cancelGroupReply(); closeGroupMentions(); closeGroupPlusMenu(); clearGroupPendingPhoto(); } catch { /* not ready */ }
   activeGroupId = null;
   if (groupChatScreen) groupChatScreen.hidden = true;
   // Restore the detail pane to its empty state (or nothing, off the Chats tab).
@@ -12728,9 +13027,191 @@ function closeGroupChat() {
   renderGroupList();
 }
 
+// Decode @{kaspa:...} mention tokens back to @DisplayName for display (matches iOS
+// GroupMentionCodec.decodeForDisplay). Members/contacts resolve via groupSenderLabel.
+function decodeGroupMentions(text) {
+  return String(text || "").replace(/@\{(kaspa[a-z0-9:]+)\}/gi, (_, addr) => `@${groupSenderLabel(addr)}`);
+}
+
+// Day-separator label (Today / Yesterday / date) for the group timeline.
+function groupDaySeparatorLabel(ts) {
+  const d = new Date(Number(ts) || Date.now());
+  const now = new Date();
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((midnight(now) - midnight(d)) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString([], { month: "short", day: "numeric", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+}
+
+// Scroll to + briefly highlight a group message by its target key (reply-jump).
+function jumpToGroupMessage(targetKey) {
+  if (!groupMessageArea || !targetKey) return;
+  let row = null;
+  try { row = groupMessageArea.querySelector(`[data-group-msg-key="${CSS.escape(targetKey)}"]`); } catch { row = null; }
+  if (!row) return;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.add("message-row-highlight");
+  window.setTimeout(() => row.classList.remove("message-row-highlight"), 1600);
+}
+
+// Minimal inline-SVG icons for the message context menu (Telegram-style).
+const MSG_MENU_ICONS = {
+  reply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  select: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+  explorer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
+  info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+  retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+};
+
+// Shared Telegram-style right-click menu for a message. Renders a quick-reaction row at the
+// top (tap an emoji to toggle it) followed by the action list. Used by both 1:1 and group
+// messages. `reaction` is optional: { current, onPick }. `items` is [{label, icon, danger, onClick}].
+function openMsgContextMenu({ x, y, reaction, items }) {
+  document.querySelectorAll(".msg-context-menu, .group-msg-menu").forEach((m) => m.remove());
+  const menu = document.createElement("div");
+  menu.className = "msg-context-menu";
+
+  if (reaction) {
+    const row = document.createElement("div");
+    row.className = "msg-context-reactions";
+    for (const emoji of QUICK_REACTION_EMOJIS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = emoji;
+      if (emoji === reaction.current) b.classList.add("active");
+      b.addEventListener("click", () => { cleanup(); reaction.onPick(emoji); });
+      row.append(b);
+    }
+    menu.append(row);
+  }
+
+  const list = document.createElement("div");
+  list.className = "msg-context-actions";
+  for (const item of items) {
+    if (!item) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    if (item.danger) b.classList.add("danger");
+    const ic = document.createElement("span");
+    ic.className = "msg-context-icon";
+    ic.innerHTML = item.icon || "";
+    const lbl = document.createElement("span");
+    lbl.className = "msg-context-label";
+    lbl.textContent = item.label;
+    b.append(ic, lbl);
+    b.addEventListener("click", () => { cleanup(); item.onClick(); });
+    list.append(b);
+  }
+  menu.append(list);
+
+  document.body.append(menu);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, vw - rect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, vh - rect.height - 8))}px`;
+
+  function cleanup() {
+    menu.remove();
+    document.removeEventListener("mousedown", onDown, true);
+    document.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("resize", cleanup, true);
+    messageArea?.removeEventListener("scroll", cleanup, true);
+    groupMessageArea?.removeEventListener("scroll", cleanup, true);
+  }
+  const onDown = (ev) => { if (!menu.contains(ev.target)) cleanup(); };
+  const onKey = (ev) => { if (ev.key === "Escape") cleanup(); };
+  window.setTimeout(() => {
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", cleanup, true);
+    messageArea?.addEventListener("scroll", cleanup, true);
+    groupMessageArea?.addEventListener("scroll", cleanup, true);
+  }, 0);
+}
+
+// Right-click menu for a 1:1 message: reactions + Reply, Copy, Select, Explorer, Info, Retry, Delete.
+function openOneToOneMessageMenu(messageId, x, y) {
+  const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
+  const message = conversationEntry?.messages?.find((m) => m.id === messageId);
+  if (!conversationEntry || !message) return;
+  const targetTxId = message.txid || message.id;
+  const isText = !parseImageEnvelope(message.text) && !parseAudioEnvelope(message.text);
+  const myAddress = engine.address || "";
+  const current = (conversationEntry.reactionsByTxId?.[targetTxId] || []).find((e) => e.reactorAddress === myAddress)?.emoji || null;
+  const items = [];
+  items.push({ label: "Reply", icon: MSG_MENU_ICONS.reply, onClick: () => startReplyTo(message.id) });
+  if (isText) {
+    items.push({ label: "Copy", icon: MSG_MENU_ICONS.copy, onClick: () => copyTextToClipboard(displayTextForMessage(message)).then(() => showCopyToast("Message copied")).catch(() => {}) });
+  }
+  items.push({ label: "Select", icon: MSG_MENU_ICONS.select, onClick: () => enterMessageSelection(message.id) });
+  if (message.txid) {
+    items.push({ label: "View in Explorer", icon: MSG_MENU_ICONS.explorer, onClick: () => window.open(explorerTxUrl(message.txid), "_blank", "noopener,noreferrer") });
+  }
+  items.push({ label: "Message info", icon: MSG_MENU_ICONS.info, onClick: () => openMessageDetails(message.id) });
+  if (message.direction === "outgoing" && message.status === MESSAGE_STATUSES.FAILED) {
+    items.push({ label: "Retry send", icon: MSG_MENU_ICONS.retry, onClick: () => runEngineSendPipeline(conversationEntry.id, message.id) });
+  }
+  items.push({ label: "Delete for me", icon: MSG_MENU_ICONS.trash, danger: true, onClick: () => deleteOneMessageLocal(conversationEntry, message) });
+  // Reactions need a real target (txid or local id) to send against.
+  const reaction = targetTxId ? { current, onPick: (emoji) => sendReaction(conversationEntry, message, emoji) } : null;
+  openMsgContextMenu({ x, y, reaction, items });
+}
+
+// Hide a single 1:1 message from this browser only (mirrors deleteSelectedMessages for one).
+function deleteOneMessageLocal(conversationEntry, message) {
+  if (!conversationEntry || !message) return;
+  conversationEntry.hiddenMessageKeys = [...new Set([
+    ...(conversationEntry.hiddenMessageKeys || []),
+    ...[message.id, message.txid].filter(Boolean).map(String),
+  ])];
+  conversationEntry.messages = (conversationEntry.messages || []).filter((m) => m.id !== message.id);
+  const last = lastMessageFor(conversationEntry);
+  conversationEntry.lastActivityAt = last?.createdAt || conversationEntry.createdAt;
+  conversationEntry.updatedAt = Date.now();
+  persistState();
+  renderMessages(conversationEntry);
+  setStatus("Message deleted locally");
+}
+
+// Right-click / context menu for a group message: reactions + Reply, Copy, Retry, Delete (local).
+function openGroupMessageMenu(message, x, y) {
+  const plain = parseReplyEnvelope(message.text)?.text ?? message.text;
+  const isText = !parseImageEnvelope(message.text) && !parseAudioEnvelope(message.text);
+  const key = groupMsgKey(message);
+  const current = key ? (groupReactionsFor(activeGroupId, key).find((e) => e.reactorAddress === engine.address)?.emoji || null) : null;
+  const items = [];
+  items.push({ label: "Reply", icon: MSG_MENU_ICONS.reply, onClick: () => startGroupReply(message) });
+  if (isText) {
+    items.push({ label: "Copy", icon: MSG_MENU_ICONS.copy, onClick: () => copyTextToClipboard(decodeGroupMentions(plain)).then(() => showCopyToast("Copied")).catch(() => {}) });
+  }
+  if (message.direction === "local" && message.status === MESSAGE_STATUSES.FAILED) {
+    items.push({ label: "Retry send", icon: MSG_MENU_ICONS.retry, onClick: () => { deleteGroupMessageLocal(message); sendGroupWire(message.text); } });
+  }
+  items.push({ label: "Delete for me", icon: MSG_MENU_ICONS.trash, danger: true, onClick: () => deleteGroupMessageLocal(message) });
+  const reaction = key ? { current, onPick: (emoji) => sendGroupReaction(activeGroupId, message, emoji) } : null;
+  openMsgContextMenu({ x, y, reaction, items });
+}
+
+// Remove a group message from THIS device only (other members keep their copy; the on-chain
+// tx stays) — matches iOS's local group-message delete.
+function deleteGroupMessageLocal(message) {
+  if (!activeGroupId) return;
+  const key = message.msgIdHex || message.txId || message.id;
+  const list = groupMessages(activeGroupId).filter((m) => (m.msgIdHex || m.txId || m.id) !== key);
+  saveGroupMessages(activeGroupId, list);
+  renderGroupMessages();
+  renderGroupList();
+}
+
 function renderGroupMessages() {
   if (!activeGroupId || !groupMessageArea) return;
-  const msgs = groupMessages(activeGroupId);
+  // Hidden members' messages are filtered out of the view (see the avatar menu).
+  const msgs = groupMessages(activeGroupId).filter(
+    (m) => !(m.direction === "incoming" && isGroupMemberHidden(activeGroupId, m.senderAddress)),
+  );
   groupMessageArea.innerHTML = "";
   if (!msgs.length) {
     if (groupMessageEmpty) {
@@ -12740,10 +13221,24 @@ function renderGroupMessages() {
     }
     return;
   }
+  let lastDayKey = "";
   msgs.forEach((message, index) => {
+    // Day separator when the calendar day changes.
+    const dayKey = new Date(Number(message.createdAt) || Date.now()).toDateString();
+    if (dayKey !== lastDayKey) {
+      lastDayKey = dayKey;
+      const sep = document.createElement("div");
+      sep.className = "message-day-separator";
+      const pill = document.createElement("span");
+      pill.textContent = groupDaySeparatorLabel(message.createdAt);
+      sep.append(pill);
+      groupMessageArea.appendChild(sep);
+    }
+
     const incoming = message.direction === "incoming";
     const row = document.createElement("div");
     row.className = `message-row ${incoming ? "incoming" : "local"}`;
+    row.dataset.groupMsgKey = groupMsgKey(message);
 
     const selector = document.createElement("span");
     selector.className = "message-selector";
@@ -12766,17 +13261,68 @@ function renderGroupMessages() {
       }
       const next = msgs[index + 1];
       const lastInRun = !next || next.senderAddress !== message.senderAddress || next.direction !== message.direction;
-      if (lastInRun) avatarSlot.innerHTML = memberAvatarHtml(message.senderAddress, "message-avatar");
+      if (lastInRun) {
+        avatarSlot.innerHTML = memberAvatarHtml(message.senderAddress, "message-avatar");
+        avatarSlot.classList.add("group-avatar-clickable");
+        avatarSlot.addEventListener("click", (event) => { event.stopPropagation(); openGroupMemberMenu(message.senderAddress, event.clientX, event.clientY); });
+      }
     } else {
       avatarSlot.innerHTML = selfAvatarHtml("message-avatar");
+      avatarSlot.classList.add("group-avatar-clickable");
+      avatarSlot.addEventListener("click", (event) => { event.stopPropagation(); openGroupMemberMenu(engine.address, event.clientX, event.clientY); });
     }
 
-    const text = document.createElement("span");
-    text.className = "message-text";
-    const linkUrls = renderTextWithLinks(text, message.text);
-    bubble.appendChild(text);
-    const previewable = (linkUrls || []).find(isPreviewableUrl);
-    if (previewable) { const card = buildLinkPreviewCard(previewable); if (card) bubble.appendChild(card); }
+    // Rich content — same envelopes (reply / photo / voice) as 1:1, shared with iOS/Android.
+    const imageEnvelope = parseImageEnvelope(message.text);
+    const audioEnvelope = imageEnvelope ? null : parseAudioEnvelope(message.text);
+    const replyEnvelope = (imageEnvelope || audioEnvelope) ? null : parseReplyEnvelope(message.text);
+    if (replyEnvelope) {
+      const quote = document.createElement("div");
+      quote.className = "message-reply-quote";
+      const label = document.createElement("strong");
+      label.textContent = "Reply";
+      const preview = document.createElement("span");
+      preview.textContent = decodeGroupMentions(replyEnvelope.replyToPreview) || "Message";
+      quote.append(label, preview);
+      quote.addEventListener("click", (event) => { event.stopPropagation(); jumpToGroupMessage(replyEnvelope.replyToId); });
+      bubble.append(quote);
+    }
+
+    if (imageEnvelope) {
+      // Photo-only bubble: no chat-bubble background, just the image (timestamp overlays it).
+      bubble.classList.add("photo-bubble");
+      const img = document.createElement("img");
+      img.className = "message-photo";
+      img.src = imageEnvelope.content;
+      img.alt = imageEnvelope.name || "Photo";
+      img.addEventListener("click", () => openPhotoPreview(imageEnvelope.content));
+      bubble.append(img);
+    } else if (audioEnvelope) {
+      const audioWrap = document.createElement("div");
+      audioWrap.className = "message-audio-bubble";
+      const player = document.createElement("audio");
+      player.controls = true;
+      player.preload = "metadata";
+      player.src = audioEnvelope.content;
+      player.addEventListener("click", (event) => event.stopPropagation());
+      audioWrap.append(player);
+      bubble.append(audioWrap);
+    } else {
+      const text = document.createElement("span");
+      text.className = "message-text";
+      const bodyText = decodeGroupMentions(replyEnvelope ? replyEnvelope.text : message.text);
+      const linkUrls = renderTextWithLinks(text, bodyText);
+      const previewable = (linkUrls || []).find(isPreviewableUrl);
+      const card = previewable ? buildLinkPreviewCard(previewable) : null;
+      const linkOnly = card && !replyEnvelope && linkUrls.length === 1 && String(bodyText).trim() === linkUrls[0];
+      if (linkOnly) {
+        bubble.classList.add("link-card-bubble");
+        bubble.appendChild(card);
+      } else {
+        bubble.appendChild(text);
+        if (card) bubble.appendChild(card);
+      }
+    }
 
     if (message.createdAt) {
       const timeEl = document.createElement("span");
@@ -12785,7 +13331,51 @@ function renderGroupMessages() {
       bubble.append(timeEl);
     }
 
+
+    // Reactions and message actions live on the right-click menu now (Telegram-style),
+    // wired below via the bubble's "contextmenu" handler.
+    const key = groupMsgKey(message);
+
+    // Reaction pills (counts).
+    const reactions = groupReactionsFor(activeGroupId, key);
+    if (reactions.length) {
+      const pill = document.createElement("div");
+      pill.className = "message-reaction-pill";
+      const counts = new Map();
+      for (const entry of reactions) counts.set(entry.emoji, (counts.get(entry.emoji) || 0) + 1);
+      for (const [emoji, count] of counts) {
+        const entryEl = document.createElement("span");
+        entryEl.className = "message-reaction-pill-entry";
+        entryEl.textContent = emoji;
+        if (count > 1) {
+          const countEl = document.createElement("span");
+          countEl.className = "message-reaction-pill-count";
+          countEl.textContent = String(count);
+          entryEl.append(countEl);
+        }
+        pill.append(entryEl);
+      }
+      pill.addEventListener("click", (event) => event.stopPropagation());
+      bubble.append(pill);
+    }
+
+    bubble.addEventListener("contextmenu", (event) => { event.preventDefault(); openGroupMessageMenu(message, event.clientX, event.clientY); });
+
     row.append(selector, avatarSlot, bubble);
+    // Delivery status (checkmark / pending / failed) on your own messages — same as 1:1.
+    // Group messages use direction "local", so shim it to "outgoing" for the shared icon.
+    if (!incoming && message.status) {
+      const icon = createDeliveryStatusIcon({ ...message, direction: "outgoing" });
+      if (icon) row.append(icon);
+      if (message.status === MESSAGE_STATUSES.FAILED) {
+        const retryLink = document.createElement("button");
+        retryLink.type = "button";
+        retryLink.className = "message-retry-link";
+        retryLink.textContent = "Not Delivered · Retry";
+        retryLink.addEventListener("click", (event) => { event.stopPropagation(); retryGroupMessage(message); });
+        row.append(retryLink);
+      }
+    }
     groupMessageArea.appendChild(row);
   });
   groupMessageArea.scrollTop = groupMessageArea.scrollHeight;
@@ -13022,12 +13612,28 @@ function openGroupManage(groupId) {
           <span>${escapeHtml(shortAddress(m.address))}</span>
         </span>
         ${m.isAdmin ? `<span class="group-member-admin-badge">Admin</span>` : ``}
+        ${isAdmin && !m.isAdmin ? `<button type="button" class="group-member-resend-btn" data-group-resend-member="${escapeHtml(m.address)}" title="Resend invite to this member" aria-label="Resend invite"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg></button>` : ``}
         ${canRemove ? `<button type="button" class="group-member-remove" data-group-remove-member="${escapeHtml(m.address)}">Remove</button>` : ``}
       </div>`;
   }).join("");
   const nameSection = isAdmin
     ? `<div class="group-manage-name-row"><input class="group-name-input" type="text" maxlength="40" value="${escapeHtml(g.name || "")}" data-group-rename-input /><button type="button" class="secondary-button" data-group-rename-save>Save</button></div>`
     : `<div class="group-member-line"><span class="group-member-line-meta"><strong>${escapeHtml(g.name || "Group")}</strong></span></div>`;
+  // Hidden members: whose messages are filtered from your view, with an Unhide control.
+  const hiddenAddrs = groupHiddenMembersFor(groupId);
+  const hiddenSection = hiddenAddrs.length ? `
+    <div class="group-manage-section">
+      <p class="group-manage-section-title">Hidden members</p>
+      ${hiddenAddrs.map((addr) => `
+        <div class="group-member-line">
+          ${memberAvatarHtml(addr, "chat-avatar")}
+          <span class="group-member-line-meta">
+            <strong>${escapeHtml(groupSenderLabel(addr))}</strong>
+            <span>${escapeHtml(shortAddress(addr))}</span>
+          </span>
+          <button type="button" class="group-member-remove" data-group-unhide-member="${escapeHtml(addr)}">Unhide</button>
+        </div>`).join("")}
+    </div>` : "";
   groupManageBody.innerHTML = `
     <div class="group-manage-section">
       <p class="group-manage-section-title">Name</p>
@@ -13037,7 +13643,9 @@ function openGroupManage(groupId) {
       <p class="group-manage-section-title">${g.members.length} member${g.members.length === 1 ? "" : "s"}</p>
       ${memberRows}
       ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-add-member><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add Member</button>` : ``}
+      ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-resend-invites><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg> Resend invites</button>` : ``}
     </div>
+    ${hiddenSection}
     <div class="group-manage-section">
       ${isAdmin
         ? `<button type="button" class="group-manage-danger" data-group-delete>Delete Group</button>`
@@ -13055,6 +13663,14 @@ async function syncGroupsNow() {
   try { result = await mgr.syncGroups(); } catch { return 0; }
   let changed = 0;
   for (const decoded of result.messages || []) {
+    // Reactions are group messages carrying a {type:"reaction"} envelope — apply them to the
+    // reactions store and never render them as their own bubble (mirrors the 1:1 path).
+    const reaction = parseReactionEnvelope(decoded.plaintext);
+    if (reaction) {
+      applyGroupReaction(decoded.groupId, reaction.targetTxId, decoded.senderAddress, reaction.emoji, reaction.action);
+      if (decoded.groupId === activeGroupId) changed++;
+      continue;
+    }
     const direction = decoded.senderAddress === engine.address ? "local" : "incoming";
     const bt = Number(decoded.blockTime || 0);
     const createdAt = bt > 1e12 ? bt : (bt > 0 ? bt * 1000 : Date.now());
@@ -13235,39 +13851,347 @@ document.querySelector("[data-group-chat-back]")?.addEventListener("click", clos
 document.querySelector("[data-open-group-manage]")?.addEventListener("click", () => { if (activeGroupId) openGroupManage(activeGroupId); });
 document.querySelector("[data-group-manage-back]")?.addEventListener("click", closeGroupManage);
 
-groupComposer?.addEventListener("submit", async (event) => {
-  event.preventDefault();
+// --- group composer: reply, @mentions, photo, voice (mirrors the 1:1 composer) ---
+const groupPlusButton = document.querySelector("[data-group-plus]");
+const groupPlusMenu = document.querySelector("[data-group-plus-menu]");
+const groupPhotoInput = document.querySelector("[data-group-photo-input]");
+const groupVoicePanel = document.querySelector("[data-group-voice-panel]");
+const groupVoiceTimeEl = document.querySelector("[data-group-voice-time]");
+const groupVoiceCancelBtn = document.querySelector("[data-group-voice-cancel]");
+const groupVoiceStopBtn = document.querySelector("[data-group-voice-stop]");
+const groupReplyBanner = document.querySelector("[data-group-reply-banner]");
+const groupReplyPreview = document.querySelector("[data-group-reply-preview]");
+const groupCancelReplyBtn = document.querySelector("[data-group-cancel-reply]");
+const groupMentionSuggestions = document.querySelector("[data-group-mention-suggestions]");
+
+let groupReplyTarget = null;            // message currently being replied to
+const groupDraftMentions = new Map();   // inserted @label -> kaspa address (for encode-on-send)
+let groupVoiceRecorder = null, groupVoiceChunks = [], groupVoiceStartMs = 0, groupVoiceTimer = null, groupVoiceMime = "";
+
+function autoGrowGroupComposer() {
+  if (!groupComposerInput) return;
+  groupComposerInput.style.height = "auto";
+  groupComposerInput.style.height = `${Math.min(groupComposerInput.scrollHeight, 132)}px`;
+}
+
+function startGroupReply(message) {
+  groupReplyTarget = message;
+  if (groupReplyPreview) groupReplyPreview.textContent = decodeGroupMentions(replyPreviewTextFor(message)) || "Message";
+  if (groupReplyBanner) groupReplyBanner.hidden = false;
+  groupComposerInput?.focus();
+}
+function cancelGroupReply() {
+  groupReplyTarget = null;
+  if (groupReplyBanner) groupReplyBanner.hidden = true;
+}
+
+// Members mentionable with a single-token handle (KNS domain / short address, no spaces).
+function groupMentionCandidates(query) {
+  const g = getGroupManager()?.getGroup(activeGroupId);
+  if (!g) return [];
+  const q = String(query || "").toLowerCase();
+  return g.members
+    .filter((m) => m.address && m.address !== engine.address)
+    .map((m) => {
+      const label = groupSenderLabel(m.address);
+      const handle = /\s/.test(label) ? shortAddress(m.address) : label;
+      return { address: m.address, label, handle };
+    })
+    .filter((m) => !q || m.handle.toLowerCase().includes(q) || m.label.toLowerCase().includes(q))
+    .slice(0, 6);
+}
+function closeGroupMentions() { if (groupMentionSuggestions) { groupMentionSuggestions.hidden = true; groupMentionSuggestions.innerHTML = ""; } }
+function refreshGroupMentions() {
+  if (!groupComposerInput || !groupMentionSuggestions) return;
+  const value = groupComposerInput.value;
+  const caret = groupComposerInput.selectionStart ?? value.length;
+  const before = value.slice(0, caret);
+  const match = /(^|\s)@([^\s@]*)$/.exec(before);
+  if (!match) return closeGroupMentions();
+  const candidates = groupMentionCandidates(match[2]);
+  if (!candidates.length) return closeGroupMentions();
+  groupMentionSuggestions.innerHTML = candidates.map((c) => `
+    <button type="button" class="mention-suggestion" data-mention-address="${escapeHtml(c.address)}" data-mention-handle="${escapeHtml(c.handle)}">
+      ${memberAvatarHtml(c.address, "chat-avatar")}
+      <span><strong>${escapeHtml(c.label)}</strong><small>${escapeHtml(shortAddress(c.address))}</small></span>
+    </button>`).join("");
+  groupMentionSuggestions.hidden = false;
+}
+function insertGroupMention(address, handle) {
+  if (!groupComposerInput) return;
+  const value = groupComposerInput.value;
+  const caret = groupComposerInput.selectionStart ?? value.length;
+  const before = value.slice(0, caret).replace(/@([^\s@]*)$/, `@${handle} `);
+  groupComposerInput.value = before + value.slice(caret);
+  groupDraftMentions.set(`@${handle}`, address);
+  closeGroupMentions();
+  groupComposerInput.focus();
+  autoGrowGroupComposer();
+}
+// Replace tracked @handle tokens with the on-chain @{address} form (matches iOS GroupMentionCodec).
+function encodeGroupMentions(text) {
+  let out = String(text || "");
+  for (const [handle, address] of [...groupDraftMentions.entries()].sort((a, b) => b[0].length - a[0].length)) {
+    out = out.split(handle).join(`@{${address}}`);
+  }
+  return out;
+}
+
+// Shared group send: appends the local echo after the tx is broadcast (so sync dedupes by
+// msgId), with a delivery-status marker.
+// Patch an existing group message in place (status/txId/msgIdHex) and persist.
+function patchGroupMessage(groupId, localId, patch) {
+  const list = groupMessages(groupId);
+  const m = list.find((x) => x.id === localId);
+  if (!m) return;
+  Object.assign(m, patch);
+  saveGroupMessages(groupId, list);
+}
+
+// Re-send a failed group message: patch it back to pending and retry the broadcast in place
+// (no duplicate row), mirroring the 1:1 retry.
+async function retryGroupMessage(message) {
   if (!activeGroupId) return;
+  const gid = activeGroupId;
+  patchGroupMessage(gid, message.id, { status: MESSAGE_STATUSES.PENDING });
+  if (activeGroupId === gid) renderGroupMessages();
   const mgr = getGroupManager();
   if (!mgr) return;
-  const text = String(groupComposerInput?.value || "").trim();
-  if (!text) return;
-  groupComposerInput.value = "";
-  const createdAt = Date.now();
   try {
-    setStatus("Sending group message…");
-    const res = await mgr.sendGroupMessage(activeGroupId, text);
-    appendGroupMessage(activeGroupId, {
-      id: nowId(),
-      senderAddress: engine.address,
-      direction: "local",
-      text,
-      createdAt,
-      txId: res?.txid || null,
-      msgIdHex: res?.msgIdHex || null,
-      senderIsAdmin: Boolean(mgr.getGroup(activeGroupId)?.isAdmin),
-    });
-    renderGroupMessages();
-    renderGroupList();
-    setStatus("Group message sent");
+    const res = await mgr.sendGroupMessage(gid, message.text);
+    patchGroupMessage(gid, message.id, { txId: res?.txid || null, msgIdHex: res?.msgIdHex || null, status: MESSAGE_STATUSES.CONFIRMED });
   } catch (error) {
-    groupComposerInput.value = text; // don't lose the draft on failure
+    patchGroupMessage(gid, message.id, { status: MESSAGE_STATUSES.FAILED });
     setStatus(`Group send failed: ${error.message}`);
-    showCopyToast(`Group send failed. ${error.message}`);
   }
+  if (activeGroupId === gid) { renderGroupMessages(); renderGroupList(); }
+}
+
+// Optimistic group send: the bubble appears instantly (pending), then flips to a delivered
+// checkmark or a failed+retry state — so a slow/failed broadcast never leaves the feed blank.
+async function sendGroupWire(text) {
+  const mgr = getGroupManager();
+  if (!mgr || !activeGroupId) return false;
+  const gid = activeGroupId;
+  const localId = nowId();
+  appendGroupMessage(gid, {
+    id: localId, senderAddress: engine.address, direction: "local",
+    text, createdAt: Date.now(), txId: null, msgIdHex: null,
+    senderIsAdmin: Boolean(mgr.getGroup(gid)?.isAdmin), status: MESSAGE_STATUSES.PENDING,
+  });
+  if (activeGroupId === gid) renderGroupMessages();
+  renderGroupList();
+  try {
+    const res = await mgr.sendGroupMessage(gid, text);
+    // Patch the same row so a later sync of our own message dedupes by msgId (no duplicate).
+    patchGroupMessage(gid, localId, { txId: res?.txid || null, msgIdHex: res?.msgIdHex || null, status: MESSAGE_STATUSES.CONFIRMED });
+    if (activeGroupId === gid) renderGroupMessages();
+    renderGroupList();
+    return true;
+  } catch (error) {
+    patchGroupMessage(gid, localId, { status: MESSAGE_STATUSES.FAILED });
+    if (activeGroupId === gid) renderGroupMessages();
+    setStatus(`Group send failed: ${error.message}`);
+    return false;
+  }
+}
+
+groupComposer?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!activeGroupId || !getGroupManager()) return;
+  const raw = String(groupComposerInput?.value || "").trim();
+  // A staged photo sends on Send (with the typed caption as a following message, if any).
+  if (groupPendingPhoto) {
+    const { attachment, fileName } = groupPendingPhoto;
+    clearGroupPendingPhoto();
+    sendGroupWire(buildImageEnvelopeJson(attachment, fileName));
+  }
+  if (!raw) return;
+  const encoded = encodeGroupMentions(raw);
+  let wire = encoded;
+  if (groupReplyTarget) {
+    wire = JSON.stringify({
+      type: "reply",
+      replyToId: groupMsgKey(groupReplyTarget),
+      replyToSender: groupReplyTarget.senderAddress || "",
+      replyToPreview: replyPreviewTextFor(groupReplyTarget),
+      text: encoded,
+    });
+  }
+  groupComposerInput.value = "";
+  autoGrowGroupComposer();
+  groupDraftMentions.clear();
+  cancelGroupReply();
+  closeGroupMentions();
+  // Optimistic: the bubble is already in the feed. On failure it shows a "Retry" affordance,
+  // so we don't restore the draft (that would double up the message).
+  sendGroupWire(wire);
 });
 
+// Enter sends, Shift+Enter is a newline; keep the box auto-growing.
+groupComposerInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); groupComposer?.requestSubmit(); }
+});
+groupComposerInput?.addEventListener("input", () => { autoGrowGroupComposer(); refreshGroupMentions(); });
+groupMentionSuggestions?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-mention-address]");
+  if (btn) insertGroupMention(btn.dataset.mentionAddress, btn.dataset.mentionHandle);
+});
+groupCancelReplyBtn?.addEventListener("click", cancelGroupReply);
+
+// Plus-menu (Photo / Voice).
+function closeGroupPlusMenu() { if (groupPlusMenu) groupPlusMenu.hidden = true; }
+groupPlusButton?.addEventListener("click", () => { if (groupPlusMenu) groupPlusMenu.hidden = !groupPlusMenu.hidden; });
+groupPlusMenu?.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-group-compose]");
+  if (!btn) return;
+  closeGroupPlusMenu();
+  if (btn.dataset.groupCompose === "photo") groupPhotoInput?.click();
+  else if (btn.dataset.groupCompose === "voice") startGroupVoice();
+});
+
+// Photo send.
+// Group pending-photo staging: selecting a photo stages it in the composer (with a preview)
+// so you press Send yourself — it does NOT auto-send. Mirrors the 1:1 flow.
+const groupPendingPhotoPreview = document.querySelector("[data-group-pending-photo-preview]");
+const groupPendingPhotoThumb = document.querySelector("[data-group-pending-photo-thumb]");
+const groupPendingPhotoMeta = document.querySelector("[data-group-pending-photo-meta]");
+const groupPendingPhotoRemove = document.querySelector("[data-group-pending-photo-remove]");
+let groupPendingPhoto = null;
+function clearGroupPendingPhoto() {
+  groupPendingPhoto = null;
+  if (groupPendingPhotoPreview) groupPendingPhotoPreview.hidden = true;
+}
+function setGroupPendingPhoto(attachment, fileName) {
+  groupPendingPhoto = { attachment, fileName };
+  if (groupPendingPhotoThumb) groupPendingPhotoThumb.src = attachment.dataUrl;
+  if (groupPendingPhotoMeta) groupPendingPhotoMeta.textContent = `Photo · ${attachment.width}×${attachment.height} · ${(attachment.bytes / 1024).toFixed(1)} KB`;
+  if (groupPendingPhotoPreview) groupPendingPhotoPreview.hidden = false;
+  groupComposerInput?.focus();
+}
+groupPendingPhotoRemove?.addEventListener("click", clearGroupPendingPhoto);
+groupPhotoInput?.addEventListener("change", async () => {
+  const file = groupPhotoInput.files?.[0];
+  groupPhotoInput.value = "";
+  if (!file || !activeGroupId) return;
+  try {
+    setStatus("Compressing photo…");
+    const attachment = await compressImageBlob(file);
+    setGroupPendingPhoto(attachment, file.name || "photo.jpg");
+    setStatus(`Photo ready · ${(attachment.bytes / 1024).toFixed(1)} KB · press Send`);
+  } catch (error) { showCopyToast(error.message || "Could not attach that photo."); }
+});
+
+// Voice send (native MediaRecorder → the same {type:"file",audio/...} envelope as 1:1).
+async function startGroupVoice() {
+  if (!activeGroupId) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    groupVoiceMime = pickVoiceMimeType();
+    groupVoiceRecorder = new MediaRecorder(stream, groupVoiceMime ? { mimeType: groupVoiceMime, audioBitsPerSecond: VOICE_AUDIO_BITS_PER_SECOND } : undefined);
+    groupVoiceChunks = [];
+    groupVoiceRecorder.ondataavailable = (e) => { if (e.data?.size) groupVoiceChunks.push(e.data); };
+    groupVoiceRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
+    groupVoiceRecorder.start();
+    groupVoiceStartMs = Date.now();
+    if (groupVoicePanel) groupVoicePanel.hidden = false;
+    if (groupVoiceTimeEl) groupVoiceTimeEl.textContent = "0:00";
+    groupVoiceTimer = window.setInterval(() => {
+      const secs = (Date.now() - groupVoiceStartMs) / 1000;
+      if (groupVoiceTimeEl) groupVoiceTimeEl.textContent = formatRecordingTime(secs);
+      if (secs >= voiceMaxDurationSeconds()) finishGroupVoice(true);
+    }, 250);
+  } catch (error) { showCopyToast("Microphone access denied or unavailable."); }
+}
+function stopGroupVoiceTimer() { if (groupVoiceTimer) { clearInterval(groupVoiceTimer); groupVoiceTimer = null; } }
+function cancelGroupVoice() {
+  stopGroupVoiceTimer();
+  try { groupVoiceRecorder?.stop(); } catch {}
+  groupVoiceRecorder = null; groupVoiceChunks = [];
+  if (groupVoicePanel) groupVoicePanel.hidden = true;
+}
+async function finishGroupVoice(send) {
+  stopGroupVoiceTimer();
+  if (groupVoicePanel) groupVoicePanel.hidden = true;
+  const recorder = groupVoiceRecorder;
+  groupVoiceRecorder = null;
+  if (!recorder) return;
+  const durationSec = Math.round((Date.now() - groupVoiceStartMs) / 1000);
+  await new Promise((resolve) => { recorder.addEventListener("stop", resolve, { once: true }); try { recorder.stop(); } catch { resolve(); } });
+  if (!send || !groupVoiceChunks.length || !activeGroupId) { groupVoiceChunks = []; return; }
+  const blob = new Blob(groupVoiceChunks, { type: groupVoiceMime || "audio/webm" });
+  groupVoiceChunks = [];
+  const dataUrl = await new Promise((resolve) => { const r = new FileReader(); r.onload = () => resolve(String(r.result || "")); r.readAsDataURL(blob); });
+  if (!dataUrl.startsWith("data:")) return;
+  await sendGroupWire(JSON.stringify({ type: "file", name: "voice.webm", size: blob.size, mimeType: groupVoiceMime || "audio/webm", content: dataUrl, duration: durationSec }));
+}
+groupVoiceStopBtn?.addEventListener("click", () => finishGroupVoice(true));
+groupVoiceCancelBtn?.addEventListener("click", cancelGroupVoice);
+
+// Scroll-to-latest button for the group thread — appears when scrolled up.
+(function setupGroupScrollToBottom() {
+  if (!groupMessageArea || !groupMessageArea.parentElement) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "group-scroll-bottom";
+  btn.setAttribute("aria-label", "Scroll to latest");
+  btn.hidden = true;
+  btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  btn.addEventListener("click", () => groupMessageArea.scrollTo({ top: groupMessageArea.scrollHeight, behavior: "smooth" }));
+  groupMessageArea.parentElement.appendChild(btn);
+  groupMessageArea.addEventListener("scroll", () => {
+    btn.hidden = groupMessageArea.scrollHeight - groupMessageArea.scrollTop - groupMessageArea.clientHeight < 120;
+  }, { passive: true });
+})();
+
 groupManageBody?.addEventListener("click", async (event) => {
+  // Unhide is local-only (no engine call) — handle it before the admin-action gate.
+  const unhide = event.target.closest("[data-group-unhide-member]");
+  if (unhide && activeGroupId) {
+    setGroupMemberHidden(activeGroupId, unhide.dataset.groupUnhideMember, false);
+    renderGroupMessages();
+    openGroupManage(activeGroupId);
+    return;
+  }
+  // Resend an invite to ONE member (admin) — targeted retry.
+  const resendOne = event.target.closest("[data-group-resend-member]");
+  if (resendOne && activeGroupId) {
+    const mgr = getGroupManager();
+    if (!mgr) return;
+    const addr = resendOne.dataset.groupResendMember;
+    resendOne.disabled = true;
+    setStatus("Resending invite…");
+    try {
+      await mgr.resendInviteToMember(activeGroupId, addr);
+      setStatus("Invite resent");
+      showCopyToast("Invite resent.");
+    } catch (error) {
+      setStatus(`Invite failed: ${error.message}`);
+      showCopyToast(`Invite failed. ${error.message}`);
+    } finally {
+      resendOne.disabled = false;
+    }
+    return;
+  }
+  // Resend invites (admin) — retry any that failed to send at create time.
+  const resend = event.target.closest("[data-group-resend-invites]");
+  if (resend && activeGroupId) {
+    const mgr = getGroupManager();
+    if (!mgr) return;
+    resend.disabled = true;
+    setStatus("Resending invites…");
+    try {
+      await mgr.resendInvites(activeGroupId);
+      setStatus("Invites resent");
+      showCopyToast("Invites resent to all members.");
+    } catch (error) {
+      setStatus(`Some invites still failed: ${error.message}`);
+      showCopyToast(`Some invites still failed. ${error.message}`);
+    } finally {
+      resend.disabled = false;
+    }
+    return;
+  }
   const target = event.target.closest("[data-group-remove-member],[data-group-add-member],[data-group-rename-save],[data-group-delete],[data-group-leave]");
   if (!target || !activeGroupId) return;
   const mgr = getGroupManager();

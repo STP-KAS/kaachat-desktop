@@ -31,7 +31,44 @@ export async function getBalance(kaspa, rpc, address) {
 }
 
 export async function sendKaspa({ kaspa, rpc, withRpc = null, privateKey, sourceAddress, destinationAddress, amountKas, feeKas = "0", payload = null, selectedOutpoints = null, log = () => {} }) {
-  return enqueueSend(sourceAddress, () => sendKaspaNow({ kaspa, rpc, withRpc, privateKey, sourceAddress, destinationAddress, amountKas, feeKas, payload, selectedOutpoints, log }));
+  return enqueueSend(sourceAddress, () => sendKaspaWithUtxoRetry({ kaspa, rpc, withRpc, privateKey, sourceAddress, destinationAddress, amountKas, feeKas, payload, selectedOutpoints, log }));
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Back-to-back self-sends (spamming chat/group messages) each spend the wallet's UTXO and
+// create a change UTXO that the node's confirmed UTXO set doesn't reflect for a moment. The
+// next queued send then finds no spendable UTXO (or tries to spend the just-spent one and the
+// mempool rejects it as already-spent/orphan) until the change lands. These are TRANSIENT: a
+// short wait + refetch succeeds. We retry ONLY on those UTXO-availability symptoms - never on a
+// generic network error (withRpc already handles node failover) or a real "insufficient funds",
+// and never after a tx was actually accepted (a returned result never reaches the retry). This
+// makes rapid message sending reliable without needing full UTXO-chaining.
+function isTransientUtxoError(error) {
+  const m = String(error?.message || error || "").toLowerCase();
+  return m.includes("no utxos") ||
+    m.includes("insufficient") ||
+    m.includes("already spent") ||
+    m.includes("orphan") ||
+    m.includes("outpoint") ||
+    (m.includes("utxo") && m.includes("not found"));
+}
+
+async function sendKaspaWithUtxoRetry(params) {
+  const maxAttempts = 5;
+  const retryDelayMs = 1200;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await sendKaspaNow(params);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isTransientUtxoError(error)) throw error;
+      params.log?.(`Send attempt ${attempt} hit a transient UTXO state (${error.message}); retrying in ${retryDelayMs}ms.`);
+      await sleep(retryDelayMs);
+    }
+  }
+  throw lastError;
 }
 
 async function sendKaspaNow({ kaspa, rpc, withRpc = null, privateKey, sourceAddress, destinationAddress, amountKas, feeKas = "0", payload = null, selectedOutpoints = null, log = () => {} }) {

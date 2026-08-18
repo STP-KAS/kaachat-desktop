@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=244" />
+  <link rel="stylesheet" href="./ui/styles.css?v=253" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -317,14 +317,52 @@
               </div>
               <div class="composer-shell group-composer-shell">
                 <p class="group-readonly-note" data-group-readonly-note hidden>You are no longer a member of this group.</p>
+
+                <div class="composer-plus-menu" data-group-plus-menu hidden>
+                  <button type="button" data-group-compose="photo">
+                    <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m5 17 4.5-4.5 3.2 3.2 2.3-2.3L19 17"/></svg></span>
+                    <strong>Send Photo</strong>
+                  </button>
+                  <button type="button" data-group-compose="voice">
+                    <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6"/></svg></span>
+                    <strong>Send Voice Recording</strong>
+                  </button>
+                </div>
+
+                <div class="voice-recording-panel" data-group-voice-panel hidden>
+                  <span class="voice-recording-dot" aria-hidden="true"></span>
+                  <span data-group-voice-time>0:00</span>
+                  <span class="voice-recording-hint">Recording voice message…</span>
+                  <button type="button" class="voice-recording-cancel" data-group-voice-cancel aria-label="Cancel recording">Cancel</button>
+                  <button type="button" class="voice-recording-stop" data-group-voice-stop>Send</button>
+                </div>
+
+                <div class="reply-banner" data-group-reply-banner hidden>
+                  <div class="reply-banner-body">
+                    <strong>Replying to</strong>
+                    <span data-group-reply-preview></span>
+                  </div>
+                  <button type="button" data-group-cancel-reply aria-label="Cancel reply">×</button>
+                </div>
+
+                <div class="mention-suggestions" data-group-mention-suggestions hidden></div>
+
+                <div class="pending-photo-preview" data-group-pending-photo-preview hidden>
+                  <img data-group-pending-photo-thumb alt="Pending photo attachment" />
+                  <span class="pending-photo-meta" data-group-pending-photo-meta></span>
+                  <button type="button" class="pending-photo-remove" data-group-pending-photo-remove aria-label="Remove photo">×</button>
+                </div>
+
                 <form class="composer kachat-composer" data-group-composer>
+                  <button class="composer-tool composer-plus" type="button" data-group-plus aria-label="More message options">+</button>
                   <div class="composer-field-wrap">
-                    <input class="composer-input" name="message" type="text" placeholder="Message" autocomplete="off" data-group-composer-input />
+                    <textarea class="composer-input" name="message" placeholder="Message" autocomplete="off" rows="1" data-group-composer-input></textarea>
                     <button class="composer-send" type="submit" aria-label="Send message">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
                     </button>
                   </div>
                 </form>
+                <input type="file" accept="image/*" hidden data-group-photo-input />
               </div>
             </div>
           </div>
@@ -2328,7 +2366,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=233"></script>
+  <script type="module" src="./ui/app.js?v=242"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

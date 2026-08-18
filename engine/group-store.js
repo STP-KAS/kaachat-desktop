@@ -186,12 +186,41 @@ export class GroupManager {
       name: record.name, adminPrivateKey: this.engine.privateKeyHex,
     });
     const json = JSON.stringify(payload);
+    // Each member's invite is its own self-spend tx. Send them per-member and resiliently:
+    // one member failing must NOT abort the others (that's how a second member — e.g. the
+    // iPhone one — was silently dropped). Retry each send a few times with a short delay,
+    // because back-to-back sends contend for the same UTXO until the prior tx's change output
+    // settles, so a bare second send often fails until it does.
+    const failures = [];
     for (const member of record.members) {
       if (member.address === this.walletAddress) continue; // we already have the keys
-      const encryptedHex = await this.engine.encryptGroupControl(member.address, json);
-      const wire = G.buildControlPayload({ recipientXOnlyPubKey: member.xOnlyPubKeyHex, encryptedHex });
-      await this.engine.sendGroupPayload(wire);
+      try {
+        await this._sendControlToMember(member, json);
+      } catch (error) {
+        failures.push({ address: member.address, message: error?.message || String(error) });
+      }
     }
+    if (failures.length) {
+      const err = new Error(`${failures.length} of ${record.members.length - 1} invite(s) could not be sent`);
+      err.failures = failures;
+      throw err;
+    }
+  }
+
+  // Encrypt + broadcast one member's gctl_root, retrying to ride out UTXO contention from a
+  // just-sent sibling tx (the change output needs a moment to become spendable again).
+  async _sendControlToMember(member, json, { attempts = 4, delayMs = 1800 } = {}) {
+    const encryptedHex = await this.engine.encryptGroupControl(member.address, json);
+    const wire = G.buildControlPayload({ recipientXOnlyPubKey: member.xOnlyPubKeyHex, encryptedHex });
+    let lastError = null;
+    for (let i = 0; i < attempts; i += 1) {
+      try { return await this.engine.sendGroupPayload(wire); }
+      catch (error) {
+        lastError = error;
+        if (i < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+    throw lastError;
   }
 
   // --- membership changes (admin), each bumps the epoch and re-distributes ---
@@ -245,6 +274,37 @@ export class GroupManager {
     const record = this.getGroup(groupId);
     if (!record) throw new Error("Group not found.");
     if (!record.isAdmin) throw new Error("Only the group admin can do that.");
+    return record;
+  }
+
+  // Re-broadcast the CURRENT epoch's root to every member (admin) — used to retry invites
+  // that failed to send at create time, without rotating the epoch. Throws (with .failures)
+  // if any member still can't be reached.
+  async resendInvites(groupId) {
+    const record = this._requireAdmin(groupId);
+    await this._distributeRoot(record, record.currentEpoch);
+    delete record.inviteWarning;
+    this._put(record);
+    return record;
+  }
+
+  // Re-broadcast the current root to ONE member (admin) — a targeted retry of a single failed
+  // invite, no epoch rotation. Throws if the send fails.
+  async resendInviteToMember(groupId, address) {
+    const record = this._requireAdmin(groupId);
+    const member = record.members.find((m) => m.address === address);
+    if (!member) throw new Error("That member is not in the group.");
+    if (member.address === this.walletAddress) return record; // never invite ourselves
+    const groupSeed = G.hexToBytes(record.groupSeedHex);
+    const groupIdBytes = G.hexToBytes(record.groupId);
+    const groupRootEpoch = G.deriveGroupRootEpoch(groupSeed, groupIdBytes, record.currentEpoch);
+    const blindingKey = G.hexToBytes(record.blindingKeyHex);
+    const payload = G.buildSignedRootPayload({
+      groupId: groupIdBytes, epoch: record.currentEpoch, groupRootEpoch, blindingKey,
+      adminSigningPub: record.adminSigningPub, members: record.members.map((m) => m.address),
+      name: record.name, adminPrivateKey: this.engine.privateKeyHex,
+    });
+    await this._sendControlToMember(member, JSON.stringify(payload));
     return record;
   }
 

@@ -4018,6 +4018,7 @@ body.session-logged-out [data-account-rename-modal] {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden; /* never scroll sideways — content (e.g. the group member rows) must fit */
   padding: 0 12px;
 }
 
@@ -6731,7 +6732,10 @@ body.session-logged-out [data-account-rename-modal] {
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--surface-1);
+  min-width: 0; /* let the name/address column truncate instead of shoving the button off-screen */
 }
+/* Keep the info card's rows inside the card — the member row shrinks, no horizontal scroll. */
+.group-manage-body, .group-manage-section { min-width: 0; }
 .group-member-line-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .group-member-line-meta strong { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .group-member-line-meta span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -7089,3 +7093,270 @@ body.session-logged-out [data-account-rename-modal] {
   background: var(--surface-2);
   box-shadow: inset 0 0 0 1.5px var(--kaspa-ink);
 }
+
+/* --- Group chat parity: mentions, context menu, day separators, reply-jump highlight --- */
+.mention-suggestions {
+  position: relative;
+  margin: 0 8px 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.mention-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.mention-suggestion:hover { background: var(--surface-2); }
+.mention-suggestion span { display: flex; flex-direction: column; min-width: 0; }
+.mention-suggestion strong { font-size: 14px; }
+.mention-suggestion small { font-size: 12px; color: var(--muted); }
+
+.group-msg-menu {
+  position: fixed;
+  z-index: 1600;
+  min-width: 160px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.group-msg-menu button {
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+}
+.group-msg-menu button:hover { background: var(--surface-2); }
+.group-msg-menu button.danger { color: #ff5a5a; }
+
+/* Telegram-style right-click message menu: a reaction row on top, actions below. */
+.msg-context-menu {
+  position: fixed;
+  z-index: 1600;
+  min-width: 210px;
+  /* Opaque panel color - NOT var(--surface), which is undefined and renders see-through. */
+  background: var(--panel-2);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0,0,0,.45);
+  overflow: hidden;
+  animation: msg-context-in .12s ease;
+}
+@keyframes msg-context-in {
+  from { opacity: 0; transform: scale(.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.msg-context-reactions {
+  display: flex;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.msg-context-reactions button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  padding: 6px 0;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform .1s ease, background .1s ease;
+}
+.msg-context-reactions button:hover { background: var(--surface-2); transform: scale(1.18); }
+.msg-context-reactions button.active { background: rgba(98,244,208,.20); }
+.msg-context-actions {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+}
+.msg-context-actions button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+}
+.msg-context-actions button:hover { background: var(--surface-2); }
+.msg-context-actions button.danger { color: #ff5a5a; }
+.msg-context-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  opacity: .85;
+}
+.msg-context-icon svg { width: 18px; height: 18px; }
+.msg-context-actions button.danger .msg-context-icon { opacity: 1; }
+
+.message-day-separator {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 8px;
+}
+.message-day-separator span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+
+.message-row-highlight .message-bubble {
+  animation: groupReplyPulse 1.6s ease;
+}
+@keyframes groupReplyPulse {
+  0%, 100% { box-shadow: none; }
+  25% { box-shadow: 0 0 0 2px var(--kaspa); }
+}
+
+/* Group management: clickable member avatar + scroll-to-latest button */
+.group-avatar-clickable { cursor: pointer; }
+.group-chat-inner { position: relative; }
+.group-scroll-bottom {
+  position: absolute;
+  right: 18px;
+  bottom: 92px;
+  z-index: 5;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(0,0,0,.4);
+}
+.group-scroll-bottom svg { width: 20px; height: 20px; }
+.group-scroll-bottom[hidden] { display: none; }
+
+/* Rich link preview card (Open-Graph / YouTube) — matches iOS's LinkPreviewCardView */
+.message-link-card {
+  display: block;
+  margin-top: 6px;
+  max-width: 320px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+.message-link-card:hover { background: var(--surface-2); }
+.message-link-card-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1.91 / 1;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.message-link-card-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.message-link-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(0,0,0,.6);
+  color: #fff;
+  font-size: 18px;
+  pointer-events: none;
+}
+.message-link-card-meta { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; }
+.message-link-card-site { font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--muted); text-transform: uppercase; }
+.message-link-card-title { font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.message-link-card-desc { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Photo-only messages: the image IS the bubble (no chat-bubble chrome), timestamp overlaid. */
+.message-bubble.photo-bubble {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+  position: relative;
+  overflow: visible;
+}
+.message-bubble.photo-bubble .message-photo {
+  display: block;
+  margin: 0;
+  border-radius: 16px;
+}
+.message-bubble.photo-bubble .message-time {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  margin: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
+  backdrop-filter: blur(2px);
+}
+
+/* Link-only messages: the preview card IS the message (no chat-bubble chrome), timestamp below. */
+.message-bubble.link-card-bubble {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+}
+.message-bubble.link-card-bubble .message-link-card { margin-top: 0; }
+.message-bubble.link-card-bubble .message-time {
+  display: block;
+  text-align: right;
+  margin-top: 4px;
+}
+
+/* Per-member "Resend invite" icon button in Group Info (admin). */
+.group-member-resend-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kaspa);
+  cursor: pointer;
+}
+.group-member-resend-btn:hover { background: var(--surface-2); }
+.group-member-resend-btn:disabled { opacity: .5; cursor: default; }

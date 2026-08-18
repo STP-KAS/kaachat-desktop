@@ -31,6 +31,15 @@ function nextcloudProxy() {
         // The browser's origin/referer would confuse some reverse-proxy setups — drop them.
         delete headers.origin;
         delete headers.referer;
+        // Link-preview scrape (x-preview): use a crawler User-Agent so sites emit their og:image /
+        // og:title the way they do for Facebook/Slack unfurlers (a plain browser UA increasingly
+        // gets a login/consent wall). Mirrors iOS LinkPreviewService's facebookexternalhit UA.
+        if (headers["x-preview"] === "1") {
+          headers["user-agent"] = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
+          delete headers.accept;
+          headers.accept = "text/html,application/xhtml+xml";
+        }
+        delete headers["x-preview"];
         // Opt-in "soft 404": APIs that use 404 to mean "not found, and that's normal" (KNS
         // primary-name lookups for addresses without domains) make the browser console scream
         // red for every answer. When the caller sends x-proxy-soft-404, an upstream 404 is
