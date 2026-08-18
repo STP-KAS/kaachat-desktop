@@ -19,7 +19,7 @@ export const ENDPOINT_DEFAULTS = Object.freeze({
   kasiaIndexer: "https://indexer.kasia.wtf",
   kapostIndexer: "https://kachat.duckdns.org",
   broadcastIndexer: "https://kachat.duckdns.org",
-  pushIndexer: "https://indexer.kasia.wtf",
+  pushIndexer: "https://kachat.duckdns.org",
   knsApi: "https://api.knsdomains.org/mainnet/api/v1",
   trustedNode: "",
 });
@@ -45,23 +45,41 @@ let overrides = loadStored();
   }
 })();
 
-// In the Vite dev browser, a CORS-less indexer (indexer.kasia.wtf) can't be fetched
-// directly. Route it through the same-origin /nc-proxy middleware, which forwards the
-// request server-side where CORS does not apply. Left untouched outside dev (native /
-// packaged builds have no CORS) and for hosts that already allow CORS.
-function toDevProxy(url) {
-  try {
-    if (!import.meta?.env?.DEV) return url;
-  } catch { return url; }
-  try {
-    const parsed = new URL(url);
-    if (/(^|\.)kasia\.wtf$/i.test(parsed.hostname)) {
-      const path = parsed.pathname === "/" ? "" : parsed.pathname;
-      return `/nc-proxy/${encodeURIComponent(parsed.origin)}${path}`;
-    }
-  } catch { /* not an absolute URL — leave as-is */ }
-  return url;
+// In the Vite dev browser, the Kasia indexer (indexer.kasia.wtf) sends no CORS headers,
+// so direct fetch() calls are blocked. Group chat and 1:1 sync REQUIRE this host, so we
+// transparently reroute every kasia.wtf request through the same-origin /nc-proxy
+// middleware (see vite.config.mjs), which forwards it server-side where CORS does not
+// apply. Wrapping fetch once — rather than rewriting URLs in getEndpoint() — covers ALL
+// call sites (sync.js, group-indexer.js, messages.js, and the settings input path) and
+// keeps the URLs real https:// everywhere else, so normalizeBaseUrl and native/packaged
+// builds (which have no CORS) still hit the host directly. No-op outside dev.
+function installDevIndexerProxy() {
+  // NOTE: Vite string-replaces the literal token `import.meta.env.DEV` at transform time.
+  // Optional chaining (import.meta?.env?.DEV) does NOT match that token, so it would be
+  // left to evaluate at runtime where `import.meta.env` doesn't exist — silently yielding
+  // false and disabling the proxy. Keep this as the exact literal token.
+  let dev = false;
+  try { dev = Boolean(import.meta.env.DEV); } catch { dev = false; }
+  if (!dev || typeof window === "undefined" || typeof window.fetch !== "function" || window.__kasiaDevProxyInstalled) return;
+  window.__kasiaDevProxyInstalled = true;
+  console.info("[kachat] indexer dev-proxy active — kasia.wtf requests routed through /nc-proxy");
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const rawUrl = typeof input === "string" ? input : (input && input.url) || "";
+      if (rawUrl) {
+        const parsed = new URL(rawUrl, window.location.origin);
+        if (/(^|\.)kasia\.wtf$/i.test(parsed.hostname)) {
+          const proxied = `/nc-proxy/${encodeURIComponent(parsed.origin)}${parsed.pathname}${parsed.search}`;
+          if (typeof input === "string") return nativeFetch(proxied, init);
+          return nativeFetch(new Request(proxied, input), init);
+        }
+      }
+    } catch { /* fall through to native fetch */ }
+    return nativeFetch(input, init);
+  };
 }
+installDevIndexerProxy();
 
 function persist() {
   try { localStorage.setItem(ENDPOINTS_KEY, JSON.stringify(overrides)); } catch {}
@@ -72,7 +90,7 @@ function persist() {
 export function getEndpoint(key) {
   const value = overrides[key];
   const resolved = (value != null && String(value).trim()) ? String(value).trim() : (ENDPOINT_DEFAULTS[key] || "");
-  return toDevProxy(resolved.replace(/\/+$/, ""));
+  return resolved.replace(/\/+$/, "");
 }
 
 export function getEndpoints() {

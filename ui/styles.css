@@ -190,6 +190,20 @@ button { cursor: pointer; }
   border-radius: 16px;
   background: transparent;
   color: var(--muted);
+  cursor: grab;
+  transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease;
+  touch-action: none; /* let pointer drags reorder instead of scrolling/panning */
+}
+
+/* Drag-to-reorder: the dock arms grab-mode while an item is picked up, and the lifted
+   item floats above its neighbors until dropped. */
+.sidebar-tabbar.reordering { cursor: grabbing; }
+.sidebar-tabbar.reordering .sidebar-tab { cursor: grabbing; }
+.sidebar-tab.dragging {
+  transform: translateY(-6px) scale(1.06);
+  background: var(--surface-2);
+  box-shadow: 0 10px 24px rgba(0,0,0,.5);
+  z-index: 2;
 }
 
 .sidebar-tab:hover .sidebar-tab-icon { background: var(--surface-2); }
@@ -1309,7 +1323,8 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .composer-row { margin-bottom: 96px;
 .composer-row .kachat-composer { flex: 1 1 auto; min-width: 0; margin: 0; }
 /* The create-chat button is only for the chat list: hide it while a 1:1 conversation is
    open, and bring it back once you click off the chat. */
-body:has(.conversation-view:not([hidden])) .new-chat-fab { display: none; }
+body:has(.conversation-view:not([hidden])) .new-chat-fab,
+body:has(.group-chat-screen:not([hidden])) .new-chat-fab { display: none; }
 
 .composer-input {
   min-width: 0;
@@ -5850,6 +5865,14 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .profile-screen { padding-bottom: 13
 /* Profile > Apps screen: same bubble grid, now on its own full-screen card. */
 .apps-screen-grid { padding: 8px 10px 20px; }
 
+/* Apps as a dockable tab: same centered column the other tab screens use. */
+.apps-tab-screen {
+  flex: 1; min-height: 0; overflow-y: auto;
+  width: 100%; max-width: 640px; margin: 0 auto;
+  padding: 20px 20px 40px;
+}
+.apps-tab-screen .apps-screen-grid { padding: 4px 0 12px; }
+
 /* Profile > Help screen: guide rows (iOS ProfileHelpView.helpRow). */
 .help-guide-list { display: flex; flex-direction: column; padding: 4px 4px 14px; }
 .help-guide-row {
@@ -6588,12 +6611,15 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px
 
 /* Full-screen group thread. */
 .group-chat-screen {
-  position: fixed;
-  inset: 0;
-  z-index: 1400;
+  /* Fills the right-side detail pane, sharing it with the 1:1 conversation view
+     (only one is un-hidden at a time). Was a fixed full-screen overlay. */
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   background: var(--bg);
   display: flex;
 }
+.group-chat-screen[hidden] { display: none; }
 .group-chat-inner {
   display: flex;
   flex-direction: column;

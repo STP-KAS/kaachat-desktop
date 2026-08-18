@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=239" />
+  <link rel="stylesheet" href="./ui/styles.css?v=242" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -297,6 +297,38 @@
             </div>
           </article>
 
+          <!-- Group thread — shares the right-side detail pane with the 1:1 conversation view
+               (mutually exclusive), so opening a group shows its messages here instead of a
+               separate full-screen overlay. -->
+          <div class="group-chat-screen" data-group-chat-screen hidden aria-label="Group chat">
+            <div class="group-chat-inner">
+              <div class="conversation-header group-chat-header">
+                <button class="back-button" type="button" data-group-chat-back aria-label="Back to chats">‹</button>
+                <button class="conversation-identity group-chat-identity" type="button" data-open-group-manage aria-label="Group info">
+                  <span class="conversation-avatar group-chat-avatar" aria-hidden="true" data-group-chat-avatar></span>
+                  <span class="group-chat-heading">
+                    <h1 data-group-chat-name>Group</h1>
+                    <p class="conversation-bio group-chat-sub" data-group-chat-sub></p>
+                  </span>
+                </button>
+              </div>
+              <div class="message-area group-message-area" data-group-message-area>
+                <div class="message-empty group-message-empty" data-group-message-empty hidden></div>
+              </div>
+              <div class="composer-shell group-composer-shell">
+                <p class="group-readonly-note" data-group-readonly-note hidden>You are no longer a member of this group.</p>
+                <form class="composer kachat-composer" data-group-composer>
+                  <div class="composer-field-wrap">
+                    <input class="composer-input" name="message" type="text" placeholder="Message" autocomplete="off" data-group-composer-input />
+                    <button class="composer-send" type="submit" aria-label="Send message">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
         <div class="portfolio-screen profile-screen" data-app-tab-screen="cold-storage" hidden>
           <div data-cold-root></div>
         </div>
@@ -307,6 +339,27 @@
 
         <div class="portfolio-screen profile-screen" data-app-tab-screen="portfolio" hidden>
           <div data-portfolio-root></div>
+        </div>
+
+        <div class="profile-screen apps-tab-screen" data-app-tab-screen="apps" hidden>
+          <div class="kaposts-header">
+            <h1 class="kaposts-title">Apps</h1>
+          </div>
+          <p class="broadcast-intro">Explore the Kaspa ecosystem. Links open in your browser.</p>
+          <div class="profile-apps-grid apps-screen-grid">
+            <a class="profile-app-bubble" href="https://kaspa.org" target="_blank" rel="noopener"><span>K</span>Kaspa.org</a>
+            <a class="profile-app-bubble" href="https://kaspa.stream" target="_blank" rel="noopener"><span>▶</span>Kaspa Stream</a>
+            <a class="profile-app-bubble" href="https://explorer.kaspa.org" target="_blank" rel="noopener"><span>⛓</span>Kaspa Explorer</a>
+            <a class="profile-app-bubble" href="https://kasmap.org" target="_blank" rel="noopener"><span>🗺</span>KasMap</a>
+            <a class="profile-app-bubble" href="https://kasshi.io" target="_blank" rel="noopener"><span>▶</span>KasShi</a>
+            <a class="profile-app-bubble" href="https://kaspa.news" target="_blank" rel="noopener"><span>📰</span>Kaspa News</a>
+            <a class="profile-app-bubble" href="https://kasplay.fun" target="_blank" rel="noopener"><span>🎮</span>KasPlay</a>
+            <a class="profile-app-bubble" href="https://kasmart.org" target="_blank" rel="noopener"><span>🛒</span>KasMart</a>
+            <a class="profile-app-bubble" href="https://kasmedia.com" target="_blank" rel="noopener"><span>📺</span>KasMedia</a>
+            <a class="profile-app-bubble" href="https://www.kaspalytics.com" target="_blank" rel="noopener"><span>📊</span>Kaspalytics</a>
+            <a class="profile-app-bubble" href="https://kas-smiths.org" target="_blank" rel="noopener"><span>⚒️</span>Kas-Smiths</a>
+            <a class="profile-app-bubble" href="https://t.me/kasparnd" target="_blank" rel="noopener"><span>🔬</span>Kaspa Core R&amp;D</a>
+          </div>
         </div>
 
         <div class="broadcasts-screen" data-app-tab-screen="broadcasts" hidden>
@@ -578,6 +631,10 @@
         <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
         <span>Swaps</span>
       </button>
+      <button class="sidebar-tab" type="button" data-app-tab="apps">
+        <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></svg></span>
+        <span>Apps</span>
+      </button>
       <button class="sidebar-tab" type="button" data-app-tab="profile">
         <span class="sidebar-tab-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.25"/><circle cx="12" cy="8.35" r="3.35"/><path d="M5.8 18.75c1.2-3.15 3.35-4.7 6.2-4.7s5 1.55 6.2 4.7"/></svg></span>
         <span>Profile</span>
@@ -705,6 +762,10 @@
                     <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546"/></svg>Broadcasts</span>
                     <label class="switch-control"><input type="checkbox" data-menu-tab="broadcasts" checked><span></span></label>
                   </div>
+                  <div class="menu-tab-row">
+                    <span class="menu-tab-label"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></svg>Apps</span>
+                    <label class="switch-control"><input type="checkbox" data-menu-tab="apps"><span></span></label>
+                  </div>
                   <p class="field-hint" data-child-dock-note hidden>Swap, KaPosts and Broadcasts are hidden while Child Mode is on — an adult can bring them back in Settings &gt; Security &gt; Child Mode.</p>
               </div>
             </div>
@@ -760,7 +821,7 @@
                     <input class="field-input" type="url" data-endpoint="broadcastIndexer" autocomplete="off" spellcheck="false" />
                   </label>
                   <label class="field-label compact">Push Indexer URL
-                    <input class="field-input" type="url" data-endpoint="pushIndexer" autocomplete="off" spellcheck="false" />
+                    <input class="field-input" type="url" data-endpoint="pushIndexer" autocomplete="off" spellcheck="false" placeholder="https://kachat.duckdns.org" />
                   </label>
                   <label class="field-label compact">KNS API URL
                     <input class="field-input" type="url" data-endpoint="knsApi" autocomplete="off" spellcheck="false" />
@@ -1450,36 +1511,6 @@
     </section>
   </div>
 
-  <!-- Group chat: standalone full-screen thread (mirrors the 1:1 conversation view,
-       but driven entirely by the group store so none of the 1:1 systems are touched). -->
-  <div class="group-chat-screen" data-group-chat-screen hidden role="dialog" aria-modal="true" aria-label="Group chat">
-    <div class="group-chat-inner">
-      <div class="conversation-header group-chat-header">
-        <button class="back-button" type="button" data-group-chat-back aria-label="Back to chats">‹</button>
-        <button class="conversation-identity group-chat-identity" type="button" data-open-group-manage aria-label="Group info">
-          <span class="conversation-avatar group-chat-avatar" aria-hidden="true" data-group-chat-avatar></span>
-          <span class="group-chat-heading">
-            <h1 data-group-chat-name>Group</h1>
-            <p class="conversation-bio group-chat-sub" data-group-chat-sub></p>
-          </span>
-        </button>
-      </div>
-      <div class="message-area group-message-area" data-group-message-area>
-        <div class="message-empty group-message-empty" data-group-message-empty hidden></div>
-      </div>
-      <div class="composer-shell group-composer-shell">
-        <p class="group-readonly-note" data-group-readonly-note hidden>You are no longer a member of this group.</p>
-        <form class="composer kachat-composer" data-group-composer>
-          <div class="composer-field-wrap">
-            <input class="composer-input" name="message" type="text" placeholder="Message" autocomplete="off" data-group-composer-input />
-            <button class="composer-send" type="submit" aria-label="Send message">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-5.5 5.5M12 5l5.5 5.5"/></svg>
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
 
   <!-- Group Info / manage: roster, plus admin controls (add/remove/rename) and leave/delete. -->
   <div class="chatting-address-screen manage-address-screen group-manage-screen" data-group-manage-screen hidden role="dialog" aria-modal="true" aria-label="Group Info">
@@ -2272,7 +2303,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=224"></script>
+  <script type="module" src="./ui/app.js?v=229"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

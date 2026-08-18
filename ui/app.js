@@ -1088,6 +1088,10 @@ const chatSelectionBar = document.querySelector("[data-chat-selection-bar]");
 let activeChatsListTab = "chats";
 let chatSelectionModeActive = false;
 const selectedChatConversationIds = new Set();
+// Group-thread multi-select (Group Chats tab) — mirrors selectedChatConversationIds but
+// keyed by groupId. Selection mode (chatSelectionModeActive) is shared across both tabs;
+// each tab acts on its own set based on the active list tab.
+const selectedGroupIds = new Set();
 // Group-chat manager state. Declared here (not in the group module at the end of the
 // file) because the boot-time renderChats path reaches getGroupManager before the tail
 // of the module has evaluated, and a `let` in the tail would be in its temporal dead zone.
@@ -1368,6 +1372,11 @@ wideLayoutMedia.addEventListener("change", (event) => {
 // updateDetailActiveClass() below alongside conversation state.
 let currentAppTab = "chats";
 
+// The group thread and the 1:1 conversation share the right-side detail pane and are
+// mutually exclusive. Declared here (hoisted above its group-module usage) so the shared
+// layout helpers below can reference it during boot without a TDZ error.
+let activeGroupId = null;
+
 // `.detail-active` covers both "a conversation is open" and "a non-Chats tab
 // is selected" — either one means the detail pane, not the sidebar's chat
 // list, should take over the full width in narrow mode (see the media query
@@ -1375,22 +1384,47 @@ let currentAppTab = "chats";
 // since it's also used there to hide the tab bar during that specific
 // drill-down, which placeholder tabs should NOT do.
 function updateDetailActiveClass() {
-  appBody?.classList.toggle("detail-active", Boolean(activeConversationId) || currentAppTab !== "chats");
+  appBody?.classList.toggle("detail-active", Boolean(activeConversationId) || Boolean(activeGroupId) || currentAppTab !== "chats");
+}
+
+// Toggle the `.active` highlight on the currently-open chat / group row directly, without a
+// full list re-render. Needed because openConversation() renders the list before the active
+// id is set, so the highlight would otherwise never land on the clicked row.
+function updateActiveRowHighlight() {
+  document.querySelectorAll("[data-conversation-id]").forEach((row) => {
+    row.classList.toggle("active", Boolean(activeConversationId) && row.dataset.conversationId === activeConversationId);
+  });
+  document.querySelectorAll("[data-group-open]").forEach((row) => {
+    row.classList.toggle("active", Boolean(activeGroupId) && row.dataset.groupOpen === activeGroupId);
+  });
 }
 
 function setActiveConversationId(id) {
   activeConversationId = id;
+  // A 1:1 thread and a group thread can't share the detail pane — opening a real 1:1
+  // dismisses any open group. Torn down inline (not via closeGroupChat) so we don't
+  // re-enter this function and clobber the id we just set.
+  if (id && activeGroupId) {
+    activeGroupId = null;
+    if (groupChatScreen) groupChatScreen.hidden = true;
+    try { renderGroupList(); } catch { /* group module not ready */ }
+  }
   try { updateChatFundingGate(); } catch { /* gate section not evaluated yet */ }
   const isOpen = Boolean(id);
-  appBody?.classList.toggle("conversation-open", isOpen);
+  const onChatsTab = currentAppTab === "chats";
+  // A group owning the detail pane counts as "open" for the collapse-to-detail layout, and
+  // its pane must survive the background setActiveConversationId(null) refreshes.
+  const groupOwnsDetail = !id && Boolean(activeGroupId) && onChatsTab;
+  appBody?.classList.toggle("conversation-open", isOpen || groupOwnsDetail);
   // The conversation pane and its "Select a conversation" empty state belong to the CHATS
   // tab only - background refreshes call this with null while another tab (KaPosts etc.)
   // is showing, and unconditionally unhiding the empty state stacked it on top of that
   // tab's screen.
-  const onChatsTab = currentAppTab === "chats";
   if (conversation) conversation.hidden = !isOpen || !onChatsTab;
-  if (detailEmptyState) detailEmptyState.hidden = isOpen || !onChatsTab;
+  if (detailEmptyState) detailEmptyState.hidden = isOpen || groupOwnsDetail || !onChatsTab;
+  if (groupOwnsDetail && groupChatScreen) groupChatScreen.hidden = false;
   updateDetailActiveClass();
+  updateActiveRowHighlight();
   // Opening a 1:1 thread is enough to raise the handshake warning (no typing
   // needed); leaving one drops it.
   try { updateHandshakeWarningBanner(); } catch { /* banner section not evaluated yet */ }
@@ -4731,9 +4765,13 @@ function setActiveAppTab(tab) {
   if (!isChats) {
     if (conversation) conversation.hidden = true;
     if (detailEmptyState) detailEmptyState.hidden = true;
+    if (groupChatScreen) groupChatScreen.hidden = true;
   } else {
-    if (conversation) conversation.hidden = !activeConversationId;
-    if (detailEmptyState) detailEmptyState.hidden = Boolean(activeConversationId);
+    // Back on Chats: a group thread owns the pane if one is open, else the 1:1 does.
+    const groupOpen = Boolean(activeGroupId);
+    if (groupChatScreen) groupChatScreen.hidden = !groupOpen;
+    if (conversation) conversation.hidden = groupOpen || !activeConversationId;
+    if (detailEmptyState) detailEmptyState.hidden = groupOpen || Boolean(activeConversationId);
   }
   updateDetailActiveClass();
   if (tab === "profile") { refreshOwnKnsProfile(); refreshSpendingSummary(); }
@@ -4758,6 +4796,9 @@ sidebarTabButtons.forEach((button) => {
 const dockBar = document.querySelector(".sidebar-tabbar");
 const DOCK_REVEAL_ZONE_PX = 110;
 let dockHideTimer = null;
+// True while a dock item is being dragged to reorder — keeps the dock pinned open so the
+// auto-hide can't snatch it away mid-drag (see enableDockReorder below).
+let dockDragActive = false;
 
 function showDock() {
   if (!dockBar) return;
@@ -4769,6 +4810,7 @@ function hideDockSoon(delay = 400) {
   if (!dockBar) return;
   if (dockHideTimer) clearTimeout(dockHideTimer);
   dockHideTimer = window.setTimeout(() => {
+    if (dockDragActive) return;
     if (dockBar.matches(":hover") || dockBar.contains(document.activeElement)) return;
     dockBar.classList.add("dock-hidden");
   }, delay);
@@ -4776,10 +4818,16 @@ function hideDockSoon(delay = 400) {
 
 if (dockBar) {
   window.addEventListener("mousemove", (event) => {
+    // Keep the dock open while reordering, wherever the pointer roams.
+    if (dockDragActive) { showDock(); return; }
     // No bottom-edge reveal while a modal dialog is up — the dock would slide over the
     // dialog's own bottom buttons (e.g. the Cold Storage send flow's Scan button).
     if (document.querySelector(".modal-backdrop:not([hidden])")) { hideDockSoon(); return; }
-    if (window.innerHeight - event.clientY <= DOCK_REVEAL_ZONE_PX) showDock();
+    // While a chat is open, only reveal from a thin strip at the very bottom edge (below
+    // the composer/bubbles) so the dock doesn't pop up while you read or type. Off the
+    // chat (list view) it keeps the easy, larger reveal band.
+    const revealZone = (activeConversationId || activeGroupId) ? 6 : DOCK_REVEAL_ZONE_PX;
+    if (window.innerHeight - event.clientY <= revealZone) showDock();
     else hideDockSoon();
   }, { passive: true });
   dockBar.addEventListener("focusin", showDock);
@@ -4792,6 +4840,125 @@ if (dockBar) {
   hideDockSoon(2600);
 }
 
+// --- Drag-to-reorder the dock -------------------------------------------------
+// Hold (or start dragging) any dock item to pick it up, slide it left/right past its
+// neighbors to reposition, and release to drop. The new order is written straight into
+// the per-account dock prefs (dockPrefs.order). A plain quick tap still switches tabs —
+// a drag suppresses that following click so reordering never changes the active screen.
+(function enableDockReorder() {
+  const tabbar = document.querySelector(".sidebar-tabbar");
+  if (!tabbar) return;
+
+  const HOLD_MS = 160;          // press-and-hold before a drag arms
+  const MOVE_THRESHOLD_PX = 6;  // or move this far first — whichever comes first
+  let dragBtn = null;
+  let pointerId = null;
+  let holdTimer = null;
+  let startX = 0;
+  let startY = 0;
+  let dragging = false;
+  let suppressClick = false;
+
+  function clearHold() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+
+  function cleanup() {
+    clearHold();
+    if (dragBtn) {
+      dragBtn.classList.remove("dragging");
+      try { if (pointerId != null) dragBtn.releasePointerCapture(pointerId); } catch { /* already released */ }
+    }
+    tabbar.classList.remove("reordering");
+    dockDragActive = false;
+    dragBtn = null;
+    pointerId = null;
+    dragging = false;
+    hideDockSoon(1200);
+  }
+
+  function beginDrag() {
+    if (!dragBtn || dragging) return;
+    dragging = true;
+    dockDragActive = true;
+    showDock();
+    dragBtn.classList.add("dragging");
+    tabbar.classList.add("reordering");
+    try { if (pointerId != null) dragBtn.setPointerCapture(pointerId); } catch { /* capture optional */ }
+  }
+
+  // Move dragBtn to wherever the pointer sits along the horizontal dock, based on the
+  // centers of the other visible items.
+  function reorderTo(clientX) {
+    const siblings = [...tabbar.querySelectorAll(".sidebar-tab")].filter((b) => !b.hidden && b !== dragBtn);
+    for (const sib of siblings) {
+      const rect = sib.getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) {
+        if (sib.previousElementSibling !== dragBtn) tabbar.insertBefore(dragBtn, sib);
+        return;
+      }
+    }
+    if (tabbar.lastElementChild !== dragBtn) tabbar.appendChild(dragBtn);
+  }
+
+  tabbar.addEventListener("pointerdown", (event) => {
+    if (event.button != null && event.button !== 0) return;
+    const btn = event.target.closest(".sidebar-tab");
+    if (!btn || btn.hidden || !tabbar.contains(btn)) return;
+    dragBtn = btn;
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
+    suppressClick = false;
+    clearHold();
+    holdTimer = window.setTimeout(beginDrag, HOLD_MS);
+  });
+
+  tabbar.addEventListener("pointermove", (event) => {
+    if (!dragBtn || event.pointerId !== pointerId) return;
+    if (!dragging) {
+      if (Math.abs(event.clientX - startX) > MOVE_THRESHOLD_PX || Math.abs(event.clientY - startY) > MOVE_THRESHOLD_PX) {
+        clearHold();
+        beginDrag();
+      } else {
+        return;
+      }
+    }
+    if (!dragging) return;
+    event.preventDefault();
+    suppressClick = true;
+    reorderTo(event.clientX);
+  });
+
+  function finishDrag(event) {
+    if (!dragBtn || (pointerId != null && event.pointerId !== pointerId)) return;
+    const wasDragging = dragging;
+    if (wasDragging) {
+      // Persist the DOM order (known tabs only) so the layout is stable across reloads.
+      const domOrder = [...tabbar.querySelectorAll(".sidebar-tab")]
+        .map((b) => b.dataset.appTab)
+        .filter((t) => DOCK_DEFAULT_ORDER.includes(t));
+      dockPrefs.order = domOrder;
+      persistDockPrefs();
+      applyDockLayout();
+    }
+    cleanup();
+  }
+
+  tabbar.addEventListener("pointerup", finishDrag);
+  tabbar.addEventListener("pointercancel", cleanup);
+
+  // A drag ends with a synthetic click on the button — swallow it (capture phase, before
+  // the tab-switch handler) so releasing a reorder never also changes the active tab.
+  tabbar.addEventListener("click", (event) => {
+    if (suppressClick) {
+      event.stopPropagation();
+      event.preventDefault();
+      suppressClick = false;
+    }
+  }, true);
+})();
+
 // Menu customization (Settings > Customization > Menu) — which dock tabs appear.
 // Chats and Profile are always shown (like iOS); Portfolio, Cold Storage and Swap
 // can be hidden. Hidden ids persist in accountShellPrefs.hiddenTabs.
@@ -4802,23 +4969,26 @@ if (dockBar) {
 // ---------------------------------------------------------------------------
 
 const DOCK_PREFS_KEY = "kachat-dock-prefs-v1"; // account-scoped: { hiddenTabs, order }
-const DOCK_DEFAULT_ORDER = ["cold-storage", "portfolio", "chats", "kaposts", "broadcasts", "swaps", "profile"];
+const DOCK_DEFAULT_ORDER = ["cold-storage", "portfolio", "chats", "kaposts", "broadcasts", "swaps", "apps", "profile"];
 const DOCK_ALWAYS_VISIBLE = ["chats", "profile"];
-const MENU_TOGGLEABLE_TABS = ["portfolio", "cold-storage", "swaps", "kaposts", "broadcasts"];
+const MENU_TOGGLEABLE_TABS = ["portfolio", "cold-storage", "swaps", "kaposts", "broadcasts", "apps"];
 
 function loadDockPrefs() {
   try {
     const parsed = JSON.parse(localStorage.getItem(accountScopedKey(DOCK_PREFS_KEY)) || "null");
     if (parsed && typeof parsed === "object") {
-      return {
-        hiddenTabs: Array.isArray(parsed.hiddenTabs) ? parsed.hiddenTabs : [],
-        order: Array.isArray(parsed.order) ? parsed.order : [...DOCK_DEFAULT_ORDER],
-      };
+      const hiddenTabs = Array.isArray(parsed.hiddenTabs) ? parsed.hiddenTabs : [];
+      const order = Array.isArray(parsed.order) ? parsed.order : [...DOCK_DEFAULT_ORDER];
+      // Apps is opt-in: if this saved config predates the Apps tab (not in its
+      // order), hide it once so it only appears after the user enables it.
+      if (!order.includes("apps") && !hiddenTabs.includes("apps")) hiddenTabs.push("apps");
+      return { hiddenTabs, order };
     }
   } catch { /* fall through */ }
   // Migration: adopt the old global hiddenTabs the first time an account loads.
+  // Fresh installs get the Apps tab hidden by default (opt-in in Customize Dock).
   const legacy = Array.isArray(accountShellPrefs.hiddenTabs) ? accountShellPrefs.hiddenTabs : [];
-  return { hiddenTabs: [...legacy], order: [...DOCK_DEFAULT_ORDER] };
+  return { hiddenTabs: [...new Set([...legacy, "apps"])], order: [...DOCK_DEFAULT_ORDER] };
 }
 
 let dockPrefs = loadDockPrefs();
@@ -4880,6 +5050,11 @@ function applyDockLayout() {
   });
   const childDockNote = document.querySelector("[data-child-dock-note]");
   if (childDockNote) childDockNote.hidden = !childMode;
+
+  // Apps lives in either the dock OR the Profile view, never both. Once it's an enabled
+  // dock tab, drop the redundant "Apps" row from Profile; bring it back if disabled.
+  const profileAppsRow = document.querySelector("[data-open-apps-screen]");
+  if (profileAppsRow) profileAppsRow.hidden = !isTabHidden("apps");
 
   const activeBtn = tabbar.querySelector(".sidebar-tab.active");
   if (activeBtn && activeBtn.hidden) setActiveAppTab("chats");
@@ -8048,37 +8223,69 @@ chatList.addEventListener("click", (event) => {
   openConversation(conversationId);
 });
 
+// The list of groups the Group Chats tab currently shows (order matches renderGroupList).
+function visibleGroups() {
+  const mgr = getGroupManager();
+  return mgr ? mgr.listGroups() : [];
+}
+
+// Selection is per-tab: the Group Chats tab acts on selectedGroupIds, everything else on
+// selectedChatConversationIds.
+function selectionIsGroups() { return activeChatsListTab === "groups"; }
+function activeSelectionCount() {
+  return selectionIsGroups() ? selectedGroupIds.size : selectedChatConversationIds.size;
+}
+
 function updateChatSelectionBar() {
   if (chatSelectionBar) chatSelectionBar.hidden = !chatSelectionModeActive;
   const markRead = document.querySelector("[data-chat-mark-read]");
   const markUnread = document.querySelector("[data-chat-mark-unread]");
   const deleteButton = document.querySelector("[data-chat-delete-selected]");
-  const disabled = selectedChatConversationIds.size === 0;
+  const disabled = activeSelectionCount() === 0;
   if (markRead) markRead.disabled = disabled;
   if (markUnread) markUnread.disabled = disabled;
   if (deleteButton) deleteButton.disabled = disabled;
   if (chatSelectAll) {
-    const visible = visibleChatConversations();
-    const allSelected = visible.length > 0 && visible.every((entry) => selectedChatConversationIds.has(entry.id));
-    chatSelectAll.textContent = allSelected ? "Deselect All" : "Select All";
-    chatSelectAll.disabled = visible.length === 0;
+    if (selectionIsGroups()) {
+      const visible = visibleGroups();
+      const allSelected = visible.length > 0 && visible.every((g) => selectedGroupIds.has(g.groupId));
+      chatSelectAll.textContent = allSelected ? "Deselect All" : "Select All";
+      chatSelectAll.disabled = visible.length === 0;
+    } else {
+      const visible = visibleChatConversations();
+      const allSelected = visible.length > 0 && visible.every((entry) => selectedChatConversationIds.has(entry.id));
+      chatSelectAll.textContent = allSelected ? "Deselect All" : "Select All";
+      chatSelectAll.disabled = visible.length === 0;
+    }
   }
 }
 
 function setChatSelectionMode(active) {
   chatSelectionModeActive = active;
-  if (!active) selectedChatConversationIds.clear();
+  if (!active) { selectedChatConversationIds.clear(); selectedGroupIds.clear(); }
   if (chatSelectToggle) chatSelectToggle.textContent = active ? "Cancel" : "Select";
   if (chatSelectAll) chatSelectAll.hidden = !active;
   if (appSidebar) appSidebar.classList.toggle("selecting-chats", active);
   updateChatSelectionBar();
   renderChats();
+  renderGroupList();
 }
 
 chatSelectToggle?.addEventListener("click", () => setChatSelectionMode(!chatSelectionModeActive));
 
 chatSelectAll?.addEventListener("click", () => {
   if (!chatSelectionModeActive) return;
+  if (selectionIsGroups()) {
+    const visible = visibleGroups();
+    const allSelected = visible.length > 0 && visible.every((g) => selectedGroupIds.has(g.groupId));
+    for (const g of visible) {
+      if (allSelected) selectedGroupIds.delete(g.groupId);
+      else selectedGroupIds.add(g.groupId);
+    }
+    renderGroupList();
+    updateChatSelectionBar();
+    return;
+  }
   const visible = visibleChatConversations();
   const allSelected = visible.length > 0 && visible.every((entry) => selectedChatConversationIds.has(entry.id));
   for (const entry of visible) {
@@ -8105,6 +8312,13 @@ chatsListTabButtons.forEach((button) => {
 });
 
 document.querySelector("[data-chat-mark-read]")?.addEventListener("click", () => {
+  if (selectionIsGroups()) {
+    for (const id of selectedGroupIds) setGroupUnread(id, 0);
+    setChatSelectionMode(false);
+    renderGroupList();
+    showCopyToast("Marked as read");
+    return;
+  }
   for (const conversationEntry of state.conversations) {
     if (selectedChatConversationIds.has(conversationEntry.id)) conversationEntry.unreadCount = 0;
   }
@@ -8114,6 +8328,15 @@ document.querySelector("[data-chat-mark-read]")?.addEventListener("click", () =>
 });
 
 document.querySelector("[data-chat-mark-unread]")?.addEventListener("click", () => {
+  if (selectionIsGroups()) {
+    for (const id of selectedGroupIds) {
+      if (Number(groupUnreadFor(id) || 0) === 0) setGroupUnread(id, 1);
+    }
+    setChatSelectionMode(false);
+    renderGroupList();
+    showCopyToast("Marked as unread");
+    return;
+  }
   for (const conversationEntry of state.conversations) {
     if (selectedChatConversationIds.has(conversationEntry.id) && Number(conversationEntry.unreadCount || 0) === 0) {
       conversationEntry.unreadCount = 1;
@@ -8125,6 +8348,19 @@ document.querySelector("[data-chat-mark-unread]")?.addEventListener("click", () 
 });
 
 document.querySelector("[data-chat-delete-selected]")?.addEventListener("click", () => {
+  if (selectionIsGroups()) {
+    const count = selectedGroupIds.size;
+    if (!count) return;
+    if (!confirm(`Delete ${count} group${count === 1 ? "" : "s"} from this device? Members you invited keep their copy. This cannot be undone.`)) return;
+    const mgr = getGroupManager();
+    const ids = new Set(selectedGroupIds);
+    if (activeGroupId && ids.has(activeGroupId)) closeGroupChat();
+    if (mgr) for (const id of ids) { try { mgr.deleteGroup(id); } catch { /* already gone */ } }
+    setChatSelectionMode(false);
+    renderGroupList();
+    showCopyToast(`Deleted ${count} group${count === 1 ? "" : "s"}`);
+    return;
+  }
   const count = selectedChatConversationIds.size;
   if (!count) return;
   if (!confirm(`Delete ${count} chat${count === 1 ? "" : "s"}? This removes the conversation and contact locally. This cannot be undone.`)) return;
@@ -12223,7 +12459,8 @@ queueMicrotask(async () => {
    but has its own render/send paths, so none of the 1:1 systems are touched.
    ============================================================================ */
 
-let activeGroupId = null;
+// activeGroupId is declared up top (near setActiveConversationId) so the shared detail-pane
+// layout helpers can read it without a temporal-dead-zone error during boot.
 const groupCreateSelected = new Set();
 let groupModalMode = "create"; // "create" | "add"
 let groupModalTargetId = null;
@@ -12325,8 +12562,11 @@ function setChatToolRowsForGroupsTab(isGroups) {
   const selectRow = document.querySelector(".chat-select-row");
   const actionsRow = document.querySelector("[data-group-actions-row]");
   const listEl = document.querySelector("[data-group-list]");
-  if (selectRow) selectRow.hidden = isGroups;
-  if (actionsRow) actionsRow.hidden = !isGroups;
+  // The Group Chats tab now uses the same Select control as the Chats tab (multi-select
+  // groups to mark read / delete). New groups are created with the floating + button, so
+  // the old "New Group" header row is retired.
+  if (selectRow) selectRow.hidden = false;
+  if (actionsRow) actionsRow.hidden = true;
   if (!isGroups && listEl) listEl.hidden = true;
 }
 
@@ -12377,8 +12617,10 @@ function renderGroupList() {
       : `${g.members.length} member${g.members.length === 1 ? "" : "s"}`;
     const time = last ? formatTime(last.createdAt) : "";
     const unread = groupUnreadFor(g.groupId);
+    const selected = selectedGroupIds.has(g.groupId);
     return `
-      <button class="chat-row group-row${g.groupId === activeGroupId ? " active" : ""}" type="button" data-group-open="${escapeHtml(g.groupId)}">
+      <button class="chat-row group-row${chatSelectionModeActive ? " selecting" : ""}${selected ? " selected" : ""}${g.groupId === activeGroupId ? " active" : ""}" type="button" data-group-open="${escapeHtml(g.groupId)}">
+        ${chatSelectionModeActive ? `<span class="chat-row-select" aria-hidden="true"><span class="chat-row-checkbox${selected ? " checked" : ""}"></span></span>` : ``}
         <span class="chat-row-time">${escapeHtml(time)}</span>
         <span class="chat-avatar">${groupAvatarHtml()}</span>
         <span class="chat-meta">
@@ -12390,12 +12632,16 @@ function renderGroupList() {
   }).join("");
 }
 
-// --- group thread ---
+// --- group thread (shares the right-side detail pane with the 1:1 conversation view) ---
 function openGroupChat(groupId) {
   const mgr = getGroupManager();
   const g = mgr && mgr.getGroup(groupId);
   if (!g) return;
+  // Take over the detail pane: clear any open 1:1 and hide its empty state. Setting
+  // activeGroupId first means setActiveConversationId(null) treats the group as the pane
+  // owner (keeps conversation-open/detail-active on for the narrow-layout collapse).
   activeGroupId = groupId;
+  setActiveConversationId(null);
   setGroupUnread(groupId, 0);
   if (groupChatName) groupChatName.textContent = g.name || "Group";
   if (groupChatSub) groupChatSub.textContent = `${g.members.length} member${g.members.length === 1 ? "" : "s"}`;
@@ -12404,13 +12650,19 @@ function openGroupChat(groupId) {
   if (groupReadonlyNote) groupReadonlyNote.hidden = amMember;
   if (groupComposer) groupComposer.hidden = !amMember;
   renderGroupMessages();
+  if (detailEmptyState) detailEmptyState.hidden = true;
+  if (conversation) conversation.hidden = true;
   if (groupChatScreen) groupChatScreen.hidden = false;
+  appBody?.classList.add("conversation-open", "detail-active");
   window.setTimeout(() => groupComposerInput?.focus(), 0);
   renderGroupList();
 }
 function closeGroupChat() {
+  const wasOpen = Boolean(activeGroupId);
   activeGroupId = null;
   if (groupChatScreen) groupChatScreen.hidden = true;
+  // Restore the detail pane to its empty state (or nothing, off the Chats tab).
+  if (wasOpen) setActiveConversationId(null);
   renderGroupList();
 }
 
@@ -12842,10 +13094,17 @@ groupCreateSubmit?.addEventListener("click", async () => {
       if (!name) { updateGroupCreateSubmit(); return; }
       setStatus("Creating group and inviting members…");
       const record = await mgr.createGroup({ name, memberAddresses: members });
+      // Take the admin straight into the new group. The modal closes first, then the thread
+      // opens in the detail pane.
       closeGroupCreate();
       renderGroupList();
-      setStatus("Group created");
       openGroupChat(record.groupId);
+      if (record.inviteWarning) {
+        setStatus(`Group created, but some invites did not send: ${record.inviteWarning}`);
+        showCopyToast("Group created. Some invites failed to send - open group info to retry.");
+      } else {
+        setStatus("Group created");
+      }
     }
   } catch (error) {
     if (groupCreateError) { groupCreateError.textContent = error.message; groupCreateError.hidden = false; }
@@ -12859,6 +13118,14 @@ groupListEl?.addEventListener("click", (event) => {
   const row = event.target.closest("[data-group-open]");
   if (!row) return;
   const groupId = row.dataset.groupOpen;
+  // In select mode a tap toggles the group's checkbox instead of opening it.
+  if (chatSelectionModeActive) {
+    if (selectedGroupIds.has(groupId)) selectedGroupIds.delete(groupId);
+    else selectedGroupIds.add(groupId);
+    renderGroupList();
+    updateChatSelectionBar();
+    return;
+  }
   // Clicking the already-open group again closes its view.
   if (groupId === activeGroupId) { closeGroupChat(); return; }
   openGroupChat(groupId);

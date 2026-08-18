@@ -112,7 +112,15 @@ export class GroupManager {
       updatedAt: 0,
     };
     this._put(record);
-    await this._distributeRoot(record, epoch);
+    // The group is already created and persisted. A failed invite broadcast (transient node
+    // / balance / network) must NOT block the admin from entering the new group — surface it
+    // as a soft warning and let it be retried (re-adding a member re-distributes the root).
+    try {
+      await this._distributeRoot(record, epoch);
+    } catch (error) {
+      record.inviteWarning = error?.message || String(error);
+      this._put(record);
+    }
     return record;
   }
 
