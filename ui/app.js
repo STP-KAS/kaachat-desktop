@@ -10188,10 +10188,24 @@ function importPhoneChatArchive(json) {
     }
   }
 
+  // Groups (cross-platform recovery): the archive may carry full group key material so a
+  // second device of the same account recovers groups it CREATED (admin - no on-chain invite
+  // is addressed to us) as well as member ones. Import them into the per-wallet group store.
+  let importedGroups = 0;
+  if (Array.isArray(archive.groups) && archive.groups.length) {
+    const mgr = getGroupManager();
+    if (mgr) {
+      for (const g of archive.groups) {
+        try { if (mgr.importGroupRecord(g)) importedGroups += 1; } catch { /* skip a malformed group */ }
+      }
+    }
+  }
+
   reloadStateFromBrowserStorage();
   renderChats();
+  if (importedGroups) { try { renderGroupList(); } catch { /* group UI not ready */ } }
   if (quotaTrimmed) showCopyToast("Backup too large to store fully — imported what fit.");
-  return { conversations: touchedConversationIds.size, messages: mergedMessages };
+  return { conversations: touchedConversationIds.size, messages: mergedMessages, groups: importedGroups };
 }
 
 // ---------------------------------------------------------------------------
@@ -10448,7 +10462,35 @@ function buildLocalChatArchive() {
     exportedAt: archiveIsoTimestamp(Date.now()),
     walletAddress: myAddress || null,
     conversations,
+    groups: buildArchiveGroups(),
   };
+}
+
+// Full group key material for the shared backup archive, so another device of the same
+// account can recover every group - including admin groups, whose seed exists ONLY on the
+// creating device. deviceId/msgCounter are per-device and deliberately omitted (the importer
+// mints its own). Field names match the iOS/Android archive decoders.
+function buildArchiveGroups() {
+  const mgr = getGroupManager();
+  if (!mgr) return [];
+  try {
+    return mgr.listGroups().map((g) => ({
+      groupId: g.groupId,
+      name: g.name || "Group",
+      isAdmin: Boolean(g.isAdmin),
+      adminAddress: g.adminAddress || null,
+      adminSigningPub: g.adminSigningPub || null,
+      groupSeed: g.groupSeedHex || null,
+      groupRootEpoch: g.groupRootEpochHex || null,
+      blindingKey: g.blindingKeyHex || null,
+      currentEpoch: Number(g.currentEpoch || 0),
+      members: (g.members || []).map((m) => ({
+        address: m.address,
+        xOnlyPubKeyHex: m.xOnlyPubKeyHex || null,
+        isAdmin: Boolean(m.isAdmin),
+      })),
+    }));
+  } catch { return []; }
 }
 
 function archiveExportedAtMs(archive) {
@@ -12532,6 +12574,12 @@ const groupNameInput = document.querySelector("[data-group-name-input]");
 const groupPickerHint = document.querySelector("[data-group-picker-hint]");
 const groupMemberSearch = document.querySelector("[data-group-member-search]");
 const groupMemberPicker = document.querySelector("[data-group-member-picker]");
+// Collapsible New Group sections: "Members (N)" (added-so-far) and "Contacts" (search + list).
+const groupMembersToggle = document.querySelector("[data-group-members-toggle]");
+const groupMembersBody = document.querySelector("[data-group-members-body]");
+const groupMembersList = document.querySelector("[data-group-members-list]");
+const groupContactsToggle = document.querySelector("[data-group-contacts-toggle]");
+const groupContactsBody = document.querySelector("[data-group-contacts-body]");
 const groupAddressInput = document.querySelector("[data-group-address-input]");
 const groupAddressStatus = document.querySelector("[data-group-address-status]");
 const groupAddressAddButton = document.querySelector("[data-group-address-add]");
@@ -12539,7 +12587,6 @@ const groupAddressImportButton = document.querySelector("[data-group-address-imp
 const groupAddressImportFile = document.querySelector("[data-group-address-import-file]");
 const groupAddressPasteButton = document.querySelector("[data-group-address-paste]");
 const groupAddressScanButton = document.querySelector("[data-group-address-scan]");
-const groupSelectedChips = document.querySelector("[data-group-selected-chips]");
 const groupCreateError = document.querySelector("[data-group-create-error]");
 const groupCreateSubmit = document.querySelector("[data-group-create-submit]");
 let groupAddressResolved = null;
@@ -12775,10 +12822,46 @@ function updateGroupCreateSubmit() {
     const name = String(groupNameInput?.value || "").trim();
     groupCreateSubmit.disabled = !(name && groupCreateSelected.size >= 1);
   }
-  // "Members (X)" title above the search, matching iOS — reflects how many are selected.
+  // "Members (X)" is the collapsible section header — reflects how many are added.
   const membersTitle = document.querySelector("[data-group-members-title]");
   if (membersTitle) membersTitle.textContent = groupCreateSelected.size ? `Members (${groupCreateSelected.size})` : "Members";
-  renderSelectedGroupChips();
+  renderGroupSelectedMembers();
+}
+
+// Sets a collapsible New Group section open/closed (body visibility + chevron + aria).
+function setGroupSection(toggle, body, open) {
+  if (body) body.hidden = !open;
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.classList.toggle("open", open);
+  }
+}
+
+// Renders the "Members (N)" dropdown: everyone added so far (contacts + by-address), each
+// with a remove control.
+function renderGroupSelectedMembers() {
+  if (!groupMembersList) return;
+  const addrs = [...groupCreateSelected];
+  if (!addrs.length) {
+    groupMembersList.innerHTML = `<p class="group-picker-empty">No members added yet. Open Contacts below to add people.</p>`;
+    return;
+  }
+  groupMembersList.innerHTML = addrs.map((addr) => {
+    const contact = (state.contacts || []).find((c) => c.address === addr);
+    const name = contact ? displayNameForAddress(contact) : shortAddress(addr);
+    const avatar = contact
+      ? avatarHtmlFor(contact, "chat-avatar")
+      : `<span class="chat-avatar">${escapeHtml(initialsFor(shortAddress(addr)))}</span>`;
+    return `
+      <div class="group-member-added">
+        ${avatar}
+        <span class="group-member-option-meta">
+          <strong>${escapeHtml(name)}</strong>
+          <span>${escapeHtml(shortAddress(addr))}</span>
+        </span>
+        <button type="button" class="group-member-remove" data-group-member-remove="${escapeHtml(addr)}" aria-label="Remove">&times;</button>
+      </div>`;
+  }).join("");
 }
 function openGroupCreate() {
   if (!getGroupManager()) { setStatus("Load a wallet before creating a group."); return; }
@@ -12795,6 +12878,10 @@ function openGroupCreate() {
   resetGroupAddressSection();
   renderGroupMemberPicker();
   updateGroupCreateSubmit();
+  // Both sections start collapsed: Members opens to review who's added; Contacts opens to
+  // search and pick people.
+  setGroupSection(groupMembersToggle, groupMembersBody, false);
+  setGroupSection(groupContactsToggle, groupContactsBody, false);
   if (groupCreateModal) groupCreateModal.hidden = false;
   window.setTimeout(() => groupNameInput?.focus(), 0);
 }
@@ -12815,6 +12902,9 @@ function openGroupAddMember(groupId) {
   resetGroupAddressSection();
   renderGroupMemberPicker(groupPickerExclude);
   updateGroupCreateSubmit();
+  // In add-member mode, open Contacts straight away since picking people is the whole task.
+  setGroupSection(groupMembersToggle, groupMembersBody, false);
+  setGroupSection(groupContactsToggle, groupContactsBody, true);
   if (groupCreateModal) groupCreateModal.hidden = false;
 }
 function closeGroupCreate() { if (groupCreateModal) groupCreateModal.hidden = true; }
@@ -12833,22 +12923,7 @@ function resetGroupAddressSection() {
   if (groupAddressInput) groupAddressInput.value = "";
   setGroupAddressStatus("");
   if (groupAddressAddButton) groupAddressAddButton.disabled = true;
-  renderSelectedGroupChips();
-}
-
-// Chips for selected members that are NOT in the contact list (added by address), so
-// they stay visible and removable even though the picker only lists existing contacts.
-function renderSelectedGroupChips() {
-  if (!groupSelectedChips) return;
-  const contactAddresses = new Set((state.contacts || []).map((c) => c.address));
-  const extras = [...groupCreateSelected].filter((addr) => !contactAddresses.has(addr));
-  if (!extras.length) { groupSelectedChips.hidden = true; groupSelectedChips.innerHTML = ""; return; }
-  groupSelectedChips.hidden = false;
-  groupSelectedChips.innerHTML = extras.map((addr) => `
-    <span class="group-selected-chip">
-      <span class="group-selected-chip-label">${escapeHtml(shortAddress(addr))}</span>
-      <button type="button" class="group-selected-chip-remove" data-group-chip-remove="${escapeHtml(addr)}" aria-label="Remove">&times;</button>
-    </span>`).join("");
+  renderGroupSelectedMembers();
 }
 
 // Live validity feedback for the group address field (raw address or KNS domain),
@@ -12910,10 +12985,10 @@ function addResolvedGroupAddress() {
   if (groupCreateSelected.size >= 50) { setGroupAddressStatus('<span class="create-chat-status-bad">✕ A group can have at most 50 members</span>'); return; }
   groupCreateSelected.add(addr);
   resetGroupAddressSection();
-  // If the address happens to be a contact, its row checkmark updates; otherwise it
-  // shows as a chip (rendered inside resetGroupAddressSection).
   renderGroupMemberPicker(groupPickerExclude);
   updateGroupCreateSubmit();
+  // Reveal the Members list so the just-added person is visible.
+  setGroupSection(groupMembersToggle, groupMembersBody, true);
 }
 
 // --- manage / group info ---
@@ -13049,11 +13124,22 @@ groupAddressScanButton?.addEventListener("click", () => {
   // Matches the 1:1 create-chat flow: camera QR scanning is not wired on desktop yet.
   setGroupAddressStatus('<span class="create-chat-status-muted">QR scanning is available on the mobile apps.</span>');
 });
-groupSelectedChips?.addEventListener("click", (event) => {
-  const removeButton = event.target.closest("[data-group-chip-remove]");
+// Collapsible section toggles.
+groupMembersToggle?.addEventListener("click", () => {
+  setGroupSection(groupMembersToggle, groupMembersBody, groupMembersBody?.hidden);
+});
+groupContactsToggle?.addEventListener("click", () => {
+  setGroupSection(groupContactsToggle, groupContactsBody, groupContactsBody?.hidden);
+});
+// Remove a member from the "Members (N)" dropdown.
+groupMembersList?.addEventListener("click", (event) => {
+  const removeButton = event.target.closest("[data-group-member-remove]");
   if (!removeButton) return;
-  groupCreateSelected.delete(removeButton.dataset.groupChipRemove);
+  const addr = removeButton.dataset.groupMemberRemove;
+  groupCreateSelected.delete(addr);
   updateGroupCreateSubmit();
+  // Keep the contact picker's checkmarks in sync if that section is open.
+  renderGroupMemberPicker(groupPickerExclude);
 });
 
 // The create button is tab-aware: Group Chats tab opens the group builder, the Chats

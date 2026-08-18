@@ -63,6 +63,55 @@ export class GroupManager {
     saveAll(all);
   }
 
+  /**
+   * Import a group from a cross-platform backup archive (ChatHistoryArchive.groups). Carries
+   * the full key material - including the admin's groupSeed - so a second device of the same
+   * account recovers groups it created (which have no on-chain invite addressed to us) as well
+   * as member groups. Returns true if a group was created or advanced to a newer epoch.
+   *
+   * deviceId and msgCounter are intentionally NOT taken from the archive: they are per-device
+   * (spec), and reusing the exporting device's values would let this device's sends collide
+   * with msg_ids the phone already used. A fresh device gets its own id and a zeroed counter.
+   */
+  importGroupRecord(g) {
+    if (!g || !g.groupId) return false;
+    const groupId = String(g.groupId);
+    const incomingEpoch = Number(g.currentEpoch || 0);
+    const existing = this.getGroup(groupId);
+    // Never downgrade to an older epoch than what we already hold.
+    if (existing && Number(existing.currentEpoch || 0) > incomingEpoch) return false;
+
+    const members = Array.isArray(g.members)
+      ? g.members
+          .map((m) => ({
+            address: String(m.address || "").trim(),
+            xOnlyPubKeyHex: m.xOnlyPubKeyHex ? String(m.xOnlyPubKeyHex) : null,
+            isAdmin: Boolean(m.isAdmin),
+          }))
+          .filter((m) => m.address)
+      : [];
+
+    const record = {
+      groupId,
+      name: String(g.name || existing?.name || "Group"),
+      isAdmin: Boolean(g.isAdmin),
+      adminAddress: g.adminAddress ? String(g.adminAddress) : (existing?.adminAddress || null),
+      adminSigningPub: g.adminSigningPub ? String(g.adminSigningPub) : (existing?.adminSigningPub || null),
+      groupSeedHex: g.groupSeed ? String(g.groupSeed) : (existing?.groupSeedHex || null),
+      groupRootEpochHex: g.groupRootEpoch ? String(g.groupRootEpoch) : (existing?.groupRootEpochHex || null),
+      blindingKeyHex: g.blindingKey ? String(g.blindingKey) : (existing?.blindingKeyHex || null),
+      currentEpoch: incomingEpoch,
+      deviceIdHex: existing?.deviceIdHex || G.bytesToHex(G.generateDeviceId()),
+      msgCounter: existing && Number(existing.currentEpoch || 0) === incomingEpoch ? (existing.msgCounter || 0) : 0,
+      members: members.length ? members : (existing?.members || []),
+      cursors: existing?.cursors || {},
+      updatedAt: existing?.updatedAt || 0,
+    };
+    if (!record.groupRootEpochHex || !record.blindingKeyHex) return false; // unusable without keys
+    this._put(record);
+    return true;
+  }
+
   // --- roster helper: resolve each address to its x-only pubkey ---
   async _buildRoster(memberAddresses, adminAddress) {
     const seen = new Set();
