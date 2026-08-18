@@ -5726,6 +5726,54 @@ body.session-logged-out [data-account-rename-modal] {
 .portfolio-range { border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; padding: 4px 10px; cursor: pointer; }
 .portfolio-range.active { color: var(--kaspa-ink); border-color: var(--kaspa); }
 .portfolio-value-readout { font-size: 19px; font-weight: 800; margin: 2px 0 8px; }
+
+/* Two launcher squares (KAS price | portfolio value) on the main portfolio screen */
+.portfolio-squares { display: flex; gap: 10px; margin-bottom: 12px; }
+.portfolio-square {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; text-align: left;
+  border-radius: 18px; border: 1px solid var(--card-border); background: var(--surface-1);
+  backdrop-filter: blur(20px); box-shadow: 0 5px 16px rgba(0,0,0,.18);
+  padding: 14px; cursor: pointer; color: var(--text); min-height: 120px;
+}
+.portfolio-square:hover { border-color: var(--kaspa); }
+.portfolio-square-head { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 700; font-size: 13px; }
+.portfolio-square-logo { width: 22px; height: 22px; border-radius: 50%; }
+.portfolio-square-ico { width: 18px; height: 18px; }
+.portfolio-square-title { flex: 1; }
+.portfolio-square-chev { color: var(--muted); font-size: 18px; }
+.portfolio-square-value { font-size: 22px; font-weight: 800; margin-top: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.portfolio-square-change { font-size: 13px; font-weight: 700; }
+.portfolio-square-change.gain { color: var(--kaspa-ink); }
+.portfolio-square-change.loss { color: #ff5a5a; }
+.portfolio-square-change.muted { color: var(--muted); }
+
+/* Full-screen chart screens (price / value) */
+.portfolio-screen-header { margin-bottom: 8px; }
+.portfolio-back-btn {
+  border: none; background: transparent; color: var(--kaspa-ink); font: inherit; font-size: 15px;
+  font-weight: 700; cursor: pointer; padding: 4px 0;
+}
+.portfolio-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.portfolio-detail-logo { width: 28px; height: 28px; border-radius: 50%; }
+.portfolio-detail-name { font-size: 17px; font-weight: 700; }
+.portfolio-detail-date { color: var(--muted); font-size: 13px; margin: 2px 0; }
+.portfolio-detail-price-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.portfolio-detail-price { font-size: 30px; font-weight: 800; }
+.portfolio-detail-24h { font-size: 14px; font-weight: 700; }
+.portfolio-detail-24h.gain { color: var(--kaspa-ink); }
+.portfolio-detail-24h.loss { color: #ff5a5a; }
+.portfolio-ranges-wide { margin-top: 12px; }
+.portfolio-ranges-wide .portfolio-range { flex: 1; text-align: center; padding: 7px 0; }
+
+/* Bigger graph look: gridlines + area fill + x-axis labels */
+.portfolio-bigchart { margin-top: 4px; }
+.portfolio-chart-wrap-big { border-radius: 10px; }
+.portfolio-grid-line { stroke: var(--line); stroke-width: 1; opacity: .5; }
+.portfolio-chart-area { fill-opacity: .12; }
+.portfolio-xaxis { display: flex; justify-content: space-between; margin-top: 6px; color: var(--muted); font-size: 11px; }
+
+.portfolio-about-text { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
 /* Transactions ledger (iOS PortfolioTransactionsView) */
 .portfolio-tx-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
 .portfolio-tx-header .profile-card-label { margin: 0; }

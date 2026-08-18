@@ -36,6 +36,11 @@ let rangeDays = 7;
 let loading = false;
 let editingTx = null;      // null = closed; { id } editing; { id: null } adding
 let addressImport = null;  // null = closed; { busy, progress, result, error }
+let view = "main";         // "main" | "price" | "value" — which portfolio screen is showing
+
+// CoinMarketCap-style "what is Kaspa" blurb, paraphrased (not copied verbatim), shown on the
+// full-screen KAS price chart below the range selector.
+const KASPA_ABOUT = "Kaspa is a decentralized, open-source, proof-of-work cryptocurrency. It is built on the GHOSTDAG protocol - a generalization of Nakamoto consensus that, instead of discarding blocks created in parallel, orders them together in a blockDAG. This lets Kaspa reach very high block rates and near-instant transaction confirmation while keeping the security guarantees of proof of work. Kaspa launched in November 2021 with a fair release: no pre-mine, no pre-sale, and no coin allocations. Its native coin is KAS.";
 
 function nowId() {
   return typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `p-${Date.now()}-${Math.random()}`;
@@ -171,13 +176,63 @@ function fmtDate(ts) {
 // Charts (plain SVG polyline + HTML crosshair overlay for scrubbing)
 // ---------------------------------------------------------------------------
 
-/** yFractions[i] = distance from the wrapper's top as a 0..1 fraction, for the crosshair dot. */
+/** yFractions[i] = distance from the wrapper's top as a 0..1 fraction, for the crosshair dot.
+ *  Uses the same 10px top/bottom padding as bigChartSvg so the dot tracks the drawn line. */
 function chartGeometry(points, height) {
   const values = points.map((p) => p[1]);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
-  return values.map((v) => (height - 8 - ((v - min) / span) * (height - 16)) / height);
+  const pad = 10;
+  const usable = height - pad * 2;
+  return values.map((v) => (pad + (1 - (v - min) / span) * usable) / height);
+}
+
+/** Full-screen chart (area fill + horizontal gridlines + polyline) plus an HTML x-axis label
+ *  row - reads like a real price/value graph rather than a bare sparkline. Scrub overlay + the
+ *  data-portfolio-chart hook are shared with attachScrub(). Intraday spans (<= ~2d) label the
+ *  x-axis with hours; longer spans with month/day, so 1D labels don't crowd. */
+function bigChartSvg(points, { height = 240, stroke = "var(--kaspa)", chart = null, lineWidth = 2 } = {}) {
+  if (!points || points.length < 2) return `<div class="portfolio-chart-empty">No data yet</div>`;
+  const width = 560;
+  const values = points.map((p) => p[1]);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const pad = 10;
+  const usable = height - pad * 2;
+  const step = width / (points.length - 1);
+  const yFor = (v) => pad + (1 - (v - min) / span) * usable;
+  const coords = points.map((p, i) => `${(i * step).toFixed(1)},${yFor(p[1]).toFixed(1)}`);
+  const area = `0,${height} ${coords.join(" ")} ${width},${height}`;
+  const gridCount = 4;
+  const gridLines = Array.from({ length: gridCount + 1 }, (_, i) => {
+    const y = (pad + (usable * i) / gridCount).toFixed(1);
+    return `<line class="portfolio-grid-line" x1="0" y1="${y}" x2="${width}" y2="${y}"/>`;
+  }).join("");
+  const scrubAttr = chart ? ` data-portfolio-chart="${chart}"` : "";
+  const intraday = (points[points.length - 1][0] - points[0][0]) <= 2 * 86_400_000;
+  const labelCount = 4;
+  const xLabels = Array.from({ length: labelCount }, (_, i) => {
+    const idx = Math.round((i / (labelCount - 1)) * (points.length - 1));
+    const ts = points[idx][0];
+    const text = intraday
+      ? new Date(ts).toLocaleTimeString(undefined, { hour: "numeric" })
+      : new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return `<span>${text}</span>`;
+  }).join("");
+  return `
+    <div class="portfolio-bigchart">
+      <div class="portfolio-chart-wrap portfolio-chart-wrap-big"${scrubAttr} style="height:${height}px">
+        <svg class="portfolio-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+          ${gridLines}
+          <polygon class="portfolio-chart-area" points="${area}" fill="${stroke}"/>
+          <polyline points="${coords.join(" ")}" fill="none" stroke="${stroke}" stroke-width="${lineWidth}" stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+        ${chart ? `<div class="portfolio-scrub-line" hidden></div><div class="portfolio-scrub-dot" hidden style="background:${stroke}"></div>` : ""}
+      </div>
+      <div class="portfolio-xaxis">${xLabels}</div>
+    </div>`;
 }
 
 function sparklineSvg(points, { height = 130, stroke = "var(--kaspa)", chart = null, lineWidth = 2 } = {}) {
@@ -327,16 +382,124 @@ function transactionRowHtml(tx) {
     </div>`;
 }
 
+// Two tappable squares (KAS price | portfolio value) that open the full-screen chart screens.
+function squaresHtml(summary) {
+  const change = price?.change24h ?? null;
+  const pPos = (change ?? 0) >= 0;
+  const plPos = summary.totalPL >= 0;
+  return `
+    <div class="portfolio-squares">
+      <button class="portfolio-square" type="button" data-portfolio-open="price">
+        <div class="portfolio-square-head">
+          <img src="./ui/assets/kaspa-logo.png" alt="" class="portfolio-square-logo"/>
+          <span class="portfolio-square-title">Kaspa</span>
+          <span class="portfolio-square-chev">›</span>
+        </div>
+        <div class="portfolio-square-value">${price ? fmtPrice(price.usd) : "—"}</div>
+        ${change !== null ? `<div class="portfolio-square-change ${pPos ? "gain" : "loss"}">${pPos ? "↑" : "↓"} ${Math.abs(change).toFixed(2)}%</div>` : `<div class="portfolio-square-change muted">—</div>`}
+      </button>
+      <button class="portfolio-square" type="button" data-portfolio-open="value">
+        <div class="portfolio-square-head">
+          <svg class="portfolio-square-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="16 7 21 7 21 12"/></svg>
+          <span class="portfolio-square-title">Value</span>
+          <span class="portfolio-square-chev">›</span>
+        </div>
+        <div class="portfolio-square-value">${fmtUsd(summary.currentValue)}</div>
+        <div class="portfolio-square-change ${plPos ? "gain" : "loss"}">${plPos ? "↑" : "↓"} ${Math.abs(summary.totalPLPercent).toFixed(2)}%</div>
+      </button>
+    </div>`;
+}
+
+// Full-screen KAS price chart screen.
+function priceViewHtml() {
+  const change = price?.change24h ?? null;
+  const pPos = (change ?? 0) >= 0;
+  return `
+    <div class="portfolio-screen-header">
+      <button class="portfolio-back-btn" type="button" data-portfolio-back aria-label="Back">‹ Portfolio</button>
+    </div>
+    <div class="profile-card">
+      <div class="portfolio-detail-head">
+        <img src="./ui/assets/kaspa-logo.png" alt="" class="portfolio-detail-logo"/>
+        <span class="portfolio-detail-name">Kaspa</span>
+      </div>
+      <div class="portfolio-detail-date" data-portfolio-price-date hidden></div>
+      <div class="portfolio-detail-price-row">
+        <span class="portfolio-detail-price" data-portfolio-price-value>${price ? fmtPrice(price.usd) : "—"}</span>
+        ${change !== null ? `<span class="portfolio-detail-24h ${pPos ? "gain" : "loss"}" data-portfolio-price-24h>${pPos ? "↑" : "↓"} ${Math.abs(change).toFixed(2)}% (24h)</span>` : ""}
+      </div>
+      ${bigChartSvg(history, { height: 240, chart: "price" })}
+      <div class="portfolio-ranges portfolio-ranges-wide">
+        ${RANGES.map((r) => `<button class="portfolio-range${r.days === rangeDays ? " active" : ""}" type="button" data-portfolio-range="${r.days}">${r.label}</button>`).join("")}
+      </div>
+    </div>
+    <div class="profile-card portfolio-about">
+      <p class="profile-card-label">About Kaspa</p>
+      <p class="portfolio-about-text">${KASPA_ABOUT}</p>
+    </div>`;
+}
+
+// Value-over-time stats (Holdings / Current Value / Invested / P&L / Avg. Buy Price).
+function valueStatsHtml(summary) {
+  return `
+    <div class="profile-card portfolio-summary">
+      <div class="portfolio-summary-grid">
+        <div class="portfolio-stat"><span class="portfolio-stat-label">Holdings</span><span class="portfolio-stat-value">${fmtKas(summary.holdingsKas)}</span></div>
+        <div class="portfolio-stat right"><span class="portfolio-stat-label">Current Value</span><span class="portfolio-stat-value">${fmtUsd(summary.currentValue)}</span></div>
+      </div>
+      <div class="portfolio-summary-divider"></div>
+      <div class="portfolio-summary-grid">
+        <div class="portfolio-stat"><span class="portfolio-stat-label">Total Invested</span><span class="portfolio-stat-value">${fmtUsd(summary.totalInvested)}</span></div>
+        <div class="portfolio-stat right"><span class="portfolio-stat-label">Total P&amp;L</span><span class="portfolio-stat-value ${summary.totalPL >= 0 ? "gain" : "loss"}">${summary.totalPL >= 0 ? "↗" : "↘"} ${fmtUsd(summary.totalPL)} (${summary.totalPLPercent.toFixed(1)}%)</span></div>
+      </div>
+      ${summary.averageBuyPriceUsd !== null ? `
+        <div class="portfolio-summary-divider"></div>
+        <div class="portfolio-summary-grid">
+          <div class="portfolio-stat"><span class="portfolio-stat-label">Avg. Buy Price</span><span class="portfolio-stat-value">${fmtPrice(summary.averageBuyPriceUsd)}</span></div>
+        </div>` : ""}
+    </div>`;
+}
+
+// Full-screen Value Over Time chart screen.
+function valueViewHtml(summary) {
+  const latest = valuePoints.length ? valuePoints[valuePoints.length - 1][1] : summary.currentValue;
+  return `
+    <div class="portfolio-screen-header">
+      <button class="portfolio-back-btn" type="button" data-portfolio-back aria-label="Back">‹ Portfolio</button>
+    </div>
+    <div class="profile-card">
+      <p class="profile-card-label" data-portfolio-value-label>Portfolio Value</p>
+      <div class="portfolio-detail-date" data-portfolio-value-date hidden></div>
+      <div class="portfolio-detail-price" data-portfolio-value-readout>${fmtUsd(latest)}</div>
+      ${valuePoints.length >= 2
+        ? bigChartSvg(valuePoints, { height: 220, stroke: "var(--kaspa-ink)", chart: "value", lineWidth: 3 })
+        : `<div class="portfolio-chart-empty">Not enough history yet — check back after a few days of activity.</div>`}
+      <div class="portfolio-ranges portfolio-ranges-wide">
+        ${RANGES.map((r) => `<button class="portfolio-range${r.days === rangeDays ? " active" : ""}" type="button" data-portfolio-range="${r.days}">${r.label}</button>`).join("")}
+      </div>
+    </div>
+    ${valueStatsHtml(summary)}`;
+}
+
 function render() {
   if (!rootEl) return;
   const portfolio = activePortfolio();
   const scoped = portfolio.transactions || [];
   const summary = computeSummary(scoped, price?.usd || 0);
   valuePoints = computeValueHistory(scoped, history);
-  const transactions = [...scoped].sort((a, b) => b.timestamp - a.timestamp);
-  const showValueChart = scoped.length > 0 && valuePoints.length >= 2;
-  const latestValue = valuePoints.length ? valuePoints[valuePoints.length - 1][1] : summary.currentValue;
 
+  if (view === "price") {
+    rootEl.innerHTML = priceViewHtml();
+    wireScrubbing();
+    return;
+  }
+  if (view === "value") {
+    rootEl.innerHTML = valueViewHtml(summary);
+    wireScrubbing();
+    return;
+  }
+
+  const transactions = [...scoped].sort((a, b) => b.timestamp - a.timestamp);
   rootEl.innerHTML = `
     <div class="kaposts-header">
       <h1 class="kaposts-title">Portfolio</h1>
@@ -356,24 +519,7 @@ function render() {
         </button>` : ""}
     </div>
 
-    ${summaryCardHtml(summary)}
-
-    <div class="profile-card portfolio-price-card">
-      <div class="portfolio-price-row">
-        <p class="profile-card-label">Price</p>
-        <div class="portfolio-ranges">
-          ${RANGES.map((r) => `<button class="portfolio-range${r.days === rangeDays ? " active" : ""}" type="button" data-portfolio-range="${r.days}">${r.label}</button>`).join("")}
-        </div>
-      </div>
-      ${sparklineSvg(history, { height: 90, chart: "price" })}
-    </div>
-
-    ${showValueChart ? `
-      <div class="profile-card">
-        <p class="profile-card-label" data-portfolio-value-label>Value Over Time</p>
-        <div class="portfolio-value-readout" data-portfolio-value-readout>${fmtUsd(latestValue)}</div>
-        ${sparklineSvg(valuePoints, { height: 110, stroke: "var(--kaspa-ink)", chart: "value", lineWidth: 3 })}
-      </div>` : ""}
+    ${squaresHtml(summary)}
 
     <div class="profile-card">
       <div class="portfolio-tx-header">
@@ -393,40 +539,46 @@ function render() {
         : transactions.map(transactionRowHtml).join("")}
     </div>
     ${loading ? `<div class="portfolio-chart-empty">Refreshing…</div>` : ""}`;
-
-  wireScrubbing();
 }
 
 function wireScrubbing() {
-  const priceWrap = rootEl.querySelector('[data-portfolio-chart="price"]');
-  attachScrub(priceWrap, history, ([ts, p]) => {
-    const label = rootEl.querySelector("[data-portfolio-price-label]");
-    const value = rootEl.querySelector("[data-portfolio-price-value]");
-    const change = rootEl.querySelector("[data-portfolio-price-24h]");
-    if (label) label.textContent = new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    if (value) value.textContent = fmtPrice(p);
-    if (change) change.style.visibility = "hidden";
-  }, () => {
-    const label = rootEl.querySelector("[data-portfolio-price-label]");
-    const value = rootEl.querySelector("[data-portfolio-price-value]");
-    const change = rootEl.querySelector("[data-portfolio-price-24h]");
-    if (label) label.textContent = "KAS Price";
-    if (value) value.textContent = price ? fmtPrice(price.usd) : "—";
-    if (change) change.style.visibility = "";
-  });
+  // Price screen: scrubbing shows the point's date + price and hides the 24h badge. The Kaspa
+  // logo + name stay put (they're separate elements the scrub never touches), matching iOS.
+  if (view === "price") {
+    const wrap = rootEl.querySelector('[data-portfolio-chart="price"]');
+    attachScrub(wrap, history, ([ts, p]) => {
+      const date = rootEl.querySelector("[data-portfolio-price-date]");
+      const value = rootEl.querySelector("[data-portfolio-price-value]");
+      const change = rootEl.querySelector("[data-portfolio-price-24h]");
+      if (date) { date.hidden = false; date.textContent = new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }); }
+      if (value) value.textContent = fmtPrice(p);
+      if (change) change.style.visibility = "hidden";
+    }, () => {
+      const date = rootEl.querySelector("[data-portfolio-price-date]");
+      const value = rootEl.querySelector("[data-portfolio-price-value]");
+      const change = rootEl.querySelector("[data-portfolio-price-24h]");
+      if (date) date.hidden = true;
+      if (value) value.textContent = price ? fmtPrice(price.usd) : "—";
+      if (change) change.style.visibility = "";
+    });
+    return;
+  }
 
-  const valueWrap = rootEl.querySelector('[data-portfolio-chart="value"]');
-  attachScrub(valueWrap, valuePoints, ([ts, v]) => {
-    const label = rootEl.querySelector("[data-portfolio-value-label]");
-    const readout = rootEl.querySelector("[data-portfolio-value-readout]");
-    if (label) label.textContent = `Value on ${new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
-    if (readout) readout.textContent = fmtUsd(v);
-  }, () => {
-    const label = rootEl.querySelector("[data-portfolio-value-label]");
-    const readout = rootEl.querySelector("[data-portfolio-value-readout]");
-    if (label) label.textContent = "Value Over Time";
-    if (readout) readout.textContent = fmtUsd(valuePoints.length ? valuePoints[valuePoints.length - 1][1] : 0);
-  });
+  // Value screen: scrubbing shows the point's date + value; the "Portfolio Value" label stays.
+  if (view === "value") {
+    const wrap = rootEl.querySelector('[data-portfolio-chart="value"]');
+    attachScrub(wrap, valuePoints, ([ts, v]) => {
+      const date = rootEl.querySelector("[data-portfolio-value-date]");
+      const readout = rootEl.querySelector("[data-portfolio-value-readout]");
+      if (date) { date.hidden = false; date.textContent = new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
+      if (readout) readout.textContent = fmtUsd(v);
+    }, () => {
+      const date = rootEl.querySelector("[data-portfolio-value-date]");
+      const readout = rootEl.querySelector("[data-portfolio-value-readout]");
+      if (date) date.hidden = true;
+      if (readout) readout.textContent = fmtUsd(valuePoints.length ? valuePoints[valuePoints.length - 1][1] : 0);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -945,6 +1097,7 @@ export function addTransactionToPortfolio(portfolioId, { type, amountKas, fiatVa
 
 export function refreshPortfolio() {
   ensureDefaultPortfolio();
+  view = "main"; // always land on the main portfolio screen when the tab is (re)opened
   render();
   refreshData();
 }
@@ -1025,6 +1178,11 @@ export function initPortfolio(dependencies) {
 
     const select = event.target.closest("[data-portfolio-select]");
     if (select) { state.activeId = select.dataset.portfolioSelect; saveState(); render(); return; }
+
+    const openSquare = event.target.closest("[data-portfolio-open]");
+    if (openSquare) { view = openSquare.dataset.portfolioOpen; render(); return; }
+
+    if (event.target.closest("[data-portfolio-back]")) { view = "main"; render(); return; }
 
     const range = event.target.closest("[data-portfolio-range]");
     if (range) { rangeDays = Number(range.dataset.portfolioRange) || 7; refreshData(); return; }
