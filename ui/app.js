@@ -4790,54 +4790,69 @@ sidebarTabButtons.forEach((button) => {
   });
 });
 
-// 4.0 dock auto-hide: the dock sits centered at the bottom but stays tucked away until the
-// pointer nears the bottom edge (macOS-dock style). It also shows briefly after a tab
-// switch so the selection change is visible, and always shows while it has keyboard focus.
+// 4.0 desktop dock: a VERTICAL dock docked off the right edge, revealed by an obvious
+// right-edge handle. Hover the handle (or the dock) to peek it; click the handle to pin it
+// open or closed. No automatic bottom-edge pop-out anymore.
 const dockBar = document.querySelector(".sidebar-tabbar");
-const DOCK_REVEAL_ZONE_PX = 110;
+const dockHandle = document.querySelector("[data-dock-handle]");
 let dockHideTimer = null;
-// True while a dock item is being dragged to reorder — keeps the dock pinned open so the
-// auto-hide can't snatch it away mid-drag (see enableDockReorder below).
+let dockPinned = false; // click-to-pin: when true the dock stays open regardless of hover.
+// True while a dock item is being dragged to reorder — keeps the dock open so an accidental
+// mouse-leave can't snatch it away mid-drag (see enableDockReorder below).
 let dockDragActive = false;
+
+function syncDockHandle() {
+  if (!dockHandle || !dockBar) return;
+  const open = !dockBar.classList.contains("dock-hidden");
+  dockHandle.classList.toggle("open", open);
+  dockHandle.setAttribute("aria-expanded", open ? "true" : "false");
+  dockHandle.setAttribute("aria-label", open ? "Hide menu" : "Show menu");
+}
 
 function showDock() {
   if (!dockBar) return;
   dockBar.classList.remove("dock-hidden");
   if (dockHideTimer) { clearTimeout(dockHideTimer); dockHideTimer = null; }
+  syncDockHandle();
+}
+
+function hideDock() {
+  if (!dockBar) return;
+  dockBar.classList.add("dock-hidden");
+  if (dockHideTimer) { clearTimeout(dockHideTimer); dockHideTimer = null; }
+  syncDockHandle();
 }
 
 function hideDockSoon(delay = 400) {
   if (!dockBar) return;
   if (dockHideTimer) clearTimeout(dockHideTimer);
   dockHideTimer = window.setTimeout(() => {
-    if (dockDragActive) return;
-    if (dockBar.matches(":hover") || dockBar.contains(document.activeElement)) return;
-    dockBar.classList.add("dock-hidden");
+    if (dockDragActive || dockPinned) return;
+    if (dockBar.matches(":hover") || (dockHandle && dockHandle.matches(":hover")) || dockBar.contains(document.activeElement)) return;
+    hideDock();
   }, delay);
 }
 
 if (dockBar) {
-  window.addEventListener("mousemove", (event) => {
-    // Keep the dock open while reordering, wherever the pointer roams.
-    if (dockDragActive) { showDock(); return; }
-    // No bottom-edge reveal while a modal dialog is up — the dock would slide over the
-    // dialog's own bottom buttons (e.g. the Cold Storage send flow's Scan button).
-    if (document.querySelector(".modal-backdrop:not([hidden])")) { hideDockSoon(); return; }
-    // While a chat is open, only reveal from a thin strip at the very bottom edge (below
-    // the composer/bubbles) so the dock doesn't pop up while you read or type. Off the
-    // chat (list view) it keeps the easy, larger reveal band.
-    const revealZone = (activeConversationId || activeGroupId) ? 6 : DOCK_REVEAL_ZONE_PX;
-    if (window.innerHeight - event.clientY <= revealZone) showDock();
-    else hideDockSoon();
-  }, { passive: true });
+  // Start tucked away — the handle is the obvious way in.
+  dockBar.classList.add("dock-hidden");
+  syncDockHandle();
+
+  if (dockHandle) {
+    // Click pins the dock open (or closes it).
+    dockHandle.addEventListener("click", () => {
+      if (dockBar.classList.contains("dock-hidden")) { dockPinned = true; showDock(); }
+      else { dockPinned = false; hideDock(); }
+    });
+    // Hover peeks the dock without pinning.
+    dockHandle.addEventListener("mouseenter", showDock);
+    dockHandle.addEventListener("mouseleave", () => hideDockSoon());
+  }
+  // Keep it open while the pointer is over the dock; tuck it away shortly after leaving.
+  dockBar.addEventListener("mouseenter", showDock);
+  dockBar.addEventListener("mouseleave", () => hideDockSoon());
   dockBar.addEventListener("focusin", showDock);
   dockBar.addEventListener("focusout", () => hideDockSoon(800));
-  // Tab switches surface the dock for a moment so the new selection is visible.
-  sidebarTabButtons.forEach((button) => {
-    button.addEventListener("click", () => { showDock(); hideDockSoon(1600); });
-  });
-  // Start revealed so first-time users see the dock exists, then tuck away.
-  hideDockSoon(2600);
 }
 
 // --- Drag-to-reorder the dock -------------------------------------------------
@@ -4887,13 +4902,13 @@ if (dockBar) {
     try { if (pointerId != null) dragBtn.setPointerCapture(pointerId); } catch { /* capture optional */ }
   }
 
-  // Move dragBtn to wherever the pointer sits along the horizontal dock, based on the
+  // Move dragBtn to wherever the pointer sits along the vertical dock, based on the
   // centers of the other visible items.
-  function reorderTo(clientX) {
+  function reorderTo(clientY) {
     const siblings = [...tabbar.querySelectorAll(".sidebar-tab")].filter((b) => !b.hidden && b !== dragBtn);
     for (const sib of siblings) {
       const rect = sib.getBoundingClientRect();
-      if (clientX < rect.left + rect.width / 2) {
+      if (clientY < rect.top + rect.height / 2) {
         if (sib.previousElementSibling !== dragBtn) tabbar.insertBefore(dragBtn, sib);
         return;
       }
@@ -4927,7 +4942,7 @@ if (dockBar) {
     if (!dragging) return;
     event.preventDefault();
     suppressClick = true;
-    reorderTo(event.clientX);
+    reorderTo(event.clientY);
   });
 
   function finishDrag(event) {
@@ -10800,7 +10815,7 @@ function updateHandshakeWarningBanner() {
 function estimateCommPayloadBytes(text) {
   const cipherBytes = 12 + 33 + new TextEncoder().encode(text).length + 16;
   const base64Len = Math.ceil(cipherBytes / 3) * 4;
-  const prefixLen = "ciph_msg:1:comm:".length + 12 + 1;
+  const prefixLen = "kchat:1:comm:".length + 12 + 1;
   return prefixLen + base64Len;
 }
 

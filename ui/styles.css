@@ -162,21 +162,56 @@ button { cursor: pointer; }
    control surface on every screen, not a sidebar-only footer. */
 .sidebar-tabbar {
   position: fixed;
-  /* 4.0: fixed dead-center of the viewport at all times (no sidebar offset), macOS-dock
-     style — hidden by default and revealed when the pointer nears the bottom edge (see
-     the dock auto-hide block below + the mousemove wiring in app.js). */
-  left: 50%;
-  bottom: 20px;
-  transform: translateX(-50%);
+  /* 4.0 desktop: a VERTICAL dock docked to the right edge, hidden by default and revealed by
+     the obvious right-edge handle (hover to peek, click to pin) — see .dock-handle below and
+     the wiring in app.js. No more automatic bottom-edge pop-out. */
+  top: 50%;
+  right: 34px;
+  transform: translateY(-50%);
   z-index: 400;
   display: flex;
+  flex-direction: column;
   gap: 4px;
   border: 1px solid var(--line);
   border-radius: 24px;
   background: #0d1116;
-  padding: 8px 10px;
+  padding: 10px 8px;
   box-shadow: 0 16px 44px rgba(0,0,0,.45);
+  max-height: 92vh;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+
+/* Right-edge handle: always visible, obvious, and the only way to open the dock. */
+.dock-handle {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 401;
+  width: 26px;
+  height: 70px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-right: 0;
+  border-radius: 14px 0 0 14px;
+  background: #0d1116;
+  color: var(--muted);
+  cursor: pointer;
+  box-shadow: -6px 0 18px rgba(0,0,0,.35);
+  transition: color .15s ease, background-color .15s ease;
+}
+.dock-handle:hover { color: var(--text); background: var(--surface-2); }
+.dock-handle svg {
+  width: 18px; height: 18px;
+  fill: none; stroke: currentColor; stroke-width: 2.2;
+  stroke-linecap: round; stroke-linejoin: round;
+  transition: transform .28s cubic-bezier(.2,.9,.3,1);
+}
+/* Chevron points left (open me) by default; flips to point right (close) when the dock is open. */
+.dock-handle.open svg { transform: rotate(180deg); }
 
 .sidebar-tab {
   flex: 0 0 auto;
@@ -323,9 +358,10 @@ button { cursor: pointer; }
   .app-detail { display: none; }
   .app-body.detail-active .app-sidebar { display: none; }
   .app-body.detail-active .app-detail { display: flex; flex: 1 1 auto; width: 100%; }
-  .app-body.conversation-open ~ .sidebar-tabbar { display: none; }
-  .sidebar-tabbar { left: 50%; }
-  .sidebar-scroll { padding-bottom: 120px; }
+  .app-body.conversation-open ~ .sidebar-tabbar,
+  .app-body.conversation-open ~ .dock-handle { display: none; }
+  .sidebar-tabbar { right: 20px; left: auto; }
+  .sidebar-scroll { padding-bottom: 16px; }
 }
 
 /* Step 104 — Settings-only overlay, opened via the topbar health button or
@@ -1312,7 +1348,7 @@ button { cursor: pointer; }
 /* While the dock is revealed it floats over the bottom ~90px of the window — lift the
    message composer clear of it, then settle back as the dock tucks away (same treatment
    as the Cold Storage sticky action bars). */
-body:has(.sidebar-tabbar:not(.dock-hidden)) .composer-row { margin-bottom: 96px; }
+/* The vertical right-edge dock no longer sits over the composer, so no bottom clearance needed. */
 
 /* Wrapper around the composer form so it lifts clear of the dock when the dock reveals. */
 .composer-row {
@@ -5445,14 +5481,14 @@ body.session-logged-out [data-account-rename-modal] {
 
 
 /* ============================================================
-   Dock auto-hide (4.0): the dock stays tucked below the screen
-   edge until the mouse approaches the bottom, then rises.
+   Dock reveal (4.0 desktop): the vertical dock stays tucked off
+   the right edge until the right-edge handle reveals it.
    ============================================================ */
 .sidebar-tabbar {
   transition: transform .28s cubic-bezier(.2,.9,.3,1), opacity .22s ease;
 }
 .sidebar-tabbar.dock-hidden {
-  transform: translateX(-50%) translateY(calc(100% + 26px));
+  transform: translateY(-50%) translateX(calc(100% + 48px));
   opacity: 0;
   pointer-events: none;
 }
@@ -5789,7 +5825,6 @@ body.session-logged-out [data-account-rename-modal] {
 .profile-screen { padding-bottom: 24px; }
 /* Floating dock must never cover the tail of the Profile scroll (the About card) —
    same dodge the composer and cold-storage actions use. */
-body:has(.sidebar-tabbar:not(.dock-hidden)) .profile-screen { padding-bottom: 132px; }
 .app-placeholder-screen { padding-bottom: 24px; }
 .sidebar-scroll { padding-bottom: 24px; }
 .kaposts-screen { padding-bottom: 16px; }
@@ -5985,7 +6020,6 @@ body:has(.sidebar-tabbar:not(.dock-hidden)) .profile-screen { padding-bottom: 13
 }
 /* While the dock is revealed it floats over the bottom ~90px of the window —
    lift the capsules clear of it, then settle back down as it tucks away. */
-body:has(.sidebar-tabbar:not(.dock-hidden)) .cold-bottom-actions { bottom: 104px; }
 .cold-bottom-actions .cold-capsule,
 .cold-actions-wrap > .primary-button { box-shadow: 0 10px 26px rgba(0,0,0,.35); }
 .cold-capsule {

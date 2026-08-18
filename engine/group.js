@@ -167,9 +167,19 @@ export function buildEpochSigningPayload({ v = 1, groupId, epoch, reason }) {
 }
 
 // --- gcomm on-chain payload codec -------------------------------------------
-// ciph_msg:1:gcomm:{blinded_group_id}:{epoch}:{sender_id}:{sender_pub}:{msg_id}:{ciphertext}:{signature}
-const GCOMM_PREFIX = "ciph_msg:1:gcomm:";
-const GCTL_PREFIX = "ciph_msg:1:gctl:";
+// kchat:1:gcomm:{blinded_group_id}:{epoch}:{sender_id}:{sender_pub}:{msg_id}:{ciphertext}:{signature}
+// `kchat:` migration: write the new root, still read the legacy `ciph_msg:` root (tail identical).
+const GCOMM_PREFIX = "kchat:1:gcomm:";        // write
+const GCTL_PREFIX = "kchat:1:gctl:";          // write
+const LEGACY_GCOMM_PREFIX = "ciph_msg:1:gcomm:"; // read-only
+const LEGACY_GCTL_PREFIX = "ciph_msg:1:gctl:";   // read-only
+
+// Returns the payload body after whichever known root it carries (new or legacy), or null.
+function stripGroupPrefix(s, newPrefix, legacyPrefix) {
+  if (s.startsWith(newPrefix)) return s.slice(newPrefix.length);
+  if (s.startsWith(legacyPrefix)) return s.slice(legacyPrefix.length);
+  return null;
+}
 
 export function buildGroupMessagePayload({ blindedGroupId, epoch, senderId, senderPubKey, msgId, ciphertext, signature }) {
   return GCOMM_PREFIX
@@ -184,8 +194,9 @@ export function buildGroupMessagePayload({ blindedGroupId, epoch, senderId, send
 
 export function parseGroupMessagePayload(payloadString) {
   const s = String(payloadString || "");
-  if (!s.startsWith(GCOMM_PREFIX)) return null;
-  const parts = s.slice(GCOMM_PREFIX.length).split(":");
+  const body = stripGroupPrefix(s, GCOMM_PREFIX, LEGACY_GCOMM_PREFIX);
+  if (body == null) return null;
+  const parts = body.split(":");
   if (parts.length !== 7) return null;
   try {
     const epoch = Number(parts[1]);
@@ -213,8 +224,8 @@ export function buildControlPayload({ recipientXOnlyPubKey, encryptedHex }) {
 
 export function parseControlPayload(payloadString) {
   const s = String(payloadString || "");
-  if (!s.startsWith(GCTL_PREFIX)) return null;
-  const rest = s.slice(GCTL_PREFIX.length);
+  const rest = stripGroupPrefix(s, GCTL_PREFIX, LEGACY_GCTL_PREFIX);
+  if (rest == null) return null;
   // Two on-wire shapes have to be accepted here:
   //  - live block scan / our own sends: {recipient_xonly(64 hex)}:{encrypted_hex}
   //  - indexer REST catch-up: the indexer strips the recipient routing prefix, so

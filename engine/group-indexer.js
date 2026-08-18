@@ -22,7 +22,9 @@ function trimBase(url) { return String(url || "").replace(/\/+$/, ""); }
 function reconstructPayload(messagePayloadHex, prefix) {
   try {
     const decoded = DECODER.decode(hexToBytes(messagePayloadHex));
-    return decoded.startsWith("ciph_msg:") ? decoded : prefix + decoded;
+    // Already-rooted (new kchat: or legacy ciph_msg:) → leave as-is; else re-prepend the prefix.
+    const rooted = decoded.startsWith("kchat:") || decoded.startsWith("ciph_msg:");
+    return rooted ? decoded : prefix + decoded;
   } catch { return null; }
 }
 

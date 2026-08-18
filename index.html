@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=243" />
+  <link rel="stylesheet" href="./ui/styles.css?v=244" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -640,6 +640,12 @@
         <span>Profile</span>
       </button>
     </nav>
+
+    <!-- Obvious right-edge handle that reveals/hides the vertical dock (replaces the old
+         automatic bottom-edge pop-out). Hovering peeks it; clicking pins it open/closed. -->
+    <button class="dock-handle" type="button" data-dock-handle aria-label="Show menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+    </button>
   </main>
 
   <div class="account-overlay" data-account-overlay hidden role="dialog" aria-modal="true" aria-label="Settings">
@@ -2322,7 +2328,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=231"></script>
+  <script type="module" src="./ui/app.js?v=233"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

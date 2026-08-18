@@ -258,7 +258,9 @@ function handshakeEncryptedCandidates(payloadHex) {
   if (body.startsWith("6a") && body.length >= 4) body = body.slice(4);
   add(body);
 
+  // Dual-read: new `kchat:` root + legacy `ciph_msg:` roots (and the old `hs:` alias).
   const prefixes = [
+    textToHex("kchat:1:handshake:"),
     textToHex("ciph_msg:1:handshake:"),
     textToHex("ciph_msg:1:hs:"),
   ];
@@ -278,8 +280,7 @@ function isHandshakePayloadHex(payloadHex) {
   if (!clean || clean.length % 2 !== 0 || !/^[0-9a-f]+$/.test(clean)) return false;
   let body = clean;
   if (body.startsWith("6a") && body.length >= 4) body = body.slice(4);
-  const prefix = textToHex("ciph_msg:1:handshake:");
-  return body.startsWith(prefix);
+  return body.startsWith(textToHex("kchat:1:handshake:")) || body.startsWith(textToHex("ciph_msg:1:handshake:"));
 }
 
 function transactionSenderAddress(transaction, receiver) {
@@ -472,7 +473,8 @@ function isSelfStashPayloadHex(payloadHex) {
   if (!clean || clean.length % 2 !== 0 || !/^[0-9a-f]+$/.test(clean)) return false;
   let body = clean;
   if (body.startsWith("6a") && body.length >= 4) body = body.slice(4);
-  return body.startsWith(textToHex("ciph_msg:1:self_stash:saved_handshake:"));
+  return body.startsWith(textToHex("kchat:1:self_stash:saved_handshake:"))
+    || body.startsWith(textToHex("ciph_msg:1:self_stash:saved_handshake:"));
 }
 
 // A self-stash transaction pays back to the wallet's own address, so unlike

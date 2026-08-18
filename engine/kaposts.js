@@ -50,8 +50,11 @@ export function base64ToUtf8(encoded) {
 // K protocol payloads (byte-for-byte the shapes the indexer's parser verifies)
 // ---------------------------------------------------------------------------
 
+// `kchat:` migration: KaPosts now writes the `kchat:1:<action>:` root (was `k:1:<action>:`).
+// Reads come pre-parsed from the K indexer (which dual-reads server-side), so there is no
+// on-device `k:1:` parse to update — only the write shape changes. The U+2060 marker stays.
 export const KAPOSTS_PROTOCOL = Object.freeze({
-  prefix: "k:1:",
+  prefix: "kchat:1:",
 
   postSigningString: (b64Message, mentionsJson) => `${b64Message}:${mentionsJson}`,
   replySigningString: (postId, b64Message, mentionsJson) => `${postId}:${b64Message}:${mentionsJson}`,
@@ -61,17 +64,17 @@ export const KAPOSTS_PROTOCOL = Object.freeze({
   unquoteSigningString: (contentId) => contentId,
 
   postPayload: (pubkey, signature, b64Message, mentionsJson) =>
-    `k:1:post:${pubkey}:${signature}:${b64Message}:${mentionsJson}`,
+    `kchat:1:post:${pubkey}:${signature}:${b64Message}:${mentionsJson}`,
   replyPayload: (pubkey, signature, postId, b64Message, mentionsJson) =>
-    `k:1:reply:${pubkey}:${signature}:${postId}:${b64Message}:${mentionsJson}`,
+    `kchat:1:reply:${pubkey}:${signature}:${postId}:${b64Message}:${mentionsJson}`,
   votePayload: (pubkey, signature, postId, vote, authorPubkey) =>
-    `k:1:vote:${pubkey}:${signature}:${postId}:${vote}:${authorPubkey}`,
+    `kchat:1:vote:${pubkey}:${signature}:${postId}:${vote}:${authorPubkey}`,
   followPayload: (pubkey, signature, action, followedPubkey) =>
-    `k:1:follow:${pubkey}:${signature}:${action}:${followedPubkey}`,
+    `kchat:1:follow:${pubkey}:${signature}:${action}:${followedPubkey}`,
   quotePayload: (pubkey, signature, contentId, b64Message, quotedAuthorPubkey) =>
-    `k:1:quote:${pubkey}:${signature}:${contentId}:${b64Message}:${quotedAuthorPubkey}`,
+    `kchat:1:quote:${pubkey}:${signature}:${contentId}:${b64Message}:${quotedAuthorPubkey}`,
   unquotePayload: (pubkey, signature, contentId) =>
-    `k:1:unquote:${pubkey}:${signature}:${contentId}`,
+    `kchat:1:unquote:${pubkey}:${signature}:${contentId}`,
 });
 
 // ---------------------------------------------------------------------------

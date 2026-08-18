@@ -88,13 +88,25 @@ function checksumHex(value) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+// `kchat:` migration: KaChat now WRITES its own on-chain root, but still READS the legacy
+// `ciph_msg:` root so old history and not-yet-migrated peers keep rendering. Everything after
+// the root is byte-for-byte identical, so dual-read is just "match either root, keep the rest".
+export const WIRE_ROOT = `kchat${DELIM}`;         // write + read
+export const LEGACY_WIRE_ROOT = `ciph_msg${DELIM}`; // read-only (history / older peers)
+
 export const KASIA_PROTOCOL = Object.freeze({
   name: "kasia",
   version: Number(VERSION),
   prefix: Object.freeze({
+    type: "kchat",
+    string: WIRE_ROOT,
+    hex: toHex(WIRE_ROOT),
+  }),
+  // Legacy root, accepted on READ only (never written).
+  legacyPrefix: Object.freeze({
     type: "ciph_msg",
-    string: `ciph_msg${DELIM}`,
-    hex: toHex(`ciph_msg${DELIM}`),
+    string: LEGACY_WIRE_ROOT,
+    hex: toHex(LEGACY_WIRE_ROOT),
   }),
   headers: Object.freeze({
     HANDSHAKE: Object.freeze(header("handshake")),
@@ -154,7 +166,7 @@ export function buildCommMessage({
 } = {}) {
   const recipientAlias = normalizeAlias(alias);
   const body = encodeMessageBody(text);
-  const protocolString = `ciph_msg:${VERSION}:comm:${recipientAlias}:${body.base64Body}`;
+  const protocolString = `kchat:${VERSION}:comm:${recipientAlias}:${body.base64Body}`;
   const protocolBytes = new TextEncoder().encode(protocolString);
   const payloadHex = toHex(protocolString);
   const messageId = checksumHex(`${createdAt}:${conversationId || ""}:${contactId || ""}:${localNonce || ""}:${protocolString}`);
@@ -196,7 +208,8 @@ export function makeKasiaCommPayload(details) {
 
 export function parseCommMessage(protocolString) {
   const raw = String(protocolString || "");
-  if (!raw.startsWith("ciph_msg:1:comm:")) return null;
+  // Dual-read: new `kchat:` root and legacy `ciph_msg:` root (tail is byte-identical).
+  if (!raw.startsWith(`kchat:${VERSION}:comm:`) && !raw.startsWith(`ciph_msg:${VERSION}:comm:`)) return null;
   const parts = raw.split(DELIM);
   if (parts.length < 5) return null;
   const recipientAlias = parts[3] || "";
@@ -234,8 +247,13 @@ export function parseKasiaPayloadHex(payloadHex) {
   const comm = parseCommMessage(payloadString);
   if (comm) return comm;
 
-  if (!payload.startsWith(KASIA_PROTOCOL.prefix.hex)) return null;
-  const withoutPrefix = payload.slice(KASIA_PROTOCOL.prefix.hex.length);
+  // Dual-read: strip whichever root the payload carries (kchat: or legacy ciph_msg:). The
+  // header hex after the root is identical for both, so the header loop below is unchanged.
+  let rootHex = null;
+  if (payload.startsWith(KASIA_PROTOCOL.prefix.hex)) rootHex = KASIA_PROTOCOL.prefix.hex;
+  else if (payload.startsWith(KASIA_PROTOCOL.legacyPrefix.hex)) rootHex = KASIA_PROTOCOL.legacyPrefix.hex;
+  else return null;
+  const withoutPrefix = payload.slice(rootHex.length);
 
   for (const entry of Object.values(KASIA_PROTOCOL.headers)) {
     if (!withoutPrefix.startsWith(entry.hex)) continue;
@@ -320,7 +338,7 @@ export async function buildEncryptedCommMessage({
 
   const encryptedBytes = hexToBytes(encryptedHex);
   const base64Body = bytesToBase64(encryptedBytes);
-  const protocolString = `ciph_msg:${VERSION}:comm:${recipientAlias}:${base64Body}`;
+  const protocolString = `kchat:${VERSION}:comm:${recipientAlias}:${base64Body}`;
   const protocolBytes = new TextEncoder().encode(protocolString);
   const payloadHex = toHex(protocolString);
   const messageId = checksumHex(`${createdAt}:${conversationId || ""}:${contactId || ""}:${localNonce || ""}:${protocolString}`);
@@ -416,7 +434,7 @@ export async function buildEncryptedHandshake({
   const encryptedHex = String(encrypted?.encryptedHex || "").replace(/^0x/i, "");
   if (!encryptedHex) throw new Error("Kasia cipher returned an empty handshake payload.");
 
-  const prefixString = `ciph_msg:${VERSION}:handshake:`;
+  const prefixString = `kchat:${VERSION}:handshake:`;
   const prefixBytes = new TextEncoder().encode(prefixString);
   const cipherBytes = hexToBytes(encryptedHex);
   const protocolBytes = new Uint8Array(prefixBytes.length + cipherBytes.length);
@@ -489,7 +507,7 @@ export async function buildSelfStash({
   const encryptedHex = String(encrypted?.encryptedHex || "").replace(/^0x/i, "");
   if (!encryptedHex) throw new Error("Kasia cipher returned an empty self-stash payload.");
 
-  const prefixString = `ciph_msg:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`;
+  const prefixString = `kchat:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`;
   const prefixBytes = new TextEncoder().encode(prefixString);
   const cipherBytes = hexToBytes(encryptedHex);
   const protocolBytes = new Uint8Array(prefixBytes.length + cipherBytes.length);
@@ -534,9 +552,15 @@ export function selfStashEncryptedCandidates(payloadHex) {
   let body = clean;
   if (body.startsWith("6a") && body.length >= 4) body = body.slice(4);
   add(body);
-  const prefix = toHex(`ciph_msg:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`);
+  // Dual-read: strip either the new `kchat:` or legacy `ciph_msg:` self-stash prefix.
+  const prefixes = [
+    toHex(`kchat:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`),
+    toHex(`ciph_msg:${VERSION}:self_stash:${SELF_STASH_SCOPE}:`),
+  ];
   for (const value of [...candidates]) {
-    if (value.startsWith(prefix)) add(value.slice(prefix.length));
+    for (const prefix of prefixes) {
+      if (value.startsWith(prefix)) add(value.slice(prefix.length));
+    }
   }
   return candidates;
 }

@@ -33,7 +33,7 @@ export async function sendBroadcastMessage({ engine, channel, content }) {
     throw new Error("Load WASM and generate/import a wallet first.");
   }
   await engine.connect();
-  const protocolString = `ciph_msg:1:bcast:${name}:${text}`;
+  const protocolString = `kchat:1:bcast:${name}:${text}`;
   const sendResult = await sendPayloadTransaction({
     kaspa: engine.kaspa,
     rpc: engine.rpc,
