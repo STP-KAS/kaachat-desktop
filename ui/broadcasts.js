@@ -1,6 +1,6 @@
 // Broadcasts tab UI — desktop port of the iOS/Android 4.0 broadcast rooms. Channel list
 // (featured rooms pinned + joinable customs), room view with indexer backfill (once on open +
-// 8s polling while open), per-room hidden users, the permanent public/3-day banner on the
+// 8s polling while open), per-room hidden users, the permanent public/30-day banner on the
 // featured rooms, and a live connection dot in the room header. Feature parity with mobile:
 // link previews in bubbles (same progressive Nextcloud probe as 1:1), reactions (same
 // cross-platform JSON payload as 1:1, sent as normal broadcast messages), and voice notes
@@ -33,7 +33,7 @@ let voicePanelEl, voiceTimeEl, voiceBtn;
 let joinedChannels = [];
 let hiddenByRoom = {};
 let notifyByChannel = {};    // { [channel]: true } — the bell: OS pings for new messages
-let retentionByChannel = {}; // { [channel]: days } — own channels only; featured are fixed 3-day
+let retentionByChannel = {}; // { [channel]: days } — own channels only; featured are fixed 30-day
 // Only messages arriving AFTER app launch may ping — backfilled history never notifies.
 const broadcastSessionStartMs = Date.now();
 let messageCache = {}; // { [channel]: [{ txId, senderAddress, content, blockTime, status? }] }
@@ -113,7 +113,7 @@ function saveRetention() {
   localStorage.setItem(deps.accountScopedKey(RETENTION_KEY), JSON.stringify(retentionByChannel));
 }
 
-/** Effective retention cutoff for a channel: featured rooms are fixed 3-day (matching the room
+/** Effective retention cutoff for a channel: featured rooms are fixed 30-day (matching the room
  *  banner and iOS); own channels use their configured days, forever when unset/0. */
 function retentionCutoffMs(channel) {
   if (isFeaturedBroadcastChannel(channel)) return Date.now() - BROADCAST_RETENTION_MS;
@@ -133,9 +133,9 @@ function saveReactions() {
   catch { reactionsCache = {}; }
 }
 
-/** Fixed 3-day rolling retention, matching the featured rooms' product rule. */
+/** Rolling retention, matching the featured rooms' product rule. */
 function pruneCache() {
-  // Per-channel retention (iOS parity): featured rooms fixed 3-day, own channels use their
+  // Per-channel retention (iOS parity): featured rooms fixed 30-day, own channels use their
   // configured retention (0 = keep forever).
   for (const channel of Object.keys(messageCache)) {
     const cutoff = retentionCutoffMs(channel);
@@ -254,17 +254,41 @@ function mergeMessages(channel, rows) {
   for (const row of pingable.slice(0, 3)) {
     deps.postDesktopNotification?.({
       title: `#${row.channel}`,
-      body: `${senderName(row.senderAddress)}: ${String(row.content || "").slice(0, 90)}`,
+      body: `${senderName(row.senderAddress)}: ${humanizeBroadcastContent(row.content).slice(0, 90)}`,
       tag: `kachat-broadcast-${row.txId}`,
     });
   }
   return added + (reactionsChanged ? 1 : 0);
 }
 
+// Channels that already did the full historical page-back this session — the 8s poll
+// afterwards only needs the newest page.
+const deepBackfilled = new Set();
+
 async function backfillChannel(channel, { quiet = true } = {}) {
   try {
-    const result = await fetchBroadcastHistory({ channel });
-    const added = mergeMessages(channel, result.messages);
+    let added = 0;
+    if (deepBackfilled.has(channel)) {
+      const result = await fetchBroadcastHistory({ channel });
+      added = mergeMessages(channel, result.messages);
+    } else {
+      // First open this session: page backwards through the indexer's full history
+      // (newest-first, `before` = oldest blockTime seen) so the room shows every
+      // message still retained server-side, not just the newest page.
+      deepBackfilled.add(channel);
+      const cutoff = retentionCutoffMs(channel);
+      let before = null;
+      for (let page = 0; page < 20; page++) {
+        const result = await fetchBroadcastHistory({ channel, limit: 500, before });
+        added += mergeMessages(channel, result.messages);
+        if (!result.hasMore || !result.messages.length) break;
+        const oldest = result.messages.reduce(
+          (min, m) => Math.min(min, Number(m.blockTime) || Infinity), Infinity);
+        if (!Number.isFinite(oldest)) break;
+        if (cutoff && oldest < cutoff) break; // older pages would be pruned anyway
+        before = oldest;
+      }
+    }
     if (added > 0) {
       if (activeChannel === channel) renderRoom();
       renderChannelList();
@@ -355,7 +379,7 @@ function channelPreviewText(channel) {
   if (!last) return "";
   const reaction = deps.parseReactionEnvelope?.(last.content); // defensive: shouldn't survive migration
   if (reaction) return `Reacted ${reaction.emoji}`;
-  return String(last.content || "").replace(/\s+/g, " ").slice(0, 64);
+  return humanizeBroadcastContent(last.content).replace(/\s+/g, " ").slice(0, 64);
 }
 
 // The bell icon pair, iOS-style: filled accent when notifications are on, slashed when off.
@@ -431,19 +455,65 @@ function buildMessageElement(m) {
   }
   el.append(head);
 
-  const body = document.createElement("div");
-  body.className = "broadcast-message-body";
-  const urls = deps.renderTextWithLinks?.(body, m.content) ?? [];
-  if (!deps.renderTextWithLinks) body.textContent = m.content;
-  el.append(body);
-  const previewable = urls.find((url) => deps.isPreviewableUrl?.(url));
-  if (previewable) {
-    const card = deps.buildLinkPreviewCard?.(previewable);
-    if (card) el.append(card);
+  // Decode the same wire envelopes 1:1 chats use - replies, photos, and voice notes all
+  // arrive as JSON payloads that must never render raw.
+  const replyEnvelope = deps.parseReplyEnvelope?.(m.content) || null;
+  const imageEnvelope = replyEnvelope ? null : (deps.parseImageEnvelope?.(m.content) || null);
+  const audioEnvelope = (replyEnvelope || imageEnvelope) ? null : (deps.parseAudioEnvelope?.(m.content) || null);
+
+  if (replyEnvelope) {
+    const quote = document.createElement("div");
+    quote.className = "message-reply-quote";
+    const label = document.createElement("strong");
+    label.textContent = replyEnvelope.replyToSender ? `Reply to ${senderName(replyEnvelope.replyToSender)}` : "Reply";
+    const preview = document.createElement("span");
+    preview.textContent = replyEnvelope.replyToPreview || "Message";
+    quote.append(label, preview);
+    el.append(quote);
+  }
+
+  if (imageEnvelope) {
+    const img = document.createElement("img");
+    img.className = "broadcast-photo";
+    img.src = imageEnvelope.content;
+    img.alt = imageEnvelope.name || "Photo";
+    img.addEventListener("click", () => deps.openPhotoPreview?.(imageEnvelope.content));
+    el.append(img);
+  } else if (audioEnvelope) {
+    const audioWrap = document.createElement("div");
+    audioWrap.className = "message-audio-bubble";
+    const player = document.createElement("audio");
+    player.controls = true;
+    player.preload = "metadata";
+    player.src = audioEnvelope.content;
+    player.addEventListener("click", (event) => event.stopPropagation());
+    audioWrap.append(player);
+    el.append(audioWrap);
+  } else {
+    const body = document.createElement("div");
+    body.className = "broadcast-message-body";
+    const bodyText = replyEnvelope ? replyEnvelope.text : m.content;
+    const urls = deps.renderTextWithLinks?.(body, bodyText) ?? [];
+    if (!deps.renderTextWithLinks) body.textContent = bodyText;
+    el.append(body);
+    const previewable = urls.find((url) => deps.isPreviewableUrl?.(url));
+    if (previewable) {
+      const card = deps.buildLinkPreviewCard?.(previewable);
+      if (card) el.append(card);
+    }
   }
 
   appendReactionUi(el, m);
   return el;
+}
+
+/** Human text for previews/notifications: unwrap replies, name photos/voice notes. */
+function humanizeBroadcastContent(content) {
+  const reply = deps.parseReplyEnvelope?.(content);
+  if (reply) return reply.text || "Reply";
+  if (deps.parseImageEnvelope?.(content)) return "📷 Photo";
+  if (deps.parseAudioEnvelope?.(content)) return "🎤 Audio message";
+  return String(content || "");
 }
 
 function appendReactionUi(el, m) {
@@ -862,8 +932,15 @@ export function initBroadcasts(dependencies) {
     if (notify) {
       event.stopPropagation();
       const name = notify.dataset.broadcastNotify;
-      if (notifyByChannel[name]) delete notifyByChannel[name];
-      else notifyByChannel[name] = true;
+      if (notifyByChannel[name]) {
+        delete notifyByChannel[name];
+        deps.showToast?.(`Notifications off for #${name}.`);
+      } else {
+        notifyByChannel[name] = true;
+        // Make sure the OS-level permission is actually granted so the pings can fire.
+        deps.ensureNotificationPermission?.();
+        deps.showToast?.(`Notifications on for #${name}. You will be notified of every new message.`);
+      }
       saveNotify();
       renderChannelList();
       return;

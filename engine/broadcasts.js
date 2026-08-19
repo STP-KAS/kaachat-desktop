@@ -9,7 +9,7 @@ import { getEndpoint } from "./endpoints.js";
 import { sendPayloadTransaction } from "./transactions.js";
 
 export const FEATURED_BROADCAST_CHANNELS = Object.freeze(["kaspa", "kachat-bugs"]);
-export const BROADCAST_RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // fixed 3 days (featured rooms)
+export const BROADCAST_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // fixed 30 days (featured rooms)
 
 export function normalizeBroadcastChannel(rawName) {
   return String(rawName || "").trim().toLowerCase().replace(/^#/, "");

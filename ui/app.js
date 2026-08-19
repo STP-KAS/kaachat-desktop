@@ -13992,6 +13992,14 @@ queueMicrotask(async () => {
     // Reactions: identical wire parser and fixed tapback set across all clients.
     parseReactionEnvelope,
     quickReactionEmojis: QUICK_REACTION_EMOJIS,
+    // Same wire envelopes as 1:1 chats — replies, photos, and voice notes must decode
+    // in broadcast rooms too instead of rendering raw JSON.
+    parseReplyEnvelope,
+    parseImageEnvelope,
+    parseAudioEnvelope,
+    openPhotoPreview,
+    // Bell toggle requests OS notification permission on the spot.
+    ensureNotificationPermission,
     // "Today"/"Yesterday" day pills, shared with 1:1 and group chats.
     daySeparatorLabel,
     // Per-channel bell: OS pings for live messages in notify-enabled channels.
@@ -14009,7 +14017,7 @@ queueMicrotask(async () => {
           source: "broadcast",
           id: `broadcast-${row.txId}`,
           title: `${senderName} in #${row.channel}`,
-          body: `"${String(row.content || "").slice(0, 90)}"`,
+          body: `"${displayTextForMessage({ text: row.content }).slice(0, 90)}"`,
           timestamp: Number(row.blockTime) || Date.now(),
           targetKind: "broadcast",
           targetId: row.channel,

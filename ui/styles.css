@@ -5766,6 +5766,17 @@ body.session-logged-out [data-account-rename-modal] {
 .broadcast-pending { color: var(--muted); }
 .broadcast-failed { color: #ff6b6b; }
 .broadcast-message-body { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+/* Decoded media envelopes in broadcast rooms (same wire shapes as 1:1). */
+.broadcast-message .broadcast-photo {
+  display: block;
+  max-width: 320px;
+  max-height: 320px;
+  border-radius: 10px;
+  margin-top: 2px;
+  cursor: zoom-in;
+}
+.broadcast-message .message-audio-bubble { margin-top: 2px; }
+.broadcast-message .message-reply-quote { cursor: default; margin-top: 2px; }
 
 /* Broadcast rooms reuse the 1:1 reaction bar/pill visuals — only the anchoring
    differs (mine = right-aligned bubbles, others = left). */
