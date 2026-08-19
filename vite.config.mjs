@@ -34,8 +34,15 @@ function nextcloudProxy() {
         // Link-preview scrape (x-preview): use a crawler User-Agent so sites emit their og:image /
         // og:title the way they do for Facebook/Slack unfurlers (a plain browser UA increasingly
         // gets a login/consent wall). Mirrors iOS LinkPreviewService's facebookexternalhit UA.
+        // EXCEPTION: Twitter/X 404s the crawler UA but DOES serve Open Graph tags to a real browser
+        // UA (the opposite of Instagram/Facebook) - so use a browser UA there. iOS/Android already
+        // scrape non-Meta hosts like x.com with a browser UA, which is why they preview it fine.
         if (headers["x-preview"] === "1") {
-          headers["user-agent"] = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
+          const host = origin.hostname.replace(/^www\./, "").toLowerCase();
+          const browserUaHosts = new Set(["x.com", "twitter.com", "mobile.twitter.com"]);
+          headers["user-agent"] = browserUaHosts.has(host)
+            ? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+            : "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
           delete headers.accept;
           headers.accept = "text/html,application/xhtml+xml";
         }

@@ -1,7 +1,7 @@
 import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
 import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
-import { getBalance, sendKaspa, estimateOnchainFee, sendPayloadTransaction } from "./transactions.js";
+import { getBalance, sendKaspa, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
 import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
@@ -812,6 +812,25 @@ export class KaspaEngine {
       sourceAddress: this.address,
       amountKas: "0.2",
       payloadBytes,
+    });
+  }
+
+  // Estimate the network fee for sending `amountKas`. The fee scales with the number of UTXOs the
+  // SDK has to spend to cover the amount, so passing the real amount (rather than a fixed sample)
+  // reflects the UTXOs actually present — matches iOS's per-amount fee estimate.
+  // Returns { sdkFeeKas, policyFeeKas }: the SDK's automatic base fee, and the iOS-policy fee
+  // (mass * 100 sompi/gram) the Send screen displays and pays.
+  async estimateSendFee(amountKas = "0.2", selectedOutpoints = null) {
+    if (!this.kaspa || !this.address) return null;
+    await this.connect();
+    return estimateSendFeeDetail({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      sourceAddress: this.address,
+      amountKas: String(amountKas || "0.2"),
+      payloadBytes: 0,
+      selectedOutpoints,
     });
   }
 

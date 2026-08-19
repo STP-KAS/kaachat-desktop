@@ -3935,6 +3935,36 @@ body.session-logged-out [data-account-rename-modal] {
 
 /* Send amount field: clickable Kaspa-logo unit toggle (KAS <-> fiat) + input. */
 [data-manage-send-amount-label] { margin-bottom: 0; }
+/* The full-featured Send Kaspa modal (fee tiers + coin control) can exceed the viewport. */
+.send-kaspa-modal { max-height: 90vh; overflow-y: auto; }
+.send-recipient-actions { display: flex; justify-content: flex-end; margin: 4px 0 6px; }
+/* Green check inside the recipient field once the address resolves / is valid. */
+.send-recipient-field { position: relative; display: block; }
+.send-recipient-field .field-input { padding-right: 42px; }
+.send-recipient-check {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; color: #0a0f0d;
+  background: var(--kaspa); box-shadow: 0 0 0 3px rgba(98,244,208,.18);
+}
+.send-recipient-check svg { width: 13px; height: 13px; }
+
+/* Consolidate/Compound UTXOs button in a spending address's UTXOs tab (iOS parity). */
+.manage-address-consolidate-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 14px; margin-bottom: 10px;
+  border: 1px solid var(--kaspa); border-radius: 12px;
+  background: rgba(98,244,208,.10); color: var(--kaspa-ink);
+  font: inherit; font-weight: 700; font-size: 14px; cursor: pointer;
+}
+.manage-address-consolidate-btn:hover { background: rgba(98,244,208,.18); }
+.manage-address-consolidate-btn svg { width: 18px; height: 18px; flex: 0 0 18px; }
+/* Full resolved address shown under the KNS domain (matches iOS). */
+.send-resolved-address { display: block; margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
+/* Breathing room between the modal's sections so headers don't crowd the row above. */
+.send-kaspa-modal .manage-send-coin-control,
+.send-kaspa-modal .send-fee-section { margin-top: 16px; }
+.send-kaspa-modal .send-amount-field { margin-top: 8px; }
 .send-amount-field { display: flex; align-items: stretch; gap: 8px; margin-top: 7px; }
 .send-amount-unit {
   display: flex;

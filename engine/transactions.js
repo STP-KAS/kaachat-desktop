@@ -130,12 +130,23 @@ async function sendKaspaNow({ kaspa, rpc, withRpc = null, privateKey, sourceAddr
 // used for the composer's "Show Fee Estimate" preference. payloadBytes is an
 // estimate of the real Kasia COMM payload's byte length for the draft text,
 // since mass (and therefore fee) scales with payload size.
-export async function estimateOnchainFee({ kaspa, rpc, withRpc = null, sourceAddress, amountKas = "0.2", payloadBytes = 0 }) {
+// Builds the representative tx and returns { feeSompi, massGrams } from the generator summary.
+async function estimateOnchainFeeDetail({ kaspa, rpc, withRpc = null, sourceAddress, amountKas = "0.2", payloadBytes = 0, selectedOutpoints = null }) {
   const fetchUtxos = (activeRpc) => activeRpc.getUtxosByAddresses([sourceAddress]);
-  const { entries } = withRpc
+  let { entries } = withRpc
     ? await withRpc(fetchUtxos, { retries: 1, label: "Fee estimate UTXO refresh" })
     : await fetchUtxos(rpc);
   if (!entries || entries.length === 0) return null;
+  // Coin control: estimate against exactly the chosen UTXOs (matches iOS passing manualUtxos to
+  // its fee estimate) so the fee reflects those inputs' mass, not an automatic selection.
+  if (selectedOutpoints && selectedOutpoints.length) {
+    const wanted = new Set(selectedOutpoints);
+    entries = entries.filter((entry) => {
+      const outpoint = entry.outpoint || {};
+      return wanted.has(`${outpoint.transactionId}:${outpoint.index}`);
+    });
+    if (entries.length === 0) return null;
+  }
   entries.sort((a, b) => BigInt(a.amount) > BigInt(b.amount) ? 1 : -1);
 
   const result = await kaspa.createTransactions({
@@ -148,7 +159,32 @@ export async function estimateOnchainFee({ kaspa, rpc, withRpc = null, sourceAdd
   });
   const feesSompi = result.summary?.fees;
   if (feesSompi == null) return null;
-  return sompiToKaspaDisplay(kaspa, feesSompi);
+  const massGrams = result.summary?.mass;
+  return { feeSompi: BigInt(feesSompi), massGrams: massGrams != null ? BigInt(massGrams) : 0n };
+}
+
+export async function estimateOnchainFee(opts) {
+  const detail = await estimateOnchainFeeDetail(opts);
+  return detail ? sompiToKaspaDisplay(opts.kaspa, detail.feeSompi) : null;
+}
+
+// Fee-rate policy matching iOS's KaspaFeePolicy.minimumRelayFeePerGramSompi (100 sompi per gram).
+// The WASM SDK's own `summary.fees` uses the ~1 sompi/gram network floor, which is ~100x lower
+// than what iOS/kassigner charge, so a fee estimate needs to apply this policy explicitly.
+const POLICY_SOMPI_PER_GRAM = 100n;
+
+// Estimate for the Send screen: returns the SDK's own base fee AND the policy fee (mass * 100),
+// both as KAS strings. The UI shows the policy fee (like iOS) and pays the difference as a
+// priority tip on top of the SDK's automatic base.
+export async function estimateSendFeeDetail(opts) {
+  const detail = await estimateOnchainFeeDetail(opts);
+  if (!detail) return null;
+  const policySompi = detail.massGrams * POLICY_SOMPI_PER_GRAM;
+  const effectiveSompi = policySompi > detail.feeSompi ? policySompi : detail.feeSompi;
+  return {
+    sdkFeeKas: sompiToKaspaDisplay(opts.kaspa, detail.feeSompi),
+    policyFeeKas: sompiToKaspaDisplay(opts.kaspa, effectiveSompi),
+  };
 }
 
 export async function sendPayloadTransaction({

@@ -4590,6 +4590,16 @@ function renderSpendingDetailUtxos(address, utxos) {
   if (!utxos.length) { spendingDetailUtxoList.innerHTML = '<div class="manage-address-empty">No UTXOs at this address.</div>'; return; }
   const labels = getUtxoLabels(address);
   spendingDetailUtxoList.replaceChildren();
+  // Compound UTXOs (matches iOS): only meaningful with more than one UTXO. Merges them into one
+  // by sending the balance back to this same address, so future sends need fewer inputs.
+  if (utxos.length > 1) {
+    const consolidate = document.createElement("button");
+    consolidate.type = "button";
+    consolidate.className = "manage-address-consolidate-btn";
+    consolidate.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7 3 12l5 5"/><path d="M16 7l5 5-5 5"/><path d="M3 12h18"/></svg><span>Compound UTXOs</span>';
+    consolidate.addEventListener("click", () => consolidateSpendingDetailUtxos());
+    spendingDetailUtxoList.appendChild(consolidate);
+  }
   for (const entry of utxos) {
     const outpointKey = utxoOutpointKey(entry.outpoint || {});
     const label = labels[outpointKey];
@@ -4616,6 +4626,43 @@ async function loadSpendingDetailUtxos(address) {
   } catch (error) {
     if (spendingDetailAddress !== address) return;
     spendingDetailUtxoList.innerHTML = `<div class="manage-address-empty">Could not load UTXOs: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+// Compound/consolidate every UTXO at the spending-detail address into one, by sending the balance
+// back to itself (matches iOS's WithdrawKaspaView isCompoundMode). Confirm first, then broadcast.
+let spendingConsolidateInFlight = false;
+async function consolidateSpendingDetailUtxos() {
+  const address = spendingDetailAddress;
+  const index = spendingDetailIndex;
+  if (!address || spendingConsolidateInFlight) return;
+  if (!activeAccountMnemonic()) { showCopyToast("This account has no recovery phrase, so consolidation isn't available."); return; }
+  let balance;
+  try { balance = await engine.balanceForAddress(address); } catch (error) { showCopyToast(`Could not load balance: ${error.message}`); return; }
+  const entries = balance.entries || [];
+  if (entries.length < 2) { showCopyToast("Nothing to consolidate — this address has a single UTXO."); return; }
+  const maxKas = Number(balance.totalKas) - 0.001; // headroom for the network fee (many inputs)
+  if (!(maxKas > 0)) { showCopyToast("Balance too low to consolidate."); return; }
+  if (!window.confirm(`Combine ${entries.length} UTXOs at this address into one? This sends the balance back to this same address and pays a small network fee.`)) return;
+  spendingConsolidateInFlight = true;
+  showCopyToast("Consolidating UTXOs…");
+  try {
+    await engine.sendFromSpending({
+      mnemonic: activeAccountMnemonic(),
+      index,
+      passphrase: activeAccountPassphrase(),
+      destinationAddress: address, // self-send merges the inputs into one output
+      amountKas: trimKas8(maxKas),
+      feeKas: "0",
+      selectedOutpoints: null,
+    });
+    showCopyToast("UTXOs consolidated.");
+    if (spendingDetailAddress === address) loadSpendingDetailUtxos(address);
+    refreshSpendingSummary?.();
+  } catch (error) {
+    showCopyToast(`Consolidation failed: ${error.message}`);
+  } finally {
+    spendingConsolidateInFlight = false;
   }
 }
 
@@ -5476,12 +5523,16 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
     const amountValid = Number(els.amount?.value) > 0;
     resolvedAddress = null;
     if (els.resolvedHint) els.resolvedHint.hidden = true;
+    if (els.checkEl) els.checkEl.hidden = true;
     if (els.error) els.error.hidden = true;
 
     if (!raw) { if (els.submit) els.submit.disabled = true; return; }
 
     if (raw.startsWith("kaspa:")) {
-      if (els.submit) els.submit.disabled = !amountValid;
+      let valid = true;
+      try { validateContactAddress(raw); } catch { valid = false; }
+      if (els.checkEl) els.checkEl.hidden = !valid; // green check once it's a valid address
+      if (els.submit) els.submit.disabled = !amountValid || !valid;
       return;
     }
 
@@ -5492,7 +5543,12 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
         if (token !== resolveToken) return; // a newer keystroke superseded this lookup
         if (resolution) {
           resolvedAddress = resolution.ownerAddress;
-          if (els.resolvedHint) { els.resolvedHint.textContent = `Resolved: ${resolution.domain}`; els.resolvedHint.hidden = false; }
+          if (els.resolvedHint) {
+            // Show the domain AND the full resolved address below it, matching iOS's WithdrawKaspaView.
+            els.resolvedHint.innerHTML = `Resolved: ${escapeHtml(resolution.domain)}<br><span class="send-resolved-address">${escapeHtml(resolution.ownerAddress || "")}</span>`;
+            els.resolvedHint.hidden = false;
+          }
+          if (els.checkEl) els.checkEl.hidden = false; // resolved -> green check
           if (els.submit) els.submit.disabled = !amountValid;
         }
       } catch {
@@ -5546,12 +5602,345 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
 }
 
 // Standalone Send Kaspa modal (opened from profile > Chatting Address > Send Kaspa).
+// Matches iOS WithdrawKaspaView: KNS resolution + Paste, fiat/KAS toggle + conversion,
+// Max, Network Fee tiers (Normal/Priority/Custom), and Coin Control (UTXO selection).
 const sendKaspaModal = document.querySelector("[data-send-kaspa-modal]");
 function closeSendKaspaModal() { if (sendKaspaModal) sendKaspaModal.hidden = true; }
+
+const sendKaspaAmountInput = document.querySelector("[data-send-kaspa-amount]");
+const sendKaspaAmountLabel = document.querySelector("[data-send-kaspa-amount-label]");
+const sendKaspaUnitButton = document.querySelector("[data-send-kaspa-unit]");
+const sendKaspaUnitCode = document.querySelector("[data-send-kaspa-unit-code]");
+const sendKaspaLogo = document.querySelector("[data-send-kaspa-logo]");
+const sendKaspaFiatSymbol = document.querySelector("[data-send-kaspa-fiat-symbol]");
+const sendKaspaMaxButton = document.querySelector("[data-send-kaspa-max]");
+const sendKaspaFiatHint = document.querySelector("[data-send-kaspa-fiat]");
+const sendKaspaPasteButton = document.querySelector("[data-send-kaspa-paste]");
+const sendKaspaFeeButtons = document.querySelectorAll("[data-send-kaspa-fee]");
+const sendKaspaFeeCustom = document.querySelector("[data-send-kaspa-fee-custom]");
+const sendKaspaFeeSummary = document.querySelector("[data-send-kaspa-fee-summary]");
+const sendKaspaCoinToggle = document.querySelector("[data-send-kaspa-coin-toggle]");
+const sendKaspaCoinList = document.querySelector("[data-send-kaspa-coin-list]");
+const sendKaspaCoinSummary = document.querySelector("[data-send-kaspa-coin-summary]");
+
+let sendKaspaUnit = "kas";        // "kas" | "fiat"
+let sendKaspaPrice = null;        // live KAS price in selectedCurrency
+let sendKaspaAvailableKas = null; // available balance for the Max button
+let sendKaspaFeeTier = "normal";
+let sendKaspaUtxos = [];           // UTXO entries at the chatting address, for coin control
+const sendKaspaSelected = new Set();
+
+function sendKaspaCurrencyCode() { return selectedCurrency.toUpperCase(); }
+
+// KAS has 8 decimals (1 sompi). Floating-point math (Max = balance − fee, fiat ÷ price) can yield
+// values like 38.251282509999996, which the "up to 8 decimals" validator rejects. Floor to 8
+// decimals (never round up past the balance) and trim trailing zeros.
+function trimKas8(n) {
+  const v = Number(n);
+  if (!isFinite(v)) return "0";
+  return (Math.floor(v * 1e8) / 1e8).toFixed(8).replace(/\.?0+$/, "");
+}
+
+// Amount to actually send, always KAS (converts from fiat when in fiat mode).
+function sendKaspaResolveAmountKas() {
+  const raw = Number(sendKaspaAmountInput?.value);
+  if (!isFinite(raw) || raw <= 0) return sendKaspaAmountInput?.value || "";
+  if (sendKaspaUnit === "fiat") {
+    if (!sendKaspaPrice) throw new Error("KAS price unavailable — switch back to KAS to send.");
+    return trimKas8(raw / sendKaspaPrice);
+  }
+  return sendKaspaAmountInput?.value || "";
+}
+
+function updateSendKaspaFiatHint() {
+  if (!sendKaspaFiatHint) return;
+  const raw = Number(sendKaspaAmountInput?.value);
+  if (!isFinite(raw) || raw <= 0 || !sendKaspaPrice) { sendKaspaFiatHint.hidden = true; return; }
+  if (sendKaspaUnit === "kas") {
+    sendKaspaFiatHint.textContent = `≈ ${formatFiatValue(raw, sendKaspaPrice)}`;
+  } else {
+    sendKaspaFiatHint.textContent = `≈ ${(raw / sendKaspaPrice).toLocaleString(undefined, { maximumFractionDigits: 8 })} KAS`;
+  }
+  sendKaspaFiatHint.hidden = false;
+}
+
+function applySendKaspaUnit() {
+  const isKas = sendKaspaUnit === "kas";
+  if (sendKaspaUnitCode) sendKaspaUnitCode.textContent = isKas ? "KAS" : sendKaspaCurrencyCode();
+  if (sendKaspaLogo) sendKaspaLogo.hidden = !isKas;
+  if (sendKaspaFiatSymbol) { sendKaspaFiatSymbol.hidden = isKas; sendKaspaFiatSymbol.textContent = currencyMeta().symbol.trim(); }
+  const amountWord = t("send.amount");
+  if (sendKaspaAmountLabel) sendKaspaAmountLabel.textContent = isKas ? `${amountWord} (KAS)` : `${amountWord} (${sendKaspaCurrencyCode()})`;
+  if (sendKaspaAmountInput) sendKaspaAmountInput.placeholder = isKas ? "0.00000000" : "0.00";
+  updateSendKaspaFiatHint();
+}
+
+sendKaspaUnitButton?.addEventListener("click", () => {
+  if (!sendKaspaPrice) { showCopyToast("KAS price unavailable right now."); return; }
+  const raw = Number(sendKaspaAmountInput?.value);
+  if (isFinite(raw) && raw > 0) {
+    sendKaspaAmountInput.value = sendKaspaUnit === "kas"
+      ? (raw * sendKaspaPrice).toFixed(selectedCurrency === "btc" ? 8 : 2)
+      : trimKas8(raw / sendKaspaPrice);
+  }
+  sendKaspaUnit = sendKaspaUnit === "kas" ? "fiat" : "kas";
+  applySendKaspaUnit();
+});
+sendKaspaAmountInput?.addEventListener("input", () => { updateSendKaspaFiatHint(); scheduleSendKaspaFeeEstimate(); });
+
+// Network fee — matches iOS WithdrawKaspaView: an estimated base (Normal) fee scaled by the tier
+// multiplier (Normal 1x, Fast 2x, Priority 5x), shown as a real KAS amount, editable for a custom
+// fee. engine.send() takes the PRIORITY tip on top of the SDK's automatic base fee, so we pass
+// (displayed total − base).
+const SEND_FEE_MULTIPLIERS = { normal: 1, fast: 2, priority: 5 };
+const SEND_FEE_LABELS = { normal: "Normal", fast: "Fast", priority: "Priority" };
+let sendKaspaBaseFeeKas = null;         // policy base fee (Normal tier), matches iOS (mass * 100/gram)
+let sendKaspaSdkBaseKas = 0;            // the SDK's automatic base fee engine.send already applies
+let sendKaspaFeeCustomOverride = false; // true once the user types a custom fee
+
+function formatFeeKas(kas) {
+  return Number(kas || 0).toLocaleString(undefined, { maximumFractionDigits: 8 });
+}
+function sendKaspaTotalFeeKas() {
+  if (sendKaspaFeeCustomOverride) {
+    const v = Number(sendKaspaFeeCustom?.value);
+    return isFinite(v) && v >= 0 ? v : 0;
+  }
+  return (sendKaspaBaseFeeKas ?? 0) * (SEND_FEE_MULTIPLIERS[sendKaspaFeeTier] || 1);
+}
+// engine.send() auto-applies the SDK base fee; we pass the priority tip that lifts the total up to
+// the displayed policy fee (mass * 100/gram), so what's shown is what's actually paid (iOS parity).
+function sendKaspaGetFeeKas() {
+  const tip = sendKaspaTotalFeeKas() - (sendKaspaSdkBaseKas ?? 0);
+  return tip > 0 ? trimKas8(tip) : "0";
+}
+function updateSendKaspaFeeSummary() {
+  if (!sendKaspaFeeSummary) return;
+  const label = sendKaspaFeeCustomOverride ? "Custom" : (SEND_FEE_LABELS[sendKaspaFeeTier] || "Normal");
+  sendKaspaFeeSummary.textContent = `${label} · ${formatFeeKas(sendKaspaTotalFeeKas())} KAS`;
+}
+// Reflect the current total into the (editable) fee field, unless the user is typing a custom fee.
+function applySendKaspaFeeField() {
+  if (sendKaspaFeeCustom && !sendKaspaFeeCustomOverride) {
+    sendKaspaFeeCustom.value = sendKaspaBaseFeeKas == null ? "" : formatFeeKas(sendKaspaTotalFeeKas());
+  }
+  updateSendKaspaFeeSummary();
+}
+function selectSendKaspaFeeTier(tier) {
+  sendKaspaFeeTier = tier;
+  sendKaspaFeeCustomOverride = false;
+  sendKaspaFeeButtons.forEach((b) => b.classList.toggle("active", b.dataset.sendKaspaFee === tier));
+  applySendKaspaFeeField();
+}
+sendKaspaFeeButtons.forEach((button) => button.addEventListener("click", () => selectSendKaspaFeeTier(button.dataset.sendKaspaFee)));
+sendKaspaFeeCustom?.addEventListener("input", () => {
+  sendKaspaFeeCustomOverride = true;
+  sendKaspaFeeButtons.forEach((b) => b.classList.remove("active"));
+  updateSendKaspaFeeSummary();
+});
+
+// Estimate the base (Normal) network fee for the CURRENT amount so it reflects the UTXOs the send
+// would actually spend (matches iOS). Debounced, since it runs on every amount keystroke.
+let sendKaspaFeeEstimateTimer = null;
+async function estimateSendKaspaBaseFee() {
+  try {
+    let amountKas = Number(sendKaspaResolveAmountKas());
+    if (!isFinite(amountKas) || amountKas <= 0) amountKas = 0.2;
+    // Never estimate a send larger than the balance (that throws "insufficient") — cap just under it.
+    if (sendKaspaAvailableKas != null && amountKas > sendKaspaAvailableKas) {
+      amountKas = Math.max(0.0001, sendKaspaAvailableKas - 0.001);
+    }
+    const selection = sendKaspaGetSelection();
+    const detail = await engine.estimateSendFee(String(amountKas), selection.length ? selection : null);
+    const policy = Number(detail?.policyFeeKas);
+    if (isFinite(policy) && policy > 0) {
+      sendKaspaBaseFeeKas = policy;
+      sendKaspaSdkBaseKas = Number(detail?.sdkFeeKas) || 0;
+    } else {
+      sendKaspaBaseFeeKas = 0.002; sendKaspaSdkBaseKas = 0.00002;
+    }
+  } catch {
+    sendKaspaBaseFeeKas = 0.002; sendKaspaSdkBaseKas = 0.00002;
+  }
+  applySendKaspaFeeField();
+}
+function scheduleSendKaspaFeeEstimate() {
+  if (sendKaspaFeeEstimateTimer) clearTimeout(sendKaspaFeeEstimateTimer);
+  sendKaspaFeeEstimateTimer = window.setTimeout(estimateSendKaspaBaseFee, 400);
+}
+
+// Coin control (UTXO selection).
+function sendKaspaGetSelection() { return [...sendKaspaSelected]; }
+function updateSendKaspaCoinSummary() {
+  if (!sendKaspaCoinSummary) return;
+  if (!sendKaspaSelected.size) { sendKaspaCoinSummary.textContent = "Automatic"; return; }
+  let totalSompi = 0n;
+  for (const entry of sendKaspaUtxos) {
+    if (sendKaspaSelected.has(utxoOutpointKey(entry.outpoint || {}))) totalSompi += BigInt(entry.amount || 0);
+  }
+  sendKaspaCoinSummary.textContent = `${sendKaspaSelected.size} · ${sompiToKasDisplay(totalSompi)} KAS`;
+}
+function renderSendKaspaCoinControl() {
+  sendKaspaSelected.clear();
+  updateSendKaspaCoinSummary();
+  if (sendKaspaCoinList) sendKaspaCoinList.hidden = true;
+  if (sendKaspaCoinToggle) sendKaspaCoinToggle.setAttribute("aria-expanded", "false");
+  if (!sendKaspaCoinList) return;
+  sendKaspaCoinList.replaceChildren();
+  if (!sendKaspaUtxos.length) { sendKaspaCoinList.innerHTML = '<div class="manage-address-empty">No UTXOs to select.</div>'; return; }
+  const labels = getUtxoLabels(engine.address);
+  for (const entry of sendKaspaUtxos) {
+    const outpointKey = utxoOutpointKey(entry.outpoint || {});
+    const row = document.createElement("label");
+    row.className = "manage-send-coin-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "manage-send-coin-check";
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) sendKaspaSelected.add(outpointKey); else sendKaspaSelected.delete(outpointKey);
+      updateSendKaspaCoinSummary();
+      scheduleSendKaspaFeeEstimate();
+    });
+    const meta = document.createElement("span");
+    meta.className = "manage-send-coin-meta";
+    if (labels[outpointKey]) {
+      const labelEl = document.createElement("span");
+      labelEl.className = "manage-send-coin-label";
+      labelEl.textContent = labels[outpointKey];
+      meta.appendChild(labelEl);
+    }
+    const outpointEl = document.createElement("span");
+    outpointEl.className = "manage-send-coin-outpoint";
+    outpointEl.textContent = outpointKey;
+    meta.appendChild(outpointEl);
+    const amountEl = document.createElement("span");
+    amountEl.className = "manage-send-coin-amount";
+    amountEl.textContent = `${sompiToKasDisplay(BigInt(entry.amount || 0))} KAS`;
+    row.append(checkbox, meta, amountEl);
+    sendKaspaCoinList.appendChild(row);
+  }
+}
+sendKaspaCoinToggle?.addEventListener("click", () => {
+  if (!sendKaspaCoinList) return;
+  const willShow = sendKaspaCoinList.hidden;
+  sendKaspaCoinList.hidden = !willShow;
+  sendKaspaCoinToggle.setAttribute("aria-expanded", String(willShow));
+});
+
+// Sompi total of the coins Max would spend: the coin-control selection, else the whole address.
+function sendKaspaSpendableKas() {
+  if (sendKaspaSelected.size) {
+    let sompi = 0n;
+    for (const entry of sendKaspaUtxos) {
+      if (sendKaspaSelected.has(utxoOutpointKey(entry.outpoint || {}))) sompi += BigInt(entry.amount || 0);
+    }
+    return Number(sompi) / 1e8;
+  }
+  return sendKaspaAvailableKas;
+}
+
+// Max / compound: reserve the fee for spending EVERY input Max uses (all UTXOs, or the selected
+// subset) - not the 1-input base fee. Estimating against those exact outpoints makes the mass (and
+// thus the policy fee = mass * 100/gram) reflect the real input count, matching iOS. Then
+// amount = spendable - fee, so amount + fee = balance and the send doesn't fail on "insufficient".
+async function fillMaxAmount() {
+  if (sendKaspaAvailableKas == null) {
+    try {
+      const b = await engine.balance();
+      sendKaspaAvailableKas = Number(b.totalKas);
+      if (!sendKaspaUtxos.length) { sendKaspaUtxos = b.entries || []; renderSendKaspaCoinControl(); }
+    } catch { /* handled below */ }
+  }
+  const spendable = sendKaspaSpendableKas();
+  if (spendable == null || !isFinite(spendable)) { showCopyToast("Balance unavailable right now."); return; }
+
+  const selection = sendKaspaGetSelection();
+  const outpoints = selection.length ? selection : (sendKaspaUtxos || []).map((e) => utxoOutpointKey(e.outpoint || {}));
+  try {
+    const detail = await engine.estimateSendFee(trimKas8(Math.max(0.0001, spendable - 0.01)), outpoints.length ? outpoints : null);
+    const policy = Number(detail?.policyFeeKas);
+    if (isFinite(policy) && policy > 0) {
+      sendKaspaBaseFeeKas = policy;
+      sendKaspaSdkBaseKas = Number(detail?.sdkFeeKas) || 0;
+      sendKaspaFeeCustomOverride = false;
+      applySendKaspaFeeField();
+    }
+  } catch { /* keep whatever base fee we have */ }
+
+  const totalFeeKas = sendKaspaTotalFeeKas();
+  const maxKas = spendable - totalFeeKas - 0.00001; // + a sompi of slack against rounding
+  if (!(maxKas > 0)) { showCopyToast("Balance too low after network fees."); return; }
+  sendKaspaAmountInput.value = (sendKaspaUnit === "fiat" && sendKaspaPrice)
+    ? (maxKas * sendKaspaPrice).toFixed(selectedCurrency === "btc" ? 8 : 2)
+    : trimKas8(maxKas);
+  updateSendKaspaFiatHint();
+  // Re-run send validity (enables Send). The re-estimate this triggers uses the same near-full
+  // amount, so it lands on the same all-input fee and doesn't disturb the reserved Max.
+  sendKaspaAmountInput.dispatchEvent(new Event("input"));
+}
+sendKaspaMaxButton?.addEventListener("click", () => { fillMaxAmount(); });
+
+sendKaspaPasteButton?.addEventListener("click", async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const recipient = document.querySelector("[data-send-kaspa-recipient]");
+    if (recipient && text) { recipient.value = text.trim(); recipient.dispatchEvent(new Event("input")); }
+  } catch { showCopyToast("Clipboard unavailable — paste manually."); }
+});
+
+// Reset the extra controls and (re)load price + balance/UTXOs each time the modal opens.
+function resetSendKaspaExtras() {
+  sendKaspaUnit = "kas";
+  applySendKaspaUnit();
+  // Show a sensible base fee immediately (a fee estimate over a slow/contended RPC can take a
+  // moment; the field should never sit blank), then refine it with the real estimate.
+  sendKaspaBaseFeeKas = 0.002;
+  sendKaspaSdkBaseKas = 0.00002;
+  sendKaspaFeeCustomOverride = false;
+  selectSendKaspaFeeTier("normal");
+  estimateSendKaspaBaseFee();
+  if (sendKaspaFiatHint) sendKaspaFiatHint.hidden = true;
+  sendKaspaPrice = null;
+  sendKaspaAvailableKas = null;
+  sendKaspaUtxos = [];
+  renderSendKaspaCoinControl();
+  fetchKasPrice(selectedCurrency).then((price) => { sendKaspaPrice = price; updateSendKaspaFiatHint(); }).catch(() => {});
+  engine.balance().then((b) => {
+    sendKaspaAvailableKas = Number(b.totalKas);
+    sendKaspaUtxos = b.entries || [];
+    renderSendKaspaCoinControl();
+    if (sendKaspaCompound) applySendKaspaCompoundPrefill();
+  }).catch(() => {});
+}
+
+// Compound UTXOs mode (matches iOS's WithdrawKaspaView isCompoundMode): the Send Kaspa screen with
+// the recipient locked to this address (a self-send) and the amount pre-filled to Max, so sending
+// merges every UTXO into one.
+let sendKaspaCompound = false;
+function applySendKaspaCompoundUi() {
+  const titleEl = document.querySelector("[data-send-kaspa-title]");
+  const kickerEl = document.querySelector("[data-send-kaspa-kicker]");
+  const recipientLabel = document.querySelector("[data-send-kaspa-recipient-label]");
+  const recipient = document.querySelector("[data-send-kaspa-recipient]");
+  const note = document.querySelector("[data-send-kaspa-compound-note]");
+  if (titleEl) titleEl.textContent = sendKaspaCompound ? "Compound UTXOs" : "Send Kaspa";
+  if (kickerEl) kickerEl.textContent = sendKaspaCompound ? "Consolidating this address" : "Real Kaspa transaction";
+  if (recipientLabel) recipientLabel.textContent = sendKaspaCompound ? "Consolidating This Address" : "Recipient";
+  if (recipient) recipient.readOnly = sendKaspaCompound;
+  if (note) note.hidden = !sendKaspaCompound;
+  if (sendKaspaPasteButton) sendKaspaPasteButton.hidden = sendKaspaCompound;
+}
+function applySendKaspaCompoundPrefill() {
+  const recipient = document.querySelector("[data-send-kaspa-recipient]");
+  if (recipient && engine.address) { recipient.value = engine.address; recipient.dispatchEvent(new Event("input")); }
+  fillMaxAmount(); // reserves the fee for spending every UTXO (see fillMaxAmount)
+}
+
 const sendKaspaController = makeSendController({
   recipient: document.querySelector("[data-send-kaspa-recipient]"),
   resolvedHint: document.querySelector("[data-send-kaspa-resolved]"),
-  amount: document.querySelector("[data-send-kaspa-amount]"),
+  checkEl: document.querySelector("[data-send-kaspa-check]"),
+  amount: sendKaspaAmountInput,
   balanceHint: document.querySelector("[data-send-kaspa-balance]"),
   error: document.querySelector("[data-send-kaspa-error]"),
   progress: document.querySelector("[data-send-kaspa-progress]"),
@@ -5559,8 +5948,16 @@ const sendKaspaController = makeSendController({
 }, {
   onOpen: () => { if (sendKaspaModal) sendKaspaModal.hidden = false; },
   onClose: closeSendKaspaModal,
+  resolveAmountKas: sendKaspaResolveAmountKas,
+  getFeeKas: sendKaspaGetFeeKas,
+  getSelection: sendKaspaGetSelection,
 });
-function openSendKaspaModal() { return sendKaspaController.open(); }
+function openSendKaspaModal(options = {}) {
+  sendKaspaCompound = Boolean(options?.compound);
+  applySendKaspaCompoundUi();
+  resetSendKaspaExtras();
+  return sendKaspaController.open();
+}
 
 document.querySelectorAll("[data-close-send-kaspa]").forEach((button) => button.addEventListener("click", closeSendKaspaModal));
 document.querySelector("[data-open-send-kaspa]")?.addEventListener("click", openSendKaspaModal);
@@ -5692,6 +6089,34 @@ function utxoOutpointKey(outpoint) {
 // re-hitting the node for balance.
 let lastManageAddressUtxos = [];
 
+// Compound/consolidate every UTXO at the chatting (identity) address into one, by sending the
+// balance back to itself (matches iOS's Compound UTXOs). Confirm first, then broadcast.
+let manageConsolidateInFlight = false;
+async function consolidateManageAddressUtxos() {
+  if (manageConsolidateInFlight) return;
+  const address = engine.address;
+  if (!address) return;
+  let balance;
+  try { balance = await engine.balance(); } catch (error) { showCopyToast(`Could not load balance: ${error.message}`); return; }
+  const entries = balance.entries || [];
+  if (entries.length < 2) { showCopyToast("Nothing to consolidate — this address has a single UTXO."); return; }
+  const maxKas = Number(balance.totalKas) - 0.001; // headroom for the network fee (many inputs)
+  if (!(maxKas > 0)) { showCopyToast("Balance too low to consolidate."); return; }
+  if (!window.confirm(`Combine ${entries.length} UTXOs at this address into one? This sends the balance back to this same address and pays a small network fee.`)) return;
+  manageConsolidateInFlight = true;
+  showCopyToast("Consolidating UTXOs…");
+  try {
+    await engine.send(address, trimKas8(maxKas), "0", {}); // self-send merges the inputs
+    showCopyToast("UTXOs consolidated.");
+    loadManageAddressUtxos();
+    refreshBalanceOnly?.({ quiet: true });
+  } catch (error) {
+    showCopyToast(`Consolidation failed: ${error.message}`);
+  } finally {
+    manageConsolidateInFlight = false;
+  }
+}
+
 function renderManageAddressUtxos() {
   if (!manageAddressUtxosList) return;
   const address = engine.address;
@@ -5701,6 +6126,18 @@ function renderManageAddressUtxos() {
   }
   const labels = getUtxoLabels(address);
   manageAddressUtxosList.replaceChildren();
+  // Compound UTXOs (matches iOS): shown only with more than one UTXO. Merges them by sending the
+  // balance back to this same address, so future sends need fewer inputs.
+  if (lastManageAddressUtxos.length > 1) {
+    const consolidate = document.createElement("button");
+    consolidate.type = "button";
+    consolidate.className = "manage-address-consolidate-btn";
+    consolidate.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7 3 12l5 5"/><path d="M16 7l5 5-5 5"/><path d="M3 12h18"/></svg><span>Compound UTXOs</span>';
+    // Opens the Send screen in compound mode (recipient locked to this address, amount = Max),
+    // matching iOS's WithdrawKaspaView isCompoundMode.
+    consolidate.addEventListener("click", () => openSendKaspaModal({ compound: true }));
+    manageAddressUtxosList.appendChild(consolidate);
+  }
   for (const entry of lastManageAddressUtxos) {
     const outpoint = entry.outpoint || {};
     const outpointKey = utxoOutpointKey(outpoint);

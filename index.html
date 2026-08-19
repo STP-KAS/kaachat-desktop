@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=254" />
+  <link rel="stylesheet" href="./ui/styles.css?v=258" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -2126,19 +2126,60 @@
     <section class="contact-modal send-kaspa-modal" role="dialog" aria-modal="true" aria-label="Send Kaspa">
       <div class="modal-header">
         <div>
-          <p class="modal-kicker">Real Kaspa transaction</p>
-          <h2>Send Kaspa</h2>
+          <p class="modal-kicker" data-send-kaspa-kicker>Real Kaspa transaction</p>
+          <h2 data-send-kaspa-title>Send Kaspa</h2>
         </div>
         <button class="modal-close" type="button" data-close-send-kaspa aria-label="Close">×</button>
       </div>
-      <label class="field-label">Recipient
-        <input class="field-input" type="text" data-send-kaspa-recipient placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" />
+      <label class="field-label"><span data-send-kaspa-recipient-label>Recipient</span>
+        <span class="send-recipient-field">
+          <input class="field-input" type="text" data-send-kaspa-recipient placeholder="kaspa:qr... or name.kas" autocomplete="off" spellcheck="false" />
+          <span class="send-recipient-check" data-send-kaspa-check hidden aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          </span>
+        </span>
       </label>
+      <div class="send-recipient-actions">
+        <button type="button" class="cold-inline-link" data-send-kaspa-paste>Paste</button>
+      </div>
+      <p class="field-hint send-compound-note" data-send-kaspa-compound-note hidden>Combines all UTXOs at this address into a single one by sending the balance back to itself, to reduce the number of inputs a future send needs.</p>
       <p class="field-hint" data-send-kaspa-resolved hidden></p>
-      <label class="field-label">Amount (KAS)
-        <input class="field-input" type="text" inputmode="decimal" data-send-kaspa-amount placeholder="0.00000000" autocomplete="off" />
-      </label>
+
+      <span class="field-label" data-send-kaspa-amount-label>Amount (KAS)</span>
+      <div class="send-amount-field">
+        <button type="button" class="send-amount-unit" data-send-kaspa-unit title="Tap to switch between KAS and fiat">
+          <img src="./ui/assets/kaspa-logo.png" alt="" class="send-amount-logo" data-send-kaspa-logo />
+          <span class="send-amount-fiat-symbol" data-send-kaspa-fiat-symbol hidden></span>
+          <span class="send-amount-unit-code" data-send-kaspa-unit-code>KAS</span>
+        </button>
+        <input class="field-input send-amount-input" type="text" inputmode="decimal" data-send-kaspa-amount placeholder="0.00000000" autocomplete="off" />
+        <button type="button" class="send-amount-max" data-send-kaspa-max>Max</button>
+      </div>
+      <p class="field-hint" data-send-kaspa-fiat hidden></p>
       <p class="field-hint" data-send-kaspa-balance></p>
+
+      <div class="manage-send-coin-control">
+        <button type="button" class="manage-send-coin-toggle" data-send-kaspa-coin-toggle aria-expanded="false">
+          <span class="manage-send-coin-title" data-i18n="send.coinControl">Coin Control</span>
+          <span class="manage-send-coin-summary" data-send-kaspa-coin-summary>Automatic</span>
+          <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="manage-send-coin-list" data-send-kaspa-coin-list hidden></div>
+      </div>
+
+      <div class="send-fee-section">
+        <div class="send-fee-header">
+          <span data-i18n="send.networkFee">Network Fee</span>
+          <span class="send-fee-summary" data-send-kaspa-fee-summary>Normal</span>
+        </div>
+        <div class="settings-segmented full" role="group" aria-label="Network fee">
+          <button type="button" class="settings-segmented-option active" data-send-kaspa-fee="normal" data-i18n="fee.normal">Normal</button>
+          <button type="button" class="settings-segmented-option" data-send-kaspa-fee="fast">Fast</button>
+          <button type="button" class="settings-segmented-option" data-send-kaspa-fee="priority" data-i18n="fee.priority">Priority</button>
+        </div>
+        <input class="field-input send-fee-custom" type="text" inputmode="decimal" data-send-kaspa-fee-custom placeholder="Network fee (KAS)" autocomplete="off" />
+      </div>
+
       <p class="field-error" data-send-kaspa-error hidden></p>
       <div class="kns-progress" data-send-kaspa-progress hidden></div>
       <div class="modal-actions">
