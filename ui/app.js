@@ -4448,6 +4448,12 @@ function spendingRowHtml(index, address, state, balanceText, used, hasDomain = f
         <span class="spending-address-balance" data-spending-balance-cell="${index}">${escapeHtml(balanceText)}</span>
         <span class="spending-address-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
       </button>
+      <div class="spending-address-row-menu-wrap">
+        <button type="button" class="spending-row-menu-btn" data-spending-menu-toggle="${index}" aria-haspopup="true" aria-expanded="false" aria-label="Address actions for #${index}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+        </button>
+        <div class="spending-row-menu" data-spending-menu="${index}" role="menu" hidden>${menuItems}</div>
+      </div>
     </div>`;
 }
 
