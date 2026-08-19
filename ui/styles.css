@@ -6114,7 +6114,62 @@ body.session-logged-out [data-account-rename-modal] {
 
 /* Clickable links in KaPosts text (confirmation popover on click) */
 .kaposts-link { color: var(--kaspa-ink); text-decoration: underline; cursor: pointer; word-break: break-all; }
-.kaposts-mention { color: var(--kaspa-ink); font-weight: 600; }
+.kaposts-mention { color: var(--kaspa-ink); font-weight: 600; cursor: pointer; }
+.kaposts-mention:hover { text-decoration: underline; }
+
+/* X-style thread posting (composer) */
+.kaposts-thread-segments { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; max-height: 160px; overflow-y: auto; }
+.kaposts-thread-segment {
+  display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2);
+}
+.kaposts-thread-segment-num {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 11px; font-weight: 700; color: var(--kaspa-ink); background: rgba(98,244,208,.14);
+}
+.kaposts-thread-segment-text {
+  flex: 1; min-width: 0; font-size: 13px; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.kaposts-thread-segment-remove {
+  flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); font-size: 15px; cursor: pointer;
+}
+.kaposts-thread-segment-remove:hover { color: var(--ink); }
+.kaposts-composer-threadbar { display: flex; justify-content: flex-end; margin-top: 6px; }
+.kaposts-thread-add {
+  border: 1px solid rgba(98,244,208,.3); background: rgba(98,244,208,.1); color: var(--kaspa-ink);
+  font-size: 12.5px; font-weight: 700; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+}
+.kaposts-thread-add:hover { background: rgba(98,244,208,.18); }
+
+/* X-style thread reading */
+.kaposts-view-thread {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 6px;
+  border: 0; background: transparent; color: var(--kaspa-ink); font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 0;
+}
+.kaposts-view-thread:hover { text-decoration: underline; }
+.kaposts-thread-chain { margin-top: 4px; }
+.kaposts-thread-chain-header {
+  padding: 8px 16px; font-size: 13px; font-weight: 700; color: var(--kaspa-ink);
+}
+.kaposts-thread-chain-item { border-left: 2px solid rgba(98,244,208,.35); margin-left: 16px; }
+
+/* KaPosts quick tip modal */
+[data-tip-modal] { z-index: 1600; }
+.tip-recipient-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); margin-bottom: 8px;
+}
+.tip-recipient-row strong { font-size: 14px; }
+.tip-recipient-row small { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.tip-destination { margin: 0 0 14px; padding-left: 2px; font-size: 12.5px; color: var(--muted); }
+.tip-destination.tip-dest-private { color: #35c48d; }
+.tip-destination::before { content: "🌐 "; }
+.tip-destination.tip-dest-private::before { content: "🔒 "; }
+.tip-amount-row { display: flex; align-items: center; gap: 8px; }
+.tip-amount-row .field-input { flex: 1; }
+.tip-modal .settings-segmented.full { margin: 12px 0 6px; }
+.tip-modal .modal-actions { margin-top: 16px; }
 .kaposts-mention-menu {
   position: absolute; z-index: 2200; max-height: 240px; overflow-y: auto;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;

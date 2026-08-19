@@ -634,19 +634,42 @@ function escapeWithMentions(rawText) {
 }
 
 // Resolve the @mentions in a post's text to the compressed pubkeys the indexer needs in
-// mentioned_pubkeys. Only mentionable contacts (1:1 chats with a KNS domain and a derivable
-// pubkey — see app.js getMentionCandidates) count; unknown @tokens stay plain text.
-function mentionedPubkeysFor(text) {
-  const candidates = deps.getMentionCandidates?.() || [];
-  if (!candidates.length) return [];
-  const byDomain = new Map(candidates.map((c) => [c.domain.toLowerCase(), c.pubkey]));
-  const found = new Set();
+// mentioned_pubkeys. Chatted contacts resolve from the local candidate list; ANYONE else with
+// a KNS domain resolves live (owner address -> pubkey). Unresolvable tokens stay plain text.
+async function mentionedPubkeysFor(text) {
+  const domains = [];
+  const seenDomains = new Set();
   for (const m of String(text || "").matchAll(MENTION_PATTERN)) {
     const domain = m[2].toLowerCase().replace(/\.kas$/, "");
-    const pubkey = byDomain.get(domain);
+    if (domain && !seenDomains.has(domain)) { seenDomains.add(domain); domains.push(domain); }
+  }
+  if (!domains.length) return [];
+  const byDomain = new Map((deps.getMentionCandidates?.() || []).map((c) => [c.domain.toLowerCase(), c.pubkey]));
+  const found = new Set();
+  for (const domain of domains) {
+    let pubkey = byDomain.get(domain) || null;
+    if (!pubkey) {
+      try {
+        const resolution = await deps.engine.resolveKnsDomain?.(domain);
+        if (resolution?.ownerAddress) pubkey = deps.engine.kapostPubkeyForAddress?.(resolution.ownerAddress) || null;
+      } catch { /* unresolvable: plain text */ }
+    }
     if (pubkey) found.add(pubkey);
   }
   return [...found];
+}
+
+// Tapped @mention anywhere in KaPosts: resolve the KNS domain and open that user's profile
+// (any KNS holder, contact or not - never-posted owners get an honest empty profile).
+async function openMentionProfile(domain) {
+  try {
+    const resolution = await deps.engine.resolveKnsDomain?.(domain);
+    if (!resolution?.ownerAddress) { deps.showToast?.(`Couldn't resolve @${domain}.`); return; }
+    const pubkey = deps.engine.kapostPubkeyForAddress?.(resolution.ownerAddress) || null;
+    openPosterProfile(resolution.ownerAddress, pubkey);
+  } catch (error) {
+    deps.showToast?.(error?.message || `Couldn't resolve @${domain}.`);
+  }
 }
 
 function linkifyPostText(text) {
@@ -728,6 +751,7 @@ function postCellHtml(post, { inThread = false, isRoot = false, replyInline = fa
           ${post.remoteId ? `<button class="kaposts-action" type="button" data-kaposts-share="${post.id}" title="Copy share link">${ICONS.share}</button>` : ""}
           ${isMine ? "" : `<button class="kaposts-action kaposts-tip" type="button" data-kaposts-tip="${post.id}" title="Send a Kaspa tip">${ICONS.tip}<span>Tip</span></button>`}
         </div>
+        ${!inThread && isThreadRootPost(post) ? `<button class="kaposts-view-thread" type="button" data-kaposts-open="${post.id}">⤷ View thread</button>` : ""}
       </div>
     </article>`;
 }
@@ -763,6 +787,9 @@ function renderFeed({ resetScroll = false } = {}) {
   // it would fire a second request for the same page.
   mountPagerSentinel("feed", feedEl, feedLoading ? null : feedPager, loadMoreFeed);
   if (scroller) scroller.scrollTop = resetScroll ? 0 : previousTop;
+  // Thread-root probes for commented posts (throttled, once per post per session) so the
+  // "View thread" link can appear on other people's threads too.
+  probeThreadRoots(posts);
 }
 
 /**
@@ -811,10 +838,20 @@ function renderThread() {
   if (replyTargetId && !findPost(replyTargetId)) replyTargetId = null;
   const scroller = kapostsScrollEl();
   const previousTop = scroller?.scrollTop || 0;
-  const comments = post.comments.filter((c) => !isHiddenAuthor(c.posterAddress));
+  // Thread segments are the author's own continuation - they render as a connected section
+  // under the root and are excluded from the replies list (segment 2 IS a direct reply).
+  const chain = threadChains.get(post.id) || [];
+  const chainIds = new Set(chain.map((segment) => segment.remoteId).filter(Boolean));
+  const comments = post.comments.filter((c) => !isHiddenAuthor(c.posterAddress)
+    && !(c.remoteId && chainIds.has(c.remoteId)));
   updateReplyContext();
   if (threadRootEl) {
-    threadRootEl.innerHTML = postCellHtml(post, { inThread: true, isRoot: true, replyInline: true });
+    threadRootEl.innerHTML = postCellHtml(post, { inThread: true, isRoot: true, replyInline: true })
+      + (chain.length ? `
+      <div class="kaposts-thread-chain">
+        <div class="kaposts-thread-chain-header">Thread · ${chain.length + 1} posts</div>
+        ${chain.map((segment) => `<div class="kaposts-thread-chain-item">${postCellHtml(segment, { inThread: true, replyInline: true })}</div>`).join("")}
+      </div>` : "");
   }
   if (threadRepliesEl) {
     threadRepliesEl.innerHTML = `
@@ -895,7 +932,7 @@ function schedulePost(text) {
   scheduleUndoable(key, async () => {
     renderToasts();
     try {
-      const txid = await submitKaPost({ engine: deps.engine, text, mentionedPubkeys: mentionedPubkeysFor(text) });
+      const txid = await submitKaPost({ engine: deps.engine, text, mentionedPubkeys: await mentionedPubkeysFor(text) });
       mutatePost(post.id, (p) => { p.remoteId = txid; p.delivery = "sent"; });
     } catch (error) {
       mutatePost(post.id, (p) => { p.delivery = "failed"; });
@@ -905,6 +942,135 @@ function schedulePost(text) {
   }, () => {
     localPosts = localPosts.filter((p) => p.id !== post.id);
   });
+}
+
+// --- X-style thread reading ---------------------------------------------------
+// remoteId -> "its replies include one by the author" (thread root). false is cached too, so a
+// post is probed at most once per session.
+const threadRootProbe = new Map();
+// root post local id -> [segment posts] (the author's own continuation, in order).
+const threadChains = new Map();
+
+function isThreadRootPost(post) {
+  if (post?.isThreadRoot) return true;
+  return Boolean(post?.remoteId && threadRootProbe.get(post.remoteId));
+}
+
+// Cheap feed probe, a few posts per render pass: first reply page, any self-authored reply =
+// thread root (X's own "Show this thread" heuristic).
+function probeThreadRoots(posts) {
+  const candidates = (posts || []).filter((p) => p.remoteId
+    && !threadRootProbe.has(p.remoteId)
+    && ((p.remoteReplyCount || 0) > 0 || (p.comments || []).length > 0)).slice(0, 10);
+  if (!candidates.length) return;
+  (async () => {
+    let found = false;
+    for (const post of candidates) {
+      if (threadRootProbe.has(post.remoteId)) continue;
+      threadRootProbe.set(post.remoteId, false); // claim: never probe twice
+      try {
+        const page = await fetchReplies({ engine: deps.engine, postId: post.remoteId, limit: 10 });
+        const isThread = (page?.posts || []).some((reply) => {
+          const mapped = mapRemotePost(reply);
+          return mapped && mapped.posterAddress === post.posterAddress;
+        });
+        if (isThread) { threadRootProbe.set(post.remoteId, true); found = true; }
+      } catch { /* stays false */ }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    if (found) renderFeed();
+  })();
+}
+
+// Walks the author's self-reply chain from an opened root (root <- seg2 <- seg3 ... by the
+// same author), fetching each next link. Capped defensively.
+async function loadSelfThreadChain(post) {
+  if (!post?.remoteId) return;
+  const chain = [];
+  let current = (post.comments || [])
+    .filter((c) => c.remoteId && c.posterAddress === post.posterAddress)
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))[0] || null;
+  let hops = 0;
+  while (current && hops < 25) {
+    chain.push(current);
+    hops += 1;
+    if (!current.remoteId) break;
+    let page = null;
+    try { page = await fetchReplies({ engine: deps.engine, postId: current.remoteId, limit: 25 }); }
+    catch { break; }
+    current = (page?.posts || []).map(mapRemotePost).filter(Boolean)
+      .filter((reply) => reply.posterAddress === post.posterAddress)
+      .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))[0] || null;
+  }
+  threadChains.set(post.id, chain);
+  if (chain.length) threadRootProbe.set(post.remoteId, true);
+}
+
+// --- X-style thread posting --------------------------------------------------
+// Unposted work per in-flight/failed thread, keyed by the root's LOCAL id: rootText until the
+// root posts, the remaining segments, and the last landed txid. Kept until every segment lands
+// so Retry RESUMES the chain from the first unposted segment (never duplicates).
+const threadRemainders = new Map();
+
+// Consecutive payload txs spend each other's change before the node indexes it (~1s blocks) -
+// retry a few times with settle delays before giving up.
+async function submitWithUtxoRetry(op) {
+  let attempt = 0;
+  for (;;) {
+    try { return await op(); }
+    catch (error) {
+      attempt += 1;
+      if (attempt > 4) throw error;
+      deps.appendEngineLog?.(`KaPost thread segment retry ${attempt}: ${error.message}`);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+}
+
+// First segment = top-level post, each following segment = reply to the PREVIOUS one.
+// Threads submit sequentially right away (each segment needs the previous txid) - no 5s undo;
+// the optimistic root carries pending/sent/failed for the whole chain.
+function scheduleThread(segments) {
+  if (!segments.length) return;
+  if (segments.length === 1) { schedulePost(segments[0]); return; }
+  const post = makeLocalPost(segments[0]);
+  post.isThreadRoot = true;
+  localPosts.unshift(post);
+  threadRemainders.set(post.id, { rootText: segments[0], segments: segments.slice(1), parentTxId: null });
+  renderAll();
+  continueThread(post.id);
+}
+
+async function continueThread(localId) {
+  const state = threadRemainders.get(localId);
+  if (!state) return;
+  mutatePost(localId, (p) => { p.delivery = "pending"; });
+  renderAll();
+  try {
+    if (state.rootText != null) {
+      const rootText = state.rootText;
+      const txid = await submitWithUtxoRetry(async () =>
+        submitKaPost({ engine: deps.engine, text: rootText, mentionedPubkeys: await mentionedPubkeysFor(rootText) }));
+      mutatePost(localId, (p) => { p.remoteId = txid; });
+      state.rootText = null;
+      state.parentTxId = txid;
+    }
+    const myPubkey = safeRequesterPubkey();
+    while (state.segments.length && state.parentTxId) {
+      await new Promise((resolve) => setTimeout(resolve, 1500)); // let the previous change settle
+      const segment = state.segments[0];
+      const txid = await submitWithUtxoRetry(() =>
+        submitKaPostReply({ engine: deps.engine, text: segment, postId: state.parentTxId, parentAuthorPubkey: myPubkey }));
+      state.segments.shift();
+      state.parentTxId = txid;
+    }
+    threadRemainders.delete(localId);
+    mutatePost(localId, (p) => { p.delivery = "sent"; });
+  } catch (error) {
+    mutatePost(localId, (p) => { p.delivery = "failed"; });
+    deps.appendEngineLog?.(`KaPost thread submit failed (resumable): ${error.message}`);
+  }
+  renderAll();
 }
 
 function scheduleQuote(target, text) {
@@ -1039,6 +1205,9 @@ async function openThread(post) {
     resolvePosterIdentities(replies.map((reply) => reply.posterAddress), () => {
       if (threadStack[threadStack.length - 1] === post.id) renderThread();
     });
+    // Walk the author's own continuation (if any) so the Thread section can render.
+    await loadSelfThreadChain(findPost(post.id) || post);
+    if (generation === threadGeneration) renderThread();
   } catch (error) {
     if (generation !== threadGeneration) return;
     pager.hasMore = false;
@@ -1095,14 +1264,24 @@ async function submitReply(parent, text) {
 }
 
 function retryPost(post) {
+  // A failed THREAD resumes its remaining chain instead of re-posting just the root.
+  if (threadRemainders.has(post.id)) {
+    continueThread(post.id);
+    return;
+  }
   mutatePost(post.id, (p) => { p.delivery = "pending"; });
   renderAll();
-  const submit = post.quoted?.remoteId && post.quoted?.posterPubkey
-    ? submitKaPostQuote({ engine: deps.engine, text: post.text, contentId: post.quoted.remoteId, quotedAuthorPubkey: post.quoted.posterPubkey })
-    : submitKaPost({ engine: deps.engine, text: post.text, mentionedPubkeys: mentionedPubkeysFor(post.text) });
-  submit
-    .then((txid) => { mutatePost(post.id, (p) => { p.remoteId = txid; p.delivery = "sent"; }); renderAll(); })
-    .catch(() => { mutatePost(post.id, (p) => { p.delivery = "failed"; }); renderAll(); });
+  (async () => {
+    try {
+      const txid = post.quoted?.remoteId && post.quoted?.posterPubkey
+        ? await submitKaPostQuote({ engine: deps.engine, text: post.text, contentId: post.quoted.remoteId, quotedAuthorPubkey: post.quoted.posterPubkey })
+        : await submitKaPost({ engine: deps.engine, text: post.text, mentionedPubkeys: await mentionedPubkeysFor(post.text) });
+      mutatePost(post.id, (p) => { p.remoteId = txid; p.delivery = "sent"; });
+    } catch {
+      mutatePost(post.id, (p) => { p.delivery = "failed"; });
+    }
+    renderAll();
+  })();
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,6 +1302,40 @@ function updateMeter(input, meter, submit = null) {
   if (submit) submit.disabled = input.value.trim().length === 0;
 }
 
+// Thread segments stacked in the composer (X-style "+"), oldest first.
+let composerThreadSegments = [];
+
+function composerSegmentsEl() { return document.querySelector("[data-kaposts-thread-segments]"); }
+function composerThreadAddEl() { return document.querySelector("[data-kaposts-thread-add]"); }
+
+function renderComposerThreadUi() {
+  const listEl = composerSegmentsEl();
+  const addBtn = composerThreadAddEl();
+  const trimmed = composerInput ? composerInput.value.trim() : "";
+  const total = composerThreadSegments.length + (trimmed ? 1 : 0);
+  if (listEl) {
+    listEl.hidden = composerThreadSegments.length === 0;
+    listEl.innerHTML = composerThreadSegments.map((segment, index) => `
+      <div class="kaposts-thread-segment">
+        <span class="kaposts-thread-segment-num">${index + 1}</span>
+        <span class="kaposts-thread-segment-text">${deps.escapeHtml(segment)}</span>
+        <button type="button" class="kaposts-thread-segment-remove" data-kaposts-thread-remove="${index}" aria-label="Remove segment">×</button>
+      </div>`).join("");
+  }
+  // The + appears once you type (and never while quoting - quotes stay single-post).
+  if (addBtn) addBtn.hidden = Boolean(composerQuoteTarget) || !trimmed;
+  if (composerTitle && !composerQuoteTarget) {
+    composerTitle.textContent = composerThreadSegments.length ? "New Thread" : "New Post";
+  }
+  if (composerSubmit) {
+    composerSubmit.textContent = total > 1 ? `Post All (${total})` : "Post";
+    composerSubmit.disabled = total === 0;
+  }
+  if (composerInput) {
+    composerInput.placeholder = composerThreadSegments.length ? "Add another post" : "What's happening on Kaspa?";
+  }
+}
+
 function openComposer(quoteTarget = null) {
   // Posting costs KAS — with a confirmed-zero chatting balance, show the funding
   // popup (QR + address + copy) instead of a composer that could never submit.
@@ -1135,6 +1348,7 @@ function openComposer(quoteTarget = null) {
   composerInput.value = "";
   composerSubmit.disabled = true;
   composerMeter.hidden = true;
+  composerThreadSegments = [];
   if (quoteTarget) {
     composerQuote.hidden = false;
     composerQuote.innerHTML = `
@@ -1144,6 +1358,7 @@ function openComposer(quoteTarget = null) {
     composerQuote.hidden = true;
     composerQuote.innerHTML = "";
   }
+  renderComposerThreadUi();
   composerEl.hidden = false;
   composerInput.focus();
 }
@@ -1151,6 +1366,8 @@ function openComposer(quoteTarget = null) {
 function closeComposer() {
   composerEl.hidden = true;
   composerQuoteTarget = null;
+  composerThreadSegments = [];
+  renderComposerThreadUi();
 }
 
 // ---------------------------------------------------------------------------
@@ -1855,12 +2072,35 @@ function attachMentionAutocomplete(textarea) {
   let items = [];
   let activeIndex = 0;
   let anchorStart = -1; // index of the '@' currently being completed
+  // Live any-KNS resolution of the current query (contacts come from the local list; this
+  // row lets you mention anyone with a KNS domain).
+  let resolveToken = 0;
+  let resolvedExtra = null; // { query, domain }
 
   function close() {
     if (menu) { menu.remove(); menu = null; }
     items = [];
     activeIndex = 0;
     anchorStart = -1;
+    resolveToken += 1;
+    resolvedExtra = null;
+  }
+
+  function scheduleAnyKnsResolve(query) {
+    const clean = String(query || "").toLowerCase();
+    const token = ++resolveToken;
+    if (resolvedExtra && resolvedExtra.query !== clean) resolvedExtra = null;
+    if (clean.length < 2) return;
+    window.setTimeout(async () => {
+      if (token !== resolveToken) return;
+      try {
+        const resolution = await deps.engine.resolveKnsDomain?.(clean);
+        if (token !== resolveToken || !resolution?.domain) return;
+        resolvedExtra = { query: clean, domain: String(resolution.domain).toLowerCase().replace(/\.kas$/, "") };
+        const ctx = currentQuery();
+        if (ctx && ctx.query.toLowerCase() === clean) render(ctx.query);
+      } catch { /* no match: contacts-only list stands */ }
+    }, 400);
   }
 
   function currentQuery() {
@@ -1878,6 +2118,11 @@ function attachMentionAutocomplete(textarea) {
     items = candidates
       .filter((c) => !q || c.domain.toLowerCase().startsWith(q) || c.name.toLowerCase().includes(q))
       .slice(0, 6);
+    // Live-resolved any-KNS match for the current query rides along at the end.
+    if (resolvedExtra && resolvedExtra.query === q
+        && !items.some((c) => c.domain.toLowerCase() === resolvedExtra.domain)) {
+      items = [...items, { domain: resolvedExtra.domain, name: "" }];
+    }
     if (!items.length) { close(); return; }
     if (activeIndex >= items.length) activeIndex = 0;
     if (!menu) {
@@ -1915,6 +2160,7 @@ function attachMentionAutocomplete(textarea) {
     if (!ctx) { close(); return; }
     anchorStart = ctx.atIndex;
     render(ctx.query);
+    scheduleAnyKnsResolve(ctx.query);
   }
 
   textarea.addEventListener("input", refresh);
@@ -2030,14 +2276,38 @@ export function initKaPosts(dependencies) {
     restoreFeedScroll();
   });
 
-  composerInput?.addEventListener("input", () => updateMeter(composerInput, composerMeter, composerSubmit));
+  composerInput?.addEventListener("input", () => {
+    updateMeter(composerInput, composerMeter, composerSubmit);
+    // Runs AFTER updateMeter: the meter disables Post on empty input, but with stacked
+    // thread segments "Post All (n)" must stay enabled - the thread UI has the final say.
+    renderComposerThreadUi();
+  });
   composerSubmit?.addEventListener("click", () => {
     const text = composerInput.value.trim();
-    if (!text) return;
+    const segments = text ? [...composerThreadSegments, text] : [...composerThreadSegments];
+    if (!segments.length) return;
     const quoteTarget = composerQuoteTarget;
     closeComposer();
-    if (quoteTarget) scheduleQuote(quoteTarget, text);
-    else schedulePost(text);
+    if (quoteTarget) scheduleQuote(quoteTarget, segments[0]);
+    else if (segments.length > 1) scheduleThread(segments);
+    else schedulePost(segments[0]);
+  });
+
+  // X-style +: stack the current text as a thread segment and keep writing.
+  composerThreadAddEl()?.addEventListener("click", () => {
+    const text = composerInput.value.trim();
+    if (!text || composerQuoteTarget) return;
+    composerThreadSegments.push(text);
+    composerInput.value = "";
+    updateMeter(composerInput, composerMeter, composerSubmit);
+    renderComposerThreadUi();
+    composerInput.focus();
+  });
+  composerSegmentsEl()?.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-kaposts-thread-remove]");
+    if (!remove) return;
+    composerThreadSegments.splice(Number(remove.dataset.kapostsThreadRemove), 1);
+    renderComposerThreadUi();
   });
 
   replyInput?.addEventListener("input", () => updateMeter(replyInput, replyMeter));
@@ -2201,6 +2471,12 @@ export function initKaPosts(dependencies) {
 
     const follow = event.target.closest("[data-kaposts-follow]");
     if (follow) { const p = findPost(follow.dataset.kapostsFollow); if (p) toggleFollow(p); return; }
+
+    const mentionTap = event.target.closest("[data-kaposts-mention]");
+    if (mentionTap) {
+      openMentionProfile(mentionTap.dataset.kapostsMention);
+      return;
+    }
 
     const tip = event.target.closest("[data-kaposts-tip]");
     if (tip) {

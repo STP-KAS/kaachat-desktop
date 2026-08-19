@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=266" />
+  <link rel="stylesheet" href="./ui/styles.css?v=267" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -527,7 +527,12 @@
               <span class="kaposts-meter" data-kaposts-composer-meter hidden></span>
               <button class="primary-button" type="button" data-kaposts-composer-submit disabled>Post</button>
             </div>
+            <!-- Already-stacked thread segments (X-style), numbered and removable. -->
+            <div class="kaposts-thread-segments" data-kaposts-thread-segments hidden></div>
             <textarea class="kaposts-composer-input" data-kaposts-composer-input placeholder="What's happening on Kaspa?"></textarea>
+            <div class="kaposts-composer-threadbar">
+              <button class="kaposts-thread-add" type="button" data-kaposts-thread-add hidden title="Stack this text as a thread segment and keep writing">＋ Add to thread</button>
+            </div>
             <div class="kaposts-composer-quote" data-kaposts-composer-quote hidden></div>
           </div>
         </div>
@@ -1547,6 +1552,42 @@
     </section>
   </div>
 
+  <!-- KaPosts quick tip: Send-Kaspa-style modal, direct send through the chat payment rules. -->
+  <div class="modal-backdrop" data-tip-modal hidden>
+    <section class="contact-modal tip-modal" role="dialog" aria-modal="true" aria-label="Send a tip">
+      <div class="modal-header">
+        <div>
+          <p class="screen-kicker">KaPosts</p>
+          <h2 data-tip-title>Tip</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-tip aria-label="Close">×</button>
+      </div>
+      <div class="tip-recipient-row">
+        <strong data-tip-name></strong>
+        <small data-tip-address></small>
+      </div>
+      <p class="tip-destination" data-tip-destination></p>
+      <label class="field-label compact">Amount (KAS)
+        <div class="tip-amount-row">
+          <input class="field-input" type="text" inputmode="decimal" data-tip-amount placeholder="0.00" autocomplete="off" spellcheck="false" />
+          <button class="saved-node-btn" type="button" data-tip-max>Max</button>
+        </div>
+      </label>
+      <p class="field-hint" data-tip-available>Available: --</p>
+      <div class="settings-segmented full" role="group" aria-label="Fee tier">
+        <button type="button" class="settings-segmented-option active" data-tip-fee-tier="normal">Normal</button>
+        <button type="button" class="settings-segmented-option" data-tip-fee-tier="fast">Fast</button>
+        <button type="button" class="settings-segmented-option" data-tip-fee-tier="priority">Priority</button>
+      </div>
+      <p class="field-hint" data-tip-fee>Network fee: --</p>
+      <p class="field-error" data-tip-error hidden></p>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-tip>Cancel</button>
+        <button class="primary-button" type="button" data-tip-send disabled>Send Tip</button>
+      </div>
+    </section>
+  </div>
+
   <!-- New Group: name + a checklist of contacts you can add (encrypted group chat). -->
   <div class="modal-backdrop" data-group-create-modal hidden>
     <section class="contact-modal group-create-modal" role="dialog" aria-modal="true" aria-label="New Group">
@@ -2451,7 +2492,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=252"></script>
+  <script type="module" src="./ui/app.js?v=253"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

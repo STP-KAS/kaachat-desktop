@@ -8843,6 +8843,269 @@ async function openChatWithAddressForKaspa({ address, name } = {}) {
   await activateComposerMode("kas");
 }
 
+// --- KaPosts quick tip modal ------------------------------------------------
+// Send-Kaspa-style tip, matching iOS's KaPostTipSheet: fixed recipient + pool-destination
+// indicator, amount with Max + the FUNDING SOURCE's real balance (primary spending address
+// when Payment Privacy is on, chatting address when off), Normal/Fast/Priority fee tiers.
+// The send routes through the exact chat-payment rules (consumePoolPaymentDestination +
+// privacy-gated funding) and drops the payment bubble into the 1:1 conversation.
+const TIP_FEE_MULTIPLIERS = { normal: 1, fast: 2, priority: 5 };
+const tipModal = document.querySelector("[data-tip-modal]");
+let tipState = null;
+let tipFeeEstimateToken = 0;
+
+function tipQ(selector) { return tipModal ? tipModal.querySelector(selector) : null; }
+
+function tipSetError(message) {
+  const el = tipQ("[data-tip-error]");
+  if (!el) return;
+  if (message) { el.textContent = message; el.hidden = false; }
+  else { el.textContent = ""; el.hidden = true; }
+}
+
+function tipTotalFeeKas() {
+  if (!tipState?.policyFeeKas) return null;
+  return trimKas8(Number(tipState.policyFeeKas) * (TIP_FEE_MULTIPLIERS[tipState.tier] || 1));
+}
+
+// The priority tip handed to engine.send/sendFromSpending: displayed total minus the SDK's own
+// base fee (same model as the Send Kaspa modal's sendKaspaGetFeeKas).
+function tipExtraFeeKas() {
+  const total = Number(tipTotalFeeKas() || 0);
+  const sdkBase = Number(tipState?.sdkFeeKas || 0);
+  return total > sdkBase ? trimKas8(total - sdkBase) : "0";
+}
+
+function tipRenderFee() {
+  const el = tipQ("[data-tip-fee]");
+  if (!el) return;
+  const total = tipTotalFeeKas();
+  el.textContent = total ? `Network fee: ${total} KAS` : "Network fee: --";
+}
+
+function tipUpdateSendEnabled() {
+  const send = tipQ("[data-tip-send]");
+  if (!send) return;
+  const amount = Number(tipQ("[data-tip-amount]")?.value || 0);
+  send.disabled = !tipState || tipState.sending || !(amount > 0);
+}
+
+async function tipEstimateFee() {
+  const state = tipState;
+  if (!state) return;
+  const amountKas = Number(tipQ("[data-tip-amount]")?.value || 0);
+  if (!(amountKas > 0)) { state.policyFeeKas = null; state.sdkFeeKas = null; tipRenderFee(); return; }
+  const token = ++tipFeeEstimateToken;
+  try {
+    const detail = state.fundingAddress
+      ? await engine.estimateSendFeeForAddress(state.fundingAddress, String(amountKas))
+      : await engine.estimateSendFee(String(amountKas));
+    if (token !== tipFeeEstimateToken || tipState !== state) return;
+    state.policyFeeKas = detail.policyFeeKas;
+    state.sdkFeeKas = detail.sdkFeeKas;
+  } catch {
+    if (token !== tipFeeEstimateToken || tipState !== state) return;
+    state.policyFeeKas = null;
+    state.sdkFeeKas = null;
+  }
+  tipRenderFee();
+}
+
+async function openTipModal({ address, name } = {}) {
+  const clean = String(address || "").trim();
+  if (!clean || !isValidKaspaAddressString(clean)) { showCopyToast("This poster has no valid Kaspa address."); return; }
+  if (clean === engine.address) { showCopyToast("That's your own address."); return; }
+  if (!tipModal) return;
+
+  // Find-or-create the contact + conversation (no navigation; the bubble lands there).
+  let contact = state.contacts.find((entry) => entry.address === clean);
+  if (!contact) {
+    const createdAt = Date.now();
+    const displayName = String(name || "").trim();
+    contact = {
+      id: nowId(), name: displayName, nameIsCustom: Boolean(displayName), address: clean,
+      avatar: initialsFor(displayName || clean), createdAt, updatedAt: createdAt,
+      relationshipState: "legacy-manual", handshakeTxid: "",
+    };
+    state.contacts.push(contact);
+  }
+  let conversationEntry = state.conversations.find((entry) => entry.contactId === contact.id);
+  if (!conversationEntry) {
+    conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
+    state.conversations.push(conversationEntry);
+    refreshSubscriptionAddresses({ restart: true });
+  }
+  persistState();
+  renderChats();
+
+  const privacyOn = chatsPrivacyEnabled();
+  const fundingIndex = getActiveSpendingIndex();
+  const fundingAddress = privacyOn && activeAccountMnemonic() ? deriveSpendingAddressAt(fundingIndex) : null;
+  tipState = {
+    contact, conversationEntry, fundingIndex, fundingAddress,
+    spendingFunded: Boolean(fundingAddress),
+    availableKas: null, policyFeeKas: null, sdkFeeKas: null,
+    tier: "normal", sending: false,
+  };
+
+  const nameEl = tipQ("[data-tip-name]");
+  if (nameEl) nameEl.textContent = (contact.name || "").trim() || shortAddress(clean);
+  const addressEl = tipQ("[data-tip-address]");
+  if (addressEl) addressEl.textContent = shortAddress(clean);
+  const titleEl = tipQ("[data-tip-title]");
+  if (titleEl) titleEl.textContent = `Tip ${(contact.name || "").trim() || shortAddress(clean)}`;
+  // Which privacy scenario this tip will hit (same signal as the chat composer).
+  const destEl = tipQ("[data-tip-destination]");
+  if (destEl) {
+    const viaPool = willPayViaFreshPoolAddress(clean);
+    destEl.textContent = viaPool
+      ? "Goes to a fresh private address they shared"
+      : "Goes to their public chatting address";
+    destEl.classList.toggle("tip-dest-private", viaPool);
+  }
+  const amountEl = tipQ("[data-tip-amount]");
+  if (amountEl) amountEl.value = "";
+  tipSetError("");
+  tipModal.querySelectorAll("[data-tip-fee-tier]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tipFeeTier === "normal");
+  });
+  tipRenderFee();
+  tipUpdateSendEnabled();
+  const availableEl = tipQ("[data-tip-available]");
+  if (availableEl) availableEl.textContent = "Available: …";
+  const sendBtn = tipQ("[data-tip-send]");
+  if (sendBtn) sendBtn.textContent = "Send Tip";
+  tipModal.hidden = false;
+
+  try {
+    await ensureRuntimes({ quiet: true });
+    const balance = fundingAddress ? await engine.balanceForAddress(fundingAddress) : await engine.balance();
+    if (tipState?.contact !== contact) return; // modal switched targets meanwhile
+    tipState.availableKas = Number(balance.totalKas);
+    if (availableEl) {
+      availableEl.textContent = `Available: ${balance.totalKas} KAS from your ${tipState.spendingFunded ? "primary spending address" : "chatting address"}`;
+    }
+  } catch {
+    if (availableEl) availableEl.textContent = "Available: unavailable";
+  }
+}
+
+function closeTipModal() {
+  if (tipModal) tipModal.hidden = true;
+  tipState = null;
+}
+
+async function sendTipNow() {
+  const state = tipState;
+  if (!state || state.sending) return;
+  const amountKas = trimKas8(Number(tipQ("[data-tip-amount]")?.value || 0));
+  if (!(Number(amountKas) > 0)) { tipSetError("Enter an amount."); return; }
+  if (state.availableKas != null && Number(amountKas) > state.availableKas) {
+    tipSetError("Amount exceeds the available balance.");
+    return;
+  }
+  state.sending = true;
+  tipSetError("");
+  const sendBtn = tipQ("[data-tip-send]");
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = "Sending…"; }
+
+  const { contact, conversationEntry } = state;
+  // Recipient-governed destination: their fresh pool address when they shared one.
+  const destinationAddress = consumePoolPaymentDestination(contact);
+  const createdAt = Date.now();
+  const message = createMessage({
+    conversationId: conversationEntry.id,
+    contactId: contact.id,
+    direction: "outgoing",
+    text: `Sent ${amountKas} KAS`,
+    sender: engine.address || null,
+    receiver: destinationAddress,
+    status: MESSAGE_STATUSES.PENDING,
+    transport: "kaspa-payment",
+    createdAt,
+  });
+  applyMessagePatch(message, { messageType: "payment", paymentAmountKas: amountKas });
+  appendIncomingOrReactionMessage(conversationEntry, message);
+  persistState();
+  if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+  const liveMessage = conversationEntry.messages.find((entry) => entry.id === message.id) || message;
+  const requestedSompi = BigInt(Math.round(Number(amountKas) * 1e8));
+  const feeKas = tipExtraFeeKas();
+
+  try {
+    await ensureRuntimes({ quiet: true });
+    const result = state.fundingAddress
+      ? await engine.sendFromSpending({
+          mnemonic: activeAccountMnemonic(),
+          index: state.fundingIndex,
+          passphrase: activeAccountPassphrase(),
+          destinationAddress,
+          amountKas,
+          feeKas,
+        })
+      : await engine.send(destinationAddress, amountKas, feeKas);
+    const submittedTxids = (result?.txids || []).map((value) => String(value || "").trim()).filter(Boolean);
+    const txid = submittedTxids.at(-1) || submittedTxids[0] || null;
+    if (!txid) throw new Error("Kaspa node accepted the send request but did not return a transaction ID.");
+    const verifiedTxid = await verifyKasPaymentBroadcast(submittedTxids, destinationAddress, amountKas);
+    applyMessagePatch(liveMessage, {
+      status: MESSAGE_STATUSES.CONFIRMED,
+      txid: verifiedTxid || txid,
+      confirmations: verifiedTxid ? 1 : 0,
+      network: "mainnet",
+      note: verifiedTxid
+        ? "Kaspa payment verified at recipient output."
+        : "Kaspa node accepted and broadcast the payment transaction.",
+    });
+    handlePoolPaymentSubmitted(contact, verifiedTxid || txid, Number(requestedSompi), destinationAddress);
+    await refreshBalanceOnly({ quiet: true });
+    showCopyToast(`Tip sent · ${(verifiedTxid || txid).slice(0, 10)}…`);
+    conversationEntry.updatedAt = Date.now();
+    persistState();
+    if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+    closeTipModal();
+  } catch (error) {
+    applyMessagePatch(liveMessage, { status: MESSAGE_STATUSES.FAILED, note: error.message });
+    conversationEntry.updatedAt = Date.now();
+    persistState();
+    if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+    state.sending = false;
+    tipSetError(error?.message || "Tip failed.");
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = "Send Tip"; }
+  }
+}
+
+tipModal?.querySelectorAll("[data-close-tip]").forEach((button) => button.addEventListener("click", closeTipModal));
+tipModal?.addEventListener("click", (event) => { if (event.target === tipModal) closeTipModal(); });
+tipQ("[data-tip-send]")?.addEventListener("click", sendTipNow);
+tipQ("[data-tip-amount]")?.addEventListener("input", () => {
+  tipSetError("");
+  tipUpdateSendEnabled();
+  window.clearTimeout(openTipModal.feeTimer);
+  openTipModal.feeTimer = window.setTimeout(tipEstimateFee, 400);
+});
+tipModal?.querySelectorAll("[data-tip-fee-tier]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (!tipState) return;
+    tipState.tier = button.dataset.tipFeeTier || "normal";
+    tipModal.querySelectorAll("[data-tip-fee-tier]").forEach((other) => other.classList.toggle("active", other === button));
+    tipRenderFee();
+  });
+});
+tipQ("[data-tip-max]")?.addEventListener("click", async () => {
+  const state = tipState;
+  if (!state || state.availableKas == null) return;
+  await tipEstimateFee();
+  const total = Number(tipTotalFeeKas() || 0);
+  const max = Math.max(0, state.availableKas - total - 0.00001);
+  const amountEl = tipQ("[data-tip-amount]");
+  if (amountEl && max > 0) {
+    amountEl.value = trimKas8(max);
+    tipUpdateSendEnabled();
+    tipEstimateFee();
+  }
+});
+
 async function sendOutgoingHandshake(contact, conversationEntry, { accepting = false } = {}) {
   const createdAt = Date.now();
   const message = createMessage({
@@ -13600,8 +13863,9 @@ queueMicrotask(async () => {
     shouldNotifyKaPostsAction,
     postDesktopNotification,
     kaPostsSuppressed: () => isChildModeEnabled(),
-    // "Tip" button on a post: open the 1:1 chat with the poster in KAS-send mode.
-    tipUser: (address, name) => openChatWithAddressForKaspa({ address, name }),
+    // "Tip" button on a post: quick Send-Kaspa-style modal, direct send through the chat
+    // payment rules (matches iOS's KaPostTipSheet).
+    tipUser: (address, name) => openTipModal({ address, name }),
     // Feed the global notification center (top-bar bell) from the KaPosts notification stream.
     recordGlobalNotification: (item) => recordGlobalNotification(item),
     // @mention autocomplete source: your 1:1 chat contacts that have a KNS domain. Returns
