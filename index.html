@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=271" />
+  <link rel="stylesheet" href="./ui/styles.css?v=272" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -2053,7 +2053,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
         </button>
         <span class="chatting-address-balance">Spending Addresses</span>
-        <span class="chatting-address-header-spacer" aria-hidden="true"></span>
+        <button class="chatting-address-back spending-visibility-open" type="button" data-open-spending-visibility aria-label="Manage address visibility" title="Manage address visibility">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 2 2 3-3"/><path d="M11 6h10"/><path d="m3 12.5 2 2 3-3"/><path d="M11 12.5h10"/><path d="m3 19 2 2 3-3"/><path d="M11 19h10"/></svg>
+        </button>
       </header>
       <p class="spending-manage-subtitle">These addresses are derived from your recovery phrase. The same phrase restores them identically on any device. Move funds here to keep chat and spending separate. Tap an address to view its transactions.</p>
       <div class="manage-address-body">
@@ -2079,6 +2081,33 @@
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Address Visibility: compact checkmark list of EVERY spending address (paged 50 at a
+       time, endless forward paging derives future indices on the fly) so dozens can be
+       toggled off the main list in one sitting. iOS parity: SpendingAddressVisibilityView. -->
+  <div class="chatting-address-screen spending-visibility-screen" data-spending-visibility-screen hidden role="dialog" aria-modal="true" aria-label="Address Visibility">
+    <div class="manage-address-card">
+      <header class="chatting-address-header">
+        <button class="chatting-address-back" type="button" data-close-spending-visibility aria-label="Done">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="chatting-address-balance">Address Visibility</span>
+        <button class="chatting-address-back spending-visibility-done" type="button" data-done-spending-visibility>Done</button>
+      </header>
+      <div class="manage-address-body">
+        <div class="manage-address-list spending-visibility-list" data-spending-visibility-list></div>
+      </div>
+      <div class="manage-address-actions spending-visibility-pager">
+        <button type="button" class="spending-visibility-page-btn" data-spending-vis-prev aria-label="Previous page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+        </button>
+        <span class="spending-visibility-range" data-spending-vis-range>#0 - #49</span>
+        <button type="button" class="spending-visibility-page-btn" data-spending-vis-next aria-label="Next page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+        </button>
       </div>
     </div>
   </div>
@@ -2498,7 +2527,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=259"></script>
+  <script type="module" src="./ui/app.js?v=260"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

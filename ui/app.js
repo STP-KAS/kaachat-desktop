@@ -3413,6 +3413,16 @@ const spendingScanBtn = document.querySelector("[data-spending-scan]");
 const spendingConsolidateBtn = document.querySelector("[data-spending-consolidate]");
 const spendingActionsToggle = document.querySelector("[data-spending-actions-toggle]");
 const spendingActionsMenu = document.querySelector("[data-spending-actions-menu]");
+// Address Visibility screen (iOS parity: SpendingAddressVisibilityView) — compact paged
+// checklist of every address so dozens can be hidden/revealed in one sitting.
+const spendingVisibilityScreen = document.querySelector("[data-spending-visibility-screen]");
+const spendingVisibilityList = document.querySelector("[data-spending-visibility-list]");
+const spendingVisibilityOpenBtn = document.querySelector("[data-open-spending-visibility]");
+const spendingVisibilityCloseBtn = document.querySelector("[data-close-spending-visibility]");
+const spendingVisibilityDoneBtn = document.querySelector("[data-done-spending-visibility]");
+const spendingVisPrevBtn = document.querySelector("[data-spending-vis-prev]");
+const spendingVisNextBtn = document.querySelector("[data-spending-vis-next]");
+const spendingVisRangeEl = document.querySelector("[data-spending-vis-range]");
 let activeSpendingAddress = null;
 let spendingConsolidating = false;
 let spendingListToken = 0;
@@ -4462,8 +4472,12 @@ async function renderSpendingList() {
   const state = getSpendingState();
   const primaryIndex = state.activeIndex;
   const token = ++spendingListToken;
+  const hiddenSet = new Set(state.hidden);
   const items = [];
   for (let i = 0; i <= state.maxIndex; i++) {
+    // Hidden addresses (Address Visibility screen) stay off the main list; the
+    // primary can never be hidden.
+    if (hiddenSet.has(i) && i !== primaryIndex) continue;
     const address = deriveSpendingAddressAt(i);
     if (address) items.push({ index: i, address });
   }
@@ -4524,6 +4538,155 @@ function closeAllSpendingMenus() {
   spendingListEl?.querySelectorAll("[data-spending-menu]").forEach((m) => { m.hidden = true; });
   spendingListEl?.querySelectorAll("[data-spending-menu-toggle]").forEach((b) => b.setAttribute("aria-expanded", "false"));
 }
+
+// ---------------------------------------------------------------------------
+// Address Visibility (iOS parity: SpendingAddressVisibilityView). Paged 50 at a
+// time; the right arrow never runs out — future pages derive addresses beyond
+// the revealed bound on the fly, and toggling one on raises the bound while
+// keeping the intermediate indices hidden so they don't flood the main list.
+// ---------------------------------------------------------------------------
+
+const SPENDING_VIS_PAGE_SIZE = 50;
+let spendingVisibilityPage = 0;
+let spendingVisibilityToken = 0;
+// Session cache (address → { kas, used }) so paging back and forth is instant.
+const spendingUsageCache = new Map();
+
+async function spendingUsageFor(address) {
+  if (spendingUsageCache.has(address)) return spendingUsageCache.get(address);
+  let kas = 0;
+  try { kas = Number((await engine.balanceForAddress(address)).totalKas) || 0; } catch { /* unknown, treat as 0 */ }
+  const used = kas > 0 ? true : await spendingAddressHasHistory(address);
+  const result = { kas, used };
+  spendingUsageCache.set(address, result);
+  return result;
+}
+
+function spendingVisibilityRowHtml(index, address, state, visible) {
+  const isPrimary = index === state.activeIndex;
+  const customLabel = (state.labels?.[index] ?? state.labels?.[String(index)] ?? "").toString().trim();
+  const checkSvg = visible
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path class="spending-vis-check" d="m7.5 12.5 3 3 6-6.5"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.2"/></svg>';
+  return `
+    <div class="spending-visibility-row${visible ? "" : " off"}" data-vis-row="${index}">
+      <button type="button" class="spending-visibility-toggle${visible ? " on" : ""}" data-spending-vis-toggle="${index}" aria-pressed="${visible}" aria-label="Toggle visibility of spending address #${index}">${checkSvg}</button>
+      <div class="spending-visibility-info">
+        <div class="spending-visibility-head">
+          <span class="spending-address-index">#${index}</span>
+          ${isPrimary ? `<span class="spending-address-active-badge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>Primary</span>` : ""}
+          ${customLabel ? `<span class="spending-visibility-label">${escapeHtml(customLabel)}</span>` : ""}
+          <span class="spending-address-usage spending-visibility-usage" data-vis-usage="${index}">…</span>
+        </div>
+        <span class="spending-address-value">${address ? escapeHtml(shortAddress(address)) : "deriving…"}</span>
+      </div>
+    </div>`;
+}
+
+async function renderSpendingVisibilityPage() {
+  if (!spendingVisibilityList) return;
+  const state = getSpendingState();
+  const hiddenSet = new Set(state.hidden);
+  const start = spendingVisibilityPage * SPENDING_VIS_PAGE_SIZE;
+  const end = start + SPENDING_VIS_PAGE_SIZE - 1;
+  if (spendingVisRangeEl) spendingVisRangeEl.textContent = `#${start} - #${end}`;
+  if (spendingVisPrevBtn) spendingVisPrevBtn.disabled = spendingVisibilityPage === 0;
+  const token = ++spendingVisibilityToken;
+  const rows = [];
+  for (let i = start; i <= end; i++) {
+    const address = deriveSpendingAddressAt(i);
+    const visible = i <= state.maxIndex && !hiddenSet.has(i);
+    rows.push({ index: i, address, visible });
+  }
+  spendingVisibilityList.innerHTML = rows
+    .map((r) => spendingVisibilityRowHtml(r.index, r.address, state, r.visible))
+    .join("");
+  // Usage fill: funded rows show their balance, the rest Used/Unused. Chunked
+  // like the discovery scan so a page can't burst the REST rate limiter.
+  for (let base = 0; base < rows.length; base += 5) {
+    await Promise.all(rows.slice(base, base + 5).map(async (r) => {
+      if (!r.address) return;
+      const usage = await spendingUsageFor(r.address);
+      if (token !== spendingVisibilityToken) return;
+      const cell = spendingVisibilityList.querySelector(`[data-vis-usage="${r.index}"]`);
+      if (!cell) return;
+      if (usage.kas > 0) {
+        cell.textContent = `${usage.kas.toFixed(4)} KAS`;
+        cell.classList.add("used");
+      } else {
+        cell.textContent = usage.used ? "Used" : "Unused";
+        cell.classList.add(usage.used ? "used" : "unused");
+      }
+    }));
+    if (token !== spendingVisibilityToken) return;
+  }
+}
+
+function openSpendingVisibilityScreen() {
+  if (!spendingVisibilityScreen) return;
+  if (!activeAccountMnemonic()) {
+    showCopyToast("This account has no recovery phrase, so spending addresses aren't available.");
+    return;
+  }
+  spendingVisibilityPage = 0;
+  spendingVisibilityScreen.hidden = false;
+  renderSpendingVisibilityPage();
+}
+
+function closeSpendingVisibilityScreen() {
+  if (spendingVisibilityScreen) spendingVisibilityScreen.hidden = true;
+  // Instant sync: the main list reflects the visibility edits the moment this closes.
+  renderSpendingList();
+}
+
+spendingVisibilityOpenBtn?.addEventListener("click", openSpendingVisibilityScreen);
+spendingVisibilityCloseBtn?.addEventListener("click", closeSpendingVisibilityScreen);
+spendingVisibilityDoneBtn?.addEventListener("click", closeSpendingVisibilityScreen);
+spendingVisPrevBtn?.addEventListener("click", () => {
+  if (spendingVisibilityPage === 0) return;
+  spendingVisibilityPage -= 1;
+  renderSpendingVisibilityPage();
+});
+spendingVisNextBtn?.addEventListener("click", () => {
+  spendingVisibilityPage += 1;
+  renderSpendingVisibilityPage();
+});
+
+spendingVisibilityList?.addEventListener("click", async (event) => {
+  const toggle = event.target.closest("[data-spending-vis-toggle]");
+  if (!toggle) return;
+  const index = Number(toggle.dataset.spendingVisToggle);
+  if (!Number.isInteger(index) || index < 0) return;
+  const state = getSpendingState();
+  if (index === state.activeIndex) {
+    showCopyToast("The primary address is always visible.");
+    return;
+  }
+  const hiddenSet = new Set(state.hidden);
+  const visible = index <= state.maxIndex && !hiddenSet.has(index);
+  if (visible) {
+    // Funded addresses stay visible — same rule iOS enforces store-side.
+    const address = deriveSpendingAddressAt(index);
+    const usage = address ? await spendingUsageFor(address) : { kas: 0 };
+    if (usage.kas > 0) {
+      showCopyToast("Addresses holding a balance stay visible.");
+      return;
+    }
+    hiddenSet.add(index);
+    saveSpendingState({ hidden: Array.from(hiddenSet) });
+  } else if (index <= state.maxIndex) {
+    hiddenSet.delete(index);
+    saveSpendingState({ hidden: Array.from(hiddenSet) });
+  } else {
+    // Revealing an index beyond the current bound: raise the bound but keep the
+    // intermediate indices hidden so they don't flood the main list (iOS parity:
+    // WalletManager.revealSpendingAddress).
+    for (let i = state.maxIndex + 1; i < index; i++) hiddenSet.add(i);
+    hiddenSet.delete(index);
+    saveSpendingState({ maxIndex: index, hidden: Array.from(hiddenSet) });
+  }
+  renderSpendingVisibilityPage();
+});
 
 spendingListEl?.addEventListener("click", async (event) => {
   // ⋯ menu toggle — open this row's menu, close any other.
@@ -4869,14 +5032,50 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest(".spending-actions-wrap")) closeSpendingActionsMenu();
 });
 
-spendingGenerateBtn?.addEventListener("click", () => {
+// Generate recycles the LOWEST truly-unused index (iOS parity:
+// lowestUnusedSpendingAddress): skips the primary, anything holding a balance
+// or with on-chain history, and any payment-pool reservation (those are
+// promised to a contact and must never be re-offered). Falls back to
+// revealing maxIndex+1 when every revealed index is spoken for.
+let spendingGenerateBusy = false;
+spendingGenerateBtn?.addEventListener("click", async () => {
   closeSpendingActionsMenu();
   if (!activeAccountMnemonic()) { showCopyToast("This account has no recovery phrase."); return; }
-  const state = getSpendingState();
-  const nextIndex = state.maxIndex + 1;
-  saveSpendingState({ maxIndex: nextIndex });
-  renderSpendingList();
-  showCopyToast(`Revealed spending address #${nextIndex}.`);
+  if (spendingGenerateBusy) return;
+  spendingGenerateBusy = true;
+  try {
+    const state = getSpendingState();
+    const poolState = loadPoolState();
+    let pick = null;
+    for (let i = 0; i <= state.maxIndex; i++) {
+      if (i === state.activeIndex) continue;
+      const address = deriveSpendingAddressAt(i);
+      if (!address) continue;
+      if (isReservedPoolAddress(poolState, address)) continue;
+      let kas = 0;
+      try { kas = Number((await engine.balanceForAddress(address)).totalKas) || 0; }
+      catch { continue; } // balance unknown — skip rather than risk recycling a funded address
+      if (kas > 0) continue;
+      if (await spendingAddressHasHistory(address)) continue;
+      pick = i;
+      break;
+    }
+    const hiddenSet = new Set(state.hidden);
+    let readyIndex;
+    if (pick != null) {
+      hiddenSet.delete(pick);
+      saveSpendingState({ hidden: Array.from(hiddenSet) });
+      readyIndex = pick;
+    } else {
+      readyIndex = state.maxIndex + 1;
+      hiddenSet.delete(readyIndex);
+      saveSpendingState({ maxIndex: readyIndex, hidden: Array.from(hiddenSet) });
+    }
+    renderSpendingList();
+    showCopyToast(`Spending address #${readyIndex} is ready.`);
+  } finally {
+    spendingGenerateBusy = false;
+  }
 });
 
 // Send All Kaspa to the primary spending address: sweep every non-primary
@@ -6742,6 +6941,7 @@ document.addEventListener("keydown", (event) => {
   if (sendKaspaModal && !sendKaspaModal.hidden) closeSendKaspaModal();
   if (spendingSendModal && !spendingSendModal.hidden) closeSpendingSendModal();
   else if (spendingDetailScreen && !spendingDetailScreen.hidden) closeSpendingDetailScreen();
+  else if (spendingVisibilityScreen && !spendingVisibilityScreen.hidden) closeSpendingVisibilityScreen();
   else if (spendingManageScreen && !spendingManageScreen.hidden) closeSpendingManageScreen();
 });
 
