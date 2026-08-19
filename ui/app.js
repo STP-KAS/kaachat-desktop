@@ -4241,10 +4241,11 @@ async function verifyPaymentNoticeAgainstChain(conversationEntry, bubble, envelo
 // The destination for a Send KAS to `contact`: an unused address from their
 // stored pool (consumed immediately and persisted — burning an address is
 // safe, reusing one is not), else the chatting address — exact pre-pool
-// behavior. Privacy OFF always returns the chatting address (stored pools are
-// kept, just not consumed).
+// behavior. Deliberately NOT gated on the sender's privacy toggle: the
+// RECIPIENT'S privacy governs the destination — if they shared fresh
+// addresses, money arrives on one no matter the sender's setting. The
+// sender's toggle only governs the funding side.
 function consumePoolPaymentDestination(contact) {
-  if (!chatsPrivacyEnabled()) return contact.address;
   const poolState = loadPoolState();
   const pool = poolState.theirPools[contact.address] || [];
   const next = pool.find((entry) => !entry.used);
@@ -4256,9 +4257,11 @@ function consumePoolPaymentDestination(contact) {
 }
 
 // True when the NEXT payment to this contact would go to a fresh pool address —
-// drives the subtle fresh-address indicator in the payment composer.
+// drives the subtle fresh-address indicator in the payment composer. Matches
+// consumePoolPaymentDestination: recipient-governed, independent of the
+// sender's privacy toggle.
 function willPayViaFreshPoolAddress(contactAddress) {
-  if (!engine.address || !chatsPrivacyEnabled()) return false;
+  if (!engine.address) return false;
   const pool = loadPoolState().theirPools[contactAddress] || [];
   return pool.some((entry) => !entry.used);
 }
@@ -10146,7 +10149,8 @@ async function sendKasPayment(conversationId, rawAmount) {
     // Fresh-address payment pools: consume the contact's next unused pool
     // address (persisted immediately — a consumed address is never offered to
     // a payment again, even if this payment ultimately fails), chatting
-    // address fallback. Privacy OFF always pays the chatting address.
+    // address fallback. Recipient-governed: their shared fresh addresses are
+    // used no matter the sender's privacy toggle.
     const destinationAddress = consumePoolPaymentDestination(contact);
     const createdAt = Date.now();
     const message = createMessage({
