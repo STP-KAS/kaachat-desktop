@@ -71,12 +71,16 @@ function installDevIndexerProxy() {
   const nativeFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     try {
-      const rawUrl = typeof input === "string" ? input : (input && input.url) || "";
+      // Cover every fetch input shape: string, URL instance (sync.js builds these - a URL has
+      // no .url property, so it used to silently bypass the proxy), and Request.
+      const rawUrl = typeof input === "string" ? input
+        : (input instanceof URL) ? input.href
+        : (input && input.url) || "";
       if (rawUrl) {
         const parsed = new URL(rawUrl, window.location.origin);
         if (INDEXER_PROXY_HOST_RE.test(parsed.hostname)) {
           const proxied = `/nc-proxy/${encodeURIComponent(parsed.origin)}${parsed.pathname}${parsed.search}`;
-          if (typeof input === "string") return nativeFetch(proxied, init);
+          if (typeof input === "string" || input instanceof URL) return nativeFetch(proxied, init);
           return nativeFetch(new Request(proxied, input), init);
         }
       }
