@@ -749,7 +749,7 @@ function postCellHtml(post, { inThread = false, isRoot = false, replyInline = fa
           </button>
           <button class="kaposts-action${post.bookmarkedByMe ? " active-bookmark" : ""}" type="button" data-kaposts-bookmark="${post.id}" title="${post.bookmarkedByMe ? "Remove Bookmark" : "Bookmark"}">${ICONS.bookmark}</button>
           ${post.remoteId ? `<button class="kaposts-action" type="button" data-kaposts-share="${post.id}" title="Copy share link">${ICONS.share}</button>` : ""}
-          ${isMine ? "" : `<button class="kaposts-action kaposts-tip" type="button" data-kaposts-tip="${post.id}" title="Send a Kaspa tip">${ICONS.tip}<span>Tip</span></button>`}
+          ${isMine ? "" : `<button class="kaposts-action kaposts-tip" type="button" data-kaposts-tip="${post.id}" title="Send a Kaspa tip"><img class="kaposts-tip-logo" src="./ui/assets/kaspa-logo.png" alt="" aria-hidden="true" /><span>Tip</span></button>`}
         </div>
         ${!inThread && isThreadRootPost(post) ? `<button class="kaposts-view-thread" type="button" data-kaposts-open="${post.id}">⤷ View thread</button>` : ""}
       </div>

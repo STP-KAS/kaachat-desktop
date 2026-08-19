@@ -5541,6 +5541,7 @@ body.session-logged-out [data-account-rename-modal] {
 .kaposts-action.kaposts-tip { gap: 5px; color: var(--kaspa-ink); font-weight: 700; }
 .kaposts-action.kaposts-tip span { font-size: 12.5px; }
 .kaposts-action.kaposts-tip:hover { opacity: .82; }
+.kaposts-tip-logo { width: 15px; height: 15px; border-radius: 50%; }
 .kaposts-countdown {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 50%;

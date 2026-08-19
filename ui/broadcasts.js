@@ -369,13 +369,11 @@ function bellButtonHtml(name) {
 }
 
 function channelCardHtml(name, { featured }) {
-  const preview = channelPreviewText(name);
-  const subtitle = preview || (featured ? "Public room · 3-day history" : "Custom room");
+  // Name only, no preview/description line - matches iOS's clean rows.
   return `
     <div class="broadcast-card">
       <button class="broadcast-card-main" type="button" data-broadcast-open="${deps.escapeHtml(name)}">
         <strong>#${deps.escapeHtml(name)}</strong>
-        <span>${deps.escapeHtml(subtitle)}</span>
       </button>
       ${bellButtonHtml(name)}
       ${featured ? "" : `<button class="broadcast-card-icon" type="button" data-broadcast-retention="${deps.escapeHtml(name)}" title="Message retention" aria-label="Message retention">${GEAR_SVG}</button>`}
