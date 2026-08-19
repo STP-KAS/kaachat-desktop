@@ -13913,6 +13913,8 @@ queueMicrotask(async () => {
     quickReactionEmojis: QUICK_REACTION_EMOJIS,
     // "Today"/"Yesterday" day pills, shared with 1:1 and group chats.
     daySeparatorLabel,
+    // Per-channel bell: OS pings for live messages in notify-enabled channels.
+    postDesktopNotification,
     // Fresh incoming broadcast messages feed the global notification center (gated to LIVE
     // arrivals so the initial history backfill doesn't flood it).
     onIncomingBroadcast: (rows) => {

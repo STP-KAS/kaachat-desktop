@@ -18,6 +18,8 @@ import {
 
 const CHANNELS_KEY = "kachat-broadcast-channels-v1";        // account-scoped: ["name", ...]
 const HIDDEN_KEY = "kachat-broadcast-hidden-v1";            // account-scoped: { [channel]: [address, ...] }
+const NOTIFY_KEY = "kachat-broadcast-notify-v1";            // account-scoped: { [channel]: true } — the bell
+const RETENTION_KEY = "kachat-broadcast-retention-v1";      // account-scoped: { [channel]: days } (0/absent = forever, own channels only)
 const CACHE_KEY = "kachat-broadcast-messages-cache-v1";     // GLOBAL: public chain data, account-agnostic
 const REACTIONS_KEY = "kachat-broadcast-reactions-cache-v1"; // GLOBAL: public chain data, account-agnostic
 const POLL_MS = 8000;
@@ -30,6 +32,10 @@ let listEl, roomEl, roomTitleEl, roomDotEl, roomBodyEl, roomBannerEl, composerIn
 let voicePanelEl, voiceTimeEl, voiceBtn;
 let joinedChannels = [];
 let hiddenByRoom = {};
+let notifyByChannel = {};    // { [channel]: true } — the bell: OS pings for new messages
+let retentionByChannel = {}; // { [channel]: days } — own channels only; featured are fixed 3-day
+// Only messages arriving AFTER app launch may ping — backfilled history never notifies.
+const broadcastSessionStartMs = Date.now();
 let messageCache = {}; // { [channel]: [{ txId, senderAddress, content, blockTime, status? }] }
 // { [channel]: { byTarget: { [targetTxId]: { [reactorAddress]: { emoji, blockTime, removed? } } },
 //                txIds: [processed reaction txids], lastEvent: { senderAddress, emoji, blockTime } | null } }
@@ -51,6 +57,12 @@ function loadState() {
   try {
     hiddenByRoom = JSON.parse(localStorage.getItem(deps.accountScopedKey(HIDDEN_KEY)) || "{}") || {};
   } catch { hiddenByRoom = {}; }
+  try {
+    notifyByChannel = JSON.parse(localStorage.getItem(deps.accountScopedKey(NOTIFY_KEY)) || "{}") || {};
+  } catch { notifyByChannel = {}; }
+  try {
+    retentionByChannel = JSON.parse(localStorage.getItem(deps.accountScopedKey(RETENTION_KEY)) || "{}") || {};
+  } catch { retentionByChannel = {}; }
   try {
     messageCache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}") || {};
   } catch { messageCache = {}; }
@@ -93,6 +105,22 @@ function saveHidden() {
   localStorage.setItem(deps.accountScopedKey(HIDDEN_KEY), JSON.stringify(hiddenByRoom));
 }
 
+function saveNotify() {
+  localStorage.setItem(deps.accountScopedKey(NOTIFY_KEY), JSON.stringify(notifyByChannel));
+}
+
+function saveRetention() {
+  localStorage.setItem(deps.accountScopedKey(RETENTION_KEY), JSON.stringify(retentionByChannel));
+}
+
+/** Effective retention cutoff for a channel: featured rooms are fixed 3-day (matching the room
+ *  banner and iOS); own channels use their configured days, forever when unset/0. */
+function retentionCutoffMs(channel) {
+  if (isFeaturedBroadcastChannel(channel)) return Date.now() - BROADCAST_RETENTION_MS;
+  const days = Number(retentionByChannel[channel] || 0);
+  return days > 0 ? Date.now() - days * 86_400_000 : 0;
+}
+
 function saveCache() {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify(messageCache)); }
   catch { /* quota — drop oldest channels rather than crash */
@@ -107,21 +135,27 @@ function saveReactions() {
 
 /** Fixed 3-day rolling retention, matching the featured rooms' product rule. */
 function pruneCache() {
-  const cutoff = Date.now() - BROADCAST_RETENTION_MS;
+  // Per-channel retention (iOS parity): featured rooms fixed 3-day, own channels use their
+  // configured retention (0 = keep forever).
   for (const channel of Object.keys(messageCache)) {
+    const cutoff = retentionCutoffMs(channel);
+    if (!cutoff) continue;
     messageCache[channel] = (messageCache[channel] || []).filter((m) => (m.blockTime || 0) >= cutoff);
     if (messageCache[channel].length === 0) delete messageCache[channel];
   }
   for (const channel of Object.keys(reactionsCache)) {
+    const cutoff = retentionCutoffMs(channel);
     const entry = reactionsCache[channel] || {};
-    for (const targetTxId of Object.keys(entry.byTarget || {})) {
-      const perReactor = entry.byTarget[targetTxId];
-      for (const reactor of Object.keys(perReactor)) {
-        if (Number(perReactor[reactor]?.blockTime || 0) < cutoff) delete perReactor[reactor];
+    if (cutoff) {
+      for (const targetTxId of Object.keys(entry.byTarget || {})) {
+        const perReactor = entry.byTarget[targetTxId];
+        for (const reactor of Object.keys(perReactor)) {
+          if (Number(perReactor[reactor]?.blockTime || 0) < cutoff) delete perReactor[reactor];
+        }
+        if (Object.keys(perReactor).length === 0) delete entry.byTarget[targetTxId];
       }
-      if (Object.keys(perReactor).length === 0) delete entry.byTarget[targetTxId];
+      if (entry.lastEvent && Number(entry.lastEvent.blockTime || 0) < cutoff) entry.lastEvent = null;
     }
-    if (entry.lastEvent && Number(entry.lastEvent.blockTime || 0) < cutoff) entry.lastEvent = null;
     if (Array.isArray(entry.txIds) && entry.txIds.length > 500) entry.txIds = entry.txIds.slice(-500);
     if (Object.keys(entry.byTarget || {}).length === 0 && !entry.lastEvent) delete reactionsCache[channel];
   }
@@ -211,6 +245,19 @@ function mergeMessages(channel, rows) {
   // The global notification center gates these by arrival time (only live messages ping, not the
   // backfilled history), so it's safe to hand it every fresh incoming row.
   if (freshIncoming.length) deps.onIncomingBroadcast?.(freshIncoming);
+  // The per-channel bell (iOS parity): OS pings for LIVE messages in notify-enabled channels
+  // you're not currently reading. Capped so one poll can't fire a burst.
+  const pingable = freshIncoming.filter((row) =>
+    notifyByChannel[row.channel]
+    && row.channel !== activeChannel
+    && Number(row.blockTime || 0) >= broadcastSessionStartMs);
+  for (const row of pingable.slice(0, 3)) {
+    deps.postDesktopNotification?.({
+      title: `#${row.channel}`,
+      body: `${senderName(row.senderAddress)}: ${String(row.content || "").slice(0, 90)}`,
+      tag: `kachat-broadcast-${row.txId}`,
+    });
+  }
   return added + (reactionsChanged ? 1 : 0);
 }
 
@@ -311,28 +358,49 @@ function channelPreviewText(channel) {
   return String(last.content || "").replace(/\s+/g, " ").slice(0, 64);
 }
 
+// The bell icon pair, iOS-style: filled accent when notifications are on, slashed when off.
+const BELL_ON_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a5.5 5.5 0 0 1 5.5 5.5c0 3.2.8 5 1.8 6.2.4.5.05 1.3-.6 1.3H5.3c-.65 0-1-.8-.6-1.3 1-1.2 1.8-3 1.8-6.2A5.5 5.5 0 0 1 12 4Z" fill="currentColor" stroke="none"/><path d="M10 19.5a2 2 0 0 0 4 0"/></svg>`;
+const BELL_OFF_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a5.5 5.5 0 0 1 5.5 5.5c0 3.2.8 5 1.8 6.2.4.5.05 1.3-.6 1.3H5.3c-.65 0-1-.8-.6-1.3 1-1.2 1.8-3 1.8-6.2A5.5 5.5 0 0 1 12 4Z"/><path d="M10 19.5a2 2 0 0 0 4 0"/><path d="M4 4l16 16"/></svg>`;
+const GEAR_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>`;
+
+function bellButtonHtml(name) {
+  const on = Boolean(notifyByChannel[name]);
+  return `<button class="broadcast-card-icon${on ? " active" : ""}" type="button" data-broadcast-notify="${deps.escapeHtml(name)}" title="${on ? "Notifications on" : "Notifications off"}" aria-label="Toggle notifications">${on ? BELL_ON_SVG : BELL_OFF_SVG}</button>`;
+}
+
+function channelCardHtml(name, { featured }) {
+  const preview = channelPreviewText(name);
+  const subtitle = preview || (featured ? "Public room · 3-day history" : "Custom room");
+  return `
+    <div class="broadcast-card">
+      <button class="broadcast-card-main" type="button" data-broadcast-open="${deps.escapeHtml(name)}">
+        <strong>#${deps.escapeHtml(name)}</strong>
+        <span>${deps.escapeHtml(subtitle)}</span>
+      </button>
+      ${bellButtonHtml(name)}
+      ${featured ? "" : `<button class="broadcast-card-icon" type="button" data-broadcast-retention="${deps.escapeHtml(name)}" title="Message retention" aria-label="Message retention">${GEAR_SVG}</button>`}
+      ${featured ? "" : `<button class="broadcast-card-leave" type="button" data-broadcast-leave="${deps.escapeHtml(name)}">Leave</button>`}
+    </div>`;
+}
+
+// iOS's list anatomy: Popular (curated, permanent - bell is the only control) pinned on top,
+// then Your Channels with a + to join/create, each row bell + retention gear + Leave.
 function renderChannelList() {
   if (!listEl) return;
-  const rows = [...joinedChannels].sort((a, b) => {
-    const fa = isFeaturedBroadcastChannel(a) ? 0 : 1;
-    const fb = isFeaturedBroadcastChannel(b) ? 0 : 1;
-    return fa - fb || a.localeCompare(b);
-  });
-  listEl.innerHTML = rows.map((name) => {
-    const featured = isFeaturedBroadcastChannel(name);
-    const preview = channelPreviewText(name);
-    const subtitle = preview || (featured ? "Featured — public, 3-day history" : "Custom room");
-    return `
-      <button class="chat-row broadcast-row" type="button" data-broadcast-open="${deps.escapeHtml(name)}">
-        <span class="chat-meta">
-          <strong>#${deps.escapeHtml(name)}</strong>
-          <span>${deps.escapeHtml(subtitle)}</span>
-        </span>
-        ${featured
-          ? `<span class="architecture-badge">Featured</span>`
-          : `<span class="kaposts-view-link" data-broadcast-leave="${deps.escapeHtml(name)}">Leave</span>`}
-      </button>`;
-  }).join("");
+  const own = joinedChannels
+    .filter((name) => !isFeaturedBroadcastChannel(name))
+    .sort((a, b) => a.localeCompare(b));
+  listEl.innerHTML = `
+    <div class="broadcast-section-header">Popular</div>
+    ${FEATURED_BROADCAST_CHANNELS.map((name) => channelCardHtml(name, { featured: true })).join("")}
+    <div class="broadcast-section-header broadcast-section-your">
+      <span>Your Channels</span>
+      <button class="broadcast-join-toggle" type="button" data-broadcast-join-toggle aria-label="Join or create a channel">+</button>
+    </div>
+    ${own.length
+      ? own.map((name) => channelCardHtml(name, { featured: false })).join("")
+      : `<p class="broadcast-empty-hint">No channels yet. Tap + to join or create one.</p>`}
+  `;
 }
 
 /** One broadcast bubble: header, linkified body (+ the same preview card treatment as 1:1
@@ -598,6 +666,9 @@ function joinChannel(rawName) {
     joinedChannels.push(name);
     saveChannels();
   }
+  const joinCard = document.querySelector("[data-broadcast-join-card]");
+  if (joinCard) joinCard.hidden = true;
+  if (joinInput) joinInput.value = "";
   renderChannelList();
   openRoom(name);
 }
@@ -782,11 +853,60 @@ export function initBroadcasts(dependencies) {
     const leave = event.target.closest("[data-broadcast-leave]");
     if (leave) {
       event.stopPropagation();
-      if (window.confirm(`Leave #${leave.dataset.broadcastLeave}? Cached messages for it are deleted.`)) {
+      if (window.confirm(`Leave #${leave.dataset.broadcastLeave}?\n\nLeaving this broadcast permanently deletes every message cached for it on this device. This cannot be undone. Rejoining later starts with no history.`)) {
         leaveChannel(leave.dataset.broadcastLeave);
       }
       return;
     }
+
+    // The bell: OS notifications for new messages in this channel.
+    const notify = event.target.closest("[data-broadcast-notify]");
+    if (notify) {
+      event.stopPropagation();
+      const name = notify.dataset.broadcastNotify;
+      if (notifyByChannel[name]) delete notifyByChannel[name];
+      else notifyByChannel[name] = true;
+      saveNotify();
+      renderChannelList();
+      return;
+    }
+
+    // Retention gear (own channels): how long cached messages are kept on this device.
+    const retention = event.target.closest("[data-broadcast-retention]");
+    if (retention) {
+      event.stopPropagation();
+      const name = retention.dataset.broadcastRetention;
+      const current = Number(retentionByChannel[name] || 0);
+      const answer = window.prompt(
+        `Keep #${name} messages for how many days on this device?\n0 = keep forever. Older messages are deleted from this device only.`,
+        String(current),
+      );
+      if (answer == null) return;
+      const days = Math.max(0, Math.floor(Number(answer)));
+      if (!Number.isFinite(days)) return;
+      if (days > 0) retentionByChannel[name] = days;
+      else delete retentionByChannel[name];
+      saveRetention();
+      pruneCache();
+      saveCache();
+      saveReactions();
+      renderChannelList();
+      deps.showToast?.(days > 0 ? `#${name}: keeping ${days} day${days === 1 ? "" : "s"} of messages.` : `#${name}: keeping messages forever.`);
+      return;
+    }
+
+    // + in the "Your Channels" header: reveal the join/create card (iOS's join alert).
+    const joinToggle = event.target.closest("[data-broadcast-join-toggle]");
+    if (joinToggle) {
+      event.stopPropagation();
+      const card = document.querySelector("[data-broadcast-join-card]");
+      if (card) {
+        card.hidden = !card.hidden;
+        if (!card.hidden) joinInput?.focus();
+      }
+      return;
+    }
+
     const open = event.target.closest("[data-broadcast-open]");
     if (open) { openRoom(open.dataset.broadcastOpen); return; }
 
