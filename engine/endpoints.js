@@ -54,7 +54,10 @@ let overrides = loadStored();
 // messages.js, kaposts.js, broadcasts.js, and the settings input path) and keeps the URLs real
 // https:// everywhere else, so normalizeBaseUrl and native/packaged builds (which have no CORS)
 // still hit the host directly. No-op outside dev.
-const INDEXER_PROXY_HOST_RE = /(^|\.)kasia\.wtf$|(^|\.)kachat\.duckdns\.org$/i;
+// api.kaspa.org rides through the proxy too: its RATE-LIMIT/error responses carry no CORS
+// headers, so direct browser fetches degrade into a wall of red CORS noise the moment a
+// balance-lookup burst trips its limiter. Server-side forwarding has no CORS at all.
+const INDEXER_PROXY_HOST_RE = /(^|\.)kasia\.wtf$|(^|\.)kachat\.duckdns\.org$|^api\.kaspa\.org$/i;
 function installDevIndexerProxy() {
   // NOTE: Vite string-replaces the literal token `import.meta.env.DEV` at transform time.
   // Optional chaining (import.meta?.env?.DEV) does NOT match that token, so it would be

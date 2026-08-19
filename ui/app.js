@@ -4972,10 +4972,11 @@ spendingScanBtn?.addEventListener("click", async () => {
       if (address) windowEntries.push({ index: i, address });
     }
 
-    // Balance sweep, 10 addresses at a time so ~120 lookups stay fast.
+    // Balance sweep in small paced chunks — a hard parallel burst trips api.kaspa.org's rate
+    // limiter, whose error responses carry no CORS headers and flood the console red.
     const hits = new Set();
-    for (let start = 0; start < windowEntries.length; start += 10) {
-      const chunk = windowEntries.slice(start, start + 10);
+    for (let start = 0; start < windowEntries.length; start += 5) {
+      const chunk = windowEntries.slice(start, start + 5);
       if (label) label.textContent = `Scanning… #${chunk[0].index}`;
       await Promise.all(chunk.map(async (entry) => {
         try {
@@ -4983,6 +4984,7 @@ spendingScanBtn?.addEventListener("click", async () => {
           if ((Number(bal?.totalKas) || 0) > 0) hits.add(entry.index);
         } catch { /* lookup failed: skip this index */ }
       }));
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
     // KNS domains count as "in use" too - the engine batches, caches, and paces these.
