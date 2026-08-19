@@ -10,6 +10,9 @@
     "setup:all": "npm run setup:wasm && npm run setup:cipher"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.3.0",
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
     "@vitejs/plugin-basic-ssl": "latest",
     "jsqr": "^1.4.0",
     "qrcode": "latest",
