@@ -2231,6 +2231,31 @@ function formatTime(timestamp) {
 }
 
 
+// Day-separator label for message timelines, matching iOS's MessageDaySeparatorFormatter:
+// "Today", "Yesterday", weekday + date within the current year ("Friday, Aug 15"), else
+// month/day/year ("Aug 15, 2025"). Shared by 1:1 chats, group chats, and broadcasts.
+function daySeparatorLabel(ts) {
+  const d = new Date(Number(ts) || Date.now());
+  const now = new Date();
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((midnight(now) - midnight(d)) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.getFullYear() === now.getFullYear()
+    ? d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })
+    : d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Builds one centered "Today"/"Yesterday"/date pill for a message timeline.
+function buildDaySeparatorElement(ts) {
+  const sep = document.createElement("div");
+  sep.className = "message-day-separator";
+  const pill = document.createElement("span");
+  pill.textContent = daySeparatorLabel(ts);
+  sep.append(pill);
+  return sep;
+}
+
 function formatDateTime(timestamp) {
   if (!timestamp) return "Never synced";
   return new Intl.DateTimeFormat(undefined, {
@@ -8199,7 +8224,15 @@ function renderMessages(conversationEntry) {
 
   messageEmpty.hidden = true;
 
+  let lastDayKey = "";
   messages.forEach((message, index) => {
+    // "Today"/"Yesterday"/date pill whenever the calendar day changes (iOS parity).
+    const dayKey = new Date(Number(message.createdAt) || Date.now()).toDateString();
+    if (dayKey !== lastDayKey) {
+      lastDayKey = dayKey;
+      messageArea.appendChild(buildDaySeparatorElement(message.createdAt));
+    }
+
     const row = document.createElement("div");
     row.className = `message-row ${message.direction === "incoming" ? "incoming" : "local"}`;
 
@@ -13610,6 +13643,8 @@ queueMicrotask(async () => {
     // Reactions: identical wire parser and fixed tapback set across all clients.
     parseReactionEnvelope,
     quickReactionEmojis: QUICK_REACTION_EMOJIS,
+    // "Today"/"Yesterday" day pills, shared with 1:1 and group chats.
+    daySeparatorLabel,
     // Fresh incoming broadcast messages feed the global notification center (gated to LIVE
     // arrivals so the initial history backfill doesn't flood it).
     onIncomingBroadcast: (rows) => {
@@ -14151,14 +14186,10 @@ function decodeGroupMentions(text) {
 }
 
 // Day-separator label (Today / Yesterday / date) for the group timeline.
+// Delegates to the shared daySeparatorLabel so groups, 1:1 chats, and broadcasts
+// all format day pills identically (iOS parity: weekday within the current year).
 function groupDaySeparatorLabel(ts) {
-  const d = new Date(Number(ts) || Date.now());
-  const now = new Date();
-  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diff = Math.round((midnight(now) - midnight(d)) / 86400000);
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Yesterday";
-  return d.toLocaleDateString([], { month: "short", day: "numeric", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+  return daySeparatorLabel(ts);
 }
 
 // Scroll to + briefly highlight a group message by its target key (reply-jump).

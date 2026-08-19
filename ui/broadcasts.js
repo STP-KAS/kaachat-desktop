@@ -456,7 +456,23 @@ function renderRoom() {
       empty.innerHTML = `<strong>No messages yet</strong><span>Be the first to post in #${deps.escapeHtml(activeChannel)}.</span>`;
       roomBodyEl.append(empty);
     } else {
-      for (const m of messages) roomBodyEl.append(buildMessageElement(m));
+      // "Today"/"Yesterday"/date pill whenever the calendar day changes (iOS parity;
+      // same pill class + label formatter as 1:1 and group chats).
+      let lastDayKey = "";
+      for (const m of messages) {
+        const ts = Number(m.blockTime) || Date.now();
+        const dayKey = new Date(ts).toDateString();
+        if (dayKey !== lastDayKey && deps.daySeparatorLabel) {
+          lastDayKey = dayKey;
+          const sep = document.createElement("div");
+          sep.className = "message-day-separator";
+          const pill = document.createElement("span");
+          pill.textContent = deps.daySeparatorLabel(ts);
+          sep.append(pill);
+          roomBodyEl.append(sep);
+        }
+        roomBodyEl.append(buildMessageElement(m));
+      }
     }
     roomBodyEl.scrollTop = roomBodyEl.scrollHeight;
   }
