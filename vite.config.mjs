@@ -53,29 +53,51 @@ function nextcloudProxy() {
         // returned as 200 with x-upstream-status: 404 so the client can still detect it.
         const soft404 = headers["x-proxy-soft-404"] === "1";
         delete headers["x-proxy-soft-404"];
-        const client = origin.protocol === "http:" ? http : https;
-        const upstream = client.request(
-          {
-            protocol: origin.protocol,
-            hostname: origin.hostname,
-            port: origin.port || (origin.protocol === "http:" ? 80 : 443),
-            method: req.method,
-            path: match[2] || "/",
-            headers,
-          },
-          (upstreamRes) => {
-            const mask404 = soft404 && upstreamRes.statusCode === 404;
-            const responseHeaders = { ...upstreamRes.headers };
-            if (mask404) responseHeaders["x-upstream-status"] = "404";
-            res.writeHead(mask404 ? 200 : (upstreamRes.statusCode || 502), responseHeaders);
-            upstreamRes.pipe(res);
-          },
-        );
-        upstream.on("error", (error) => {
-          if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
-          res.end(`Proxy error: ${error.message}`);
-        });
-        req.pipe(upstream);
+
+        // Redirects are followed SERVER-SIDE (GET/HEAD, capped hops): passing a 3xx through
+        // hands the browser a cross-origin Location it follows directly and gets CORS-blocked
+        // on (seen with maps.apple short links in link previews).
+        const MAX_REDIRECT_HOPS = 5;
+        function forward(target, hop) {
+          const client = target.protocol === "http:" ? http : https;
+          const upstream = client.request(
+            {
+              protocol: target.protocol,
+              hostname: target.hostname,
+              port: target.port || (target.protocol === "http:" ? 80 : 443),
+              method: req.method,
+              path: `${target.pathname}${target.search}` || "/",
+              headers: { ...headers, host: target.host },
+            },
+            (upstreamRes) => {
+              const status = upstreamRes.statusCode || 502;
+              const location = upstreamRes.headers.location;
+              if (location && status >= 300 && status < 400 && hop < MAX_REDIRECT_HOPS
+                  && (req.method === "GET" || req.method === "HEAD")) {
+                upstreamRes.resume(); // discard the redirect body
+                let next = null;
+                try { next = new URL(location, target); } catch { next = null; }
+                if (next && (next.protocol === "http:" || next.protocol === "https:")) {
+                  forward(next, hop + 1);
+                  return;
+                }
+              }
+              const mask404 = soft404 && upstreamRes.statusCode === 404;
+              const responseHeaders = { ...upstreamRes.headers };
+              if (mask404) responseHeaders["x-upstream-status"] = "404";
+              res.writeHead(mask404 ? 200 : status, responseHeaders);
+              upstreamRes.pipe(res);
+            },
+          );
+          upstream.on("error", (error) => {
+            if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+            res.end(`Proxy error: ${error.message}`);
+          });
+          // Only the FIRST hop carries the browser's request body; redirect hops are GET/HEAD.
+          if (hop === 0) req.pipe(upstream);
+          else upstream.end();
+        }
+        forward(new URL(match[2] || "/", `${origin.protocol}//${origin.host}`), 0);
       });
     },
   };
