@@ -704,8 +704,98 @@ function wireSettings() {
 }
 
 // ---------------------------------------------------------------------------
+// Contacts sync (CardDAV) — the desktop equivalent of iOS's "sync system contacts".
+// A browser has no OS address book, so instead we read the connected account's Nextcloud
+// address book(s) over CardDAV and import any vCard that carries a Kaspa address. iOS stores
+// the KaChat address in a contact's URL entries as `kaspa:...`; we match the same shape here,
+// so a card synced from an iPhone flows straight in. Read-only: nothing is written back.
+// ---------------------------------------------------------------------------
+
+const KASPA_ADDRESS_RE = /(kaspa:[a-z0-9]{20,}|kaspatest:[a-z0-9]{20,})/i;
+
+// Enumerate the account's address-book collection ids (default is "contacts", but a user may
+// have renamed it or have several). Falls back to ["contacts"] on any failure so the common
+// case still works without a successful PROPFIND.
+async function listAddressBookIds() {
+  try {
+    const home = `${apiBase()}/remote.php/dav/addressbooks/users/${encodeURIComponent(nc.username)}/`;
+    const response = await fetch(home, {
+      method: "PROPFIND",
+      headers: { Authorization: authHeader(), Depth: "1", "Content-Type": "application/xml" },
+      body: `<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav"><d:prop><d:resourcetype/></d:prop></d:propfind>`,
+      cache: "no-store",
+    });
+    if (!response.ok) return ["contacts"];
+    const doc = new DOMParser().parseFromString(await response.text(), "application/xml");
+    const ids = [];
+    for (const res of Array.from(doc.getElementsByTagNameNS("DAV:", "response"))) {
+      const isBook = res.getElementsByTagNameNS("urn:ietf:params:xml:ns:carddav", "addressbook").length > 0;
+      if (!isBook) continue;
+      const href = res.getElementsByTagNameNS("DAV:", "href")[0]?.textContent || "";
+      // Take just the collection id (last path segment) and rebuild the URL through apiBase —
+      // using the raw href would double any server subpath the proxy target already carries.
+      const match = href.match(/\/addressbooks\/users\/[^/]+\/([^/]+)\/?$/i);
+      if (match && match[1]) ids.push(decodeURIComponent(match[1]));
+    }
+    return ids.length ? ids : ["contacts"];
+  } catch {
+    return ["contacts"];
+  }
+}
+
+// vCard lines can be folded across multiple physical lines (a CRLF followed by a space/tab is a
+// continuation). Unfold before scanning so a folded FN or URL value isn't split.
+function unfoldVCards(text) {
+  return String(text || "").replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
+}
+
+function parseVCardContacts(text) {
+  const cards = unfoldVCards(text).split(/BEGIN:VCARD/i).slice(1);
+  const entries = [];
+  for (const card of cards) {
+    const addrMatch = card.match(KASPA_ADDRESS_RE);
+    if (!addrMatch) continue;
+    const address = addrMatch[1];
+    const fn = card.match(/(?:^|\n)FN(?:;[^:\r\n]*)?:(.+)/i);
+    const name = fn ? fn[1].trim() : "";
+    entries.push({ address, name });
+  }
+  return entries;
+}
+
+async function syncContactsFromNextcloud() {
+  if (!nc) throw new Error("Connect Nextcloud first.");
+  const bookIds = await listAddressBookIds();
+  const seen = new Set();
+  const entries = [];
+  for (const bookId of bookIds) {
+    const url = `${apiBase()}/remote.php/dav/addressbooks/users/${encodeURIComponent(nc.username)}/${encodeURIComponent(bookId)}/?export`;
+    const response = await fetch(url, { headers: { Authorization: authHeader() }, cache: "no-store" });
+    if (!response.ok) continue;
+    for (const entry of parseVCardContacts(await response.text())) {
+      const key = entry.address.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push(entry);
+    }
+  }
+  const summary = deps.importNextcloudContacts
+    ? deps.importNextcloudContacts(entries)
+    : { added: 0, updated: 0, skipped: entries.length };
+  return { found: entries.length, ...summary };
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
+
+export function isNextcloudConnected() {
+  return Boolean(nc);
+}
+
+export async function syncNextcloudContacts() {
+  return syncContactsFromNextcloud();
+}
 
 export function resetNextcloudForAccount() {
   closePicker();

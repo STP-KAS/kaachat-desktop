@@ -34,6 +34,56 @@ export async function sendKaspa({ kaspa, rpc, withRpc = null, privateKey, source
   return enqueueSend(sourceAddress, () => sendKaspaWithUtxoRetry({ kaspa, rpc, withRpc, privateKey, sourceAddress, destinationAddress, amountKas, feeKas, payload, selectedOutpoints, log }));
 }
 
+// Consolidate ("compound") every UTXO at `sourceAddress` into a single self-output with NO change,
+// matching iOS's Compound UTXOs. A plain self-send that leaves a tiny change output gets rejected
+// by Kaspa's KIP-9 storage-mass rule (why the earlier attempt failed) - so this is a true sweep:
+// two passes - probe the fee for a near-full self-send, then send exactly (total - fee) so the
+// generator emits one output and folds any sub-dust remainder into the fee.
+export async function sweepAllToSelf({ kaspa, rpc, withRpc = null, privateKey, sourceAddress, log = () => {} }) {
+  return enqueueSend(sourceAddress, () => sweepAllToSelfNow({ kaspa, rpc, withRpc, privateKey, sourceAddress, log }));
+}
+async function sweepAllToSelfNow({ kaspa, rpc, withRpc, privateKey, sourceAddress, log }) {
+  const fetchUtxos = (activeRpc) => activeRpc.getUtxosByAddresses([sourceAddress]);
+  let { entries } = withRpc
+    ? await withRpc(fetchUtxos, { retries: 1, label: "Compound UTXO fetch" })
+    : await fetchUtxos(rpc);
+  if (!entries || entries.length === 0) throw new Error("No UTXOs to compound.");
+  entries.sort((a, b) => BigInt(a.amount) > BigInt(b.amount) ? 1 : -1);
+  const total = entries.reduce((sum, e) => sum + BigInt(e.amount || 0), 0n);
+
+  // Pass 1: fee for a self-send of ~95% of the balance (leaves ample headroom the generator covers).
+  const probe = await kaspa.createTransactions({
+    entries,
+    outputs: [{ address: sourceAddress, amount: total - (total / 20n) }],
+    priorityFee: 0n,
+    changeAddress: sourceAddress,
+    networkId: NETWORK_ID,
+  });
+  const feeSompi = BigInt(probe.summary?.fees ?? 0n);
+  const amount = total - feeSompi;
+  if (amount <= 0n) throw new Error("Balance too low to compound after network fees.");
+
+  // Pass 2: send exactly (total - fee) to self -> single output, sub-dust remainder folded into fee.
+  const result = await kaspa.createTransactions({
+    entries,
+    outputs: [{ address: sourceAddress, amount }],
+    priorityFee: 0n,
+    changeAddress: sourceAddress,
+    networkId: NETWORK_ID,
+  });
+  const txids = [];
+  for (const pending of result.transactions) {
+    await pending.sign([privateKey]);
+    const submitSigned = (activeRpc) => pending.submit(activeRpc);
+    const txid = withRpc
+      ? await withRpc(submitSigned, { retries: 1, label: "Compound broadcast" })
+      : await submitSigned(rpc);
+    txids.push(txid);
+    log("Compound txid:", txid);
+  }
+  return { result, txids };
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Back-to-back self-sends (spamming chat/group messages) each spend the wallet's UTXO and

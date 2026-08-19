@@ -87,12 +87,21 @@ export function looksLikeDomain(input) {
 // Global request pacing: the KNS API rate-limits bursts hard (429) — e.g. the cold pass after
 // a phone-backup restore fires a lookup per contact at once. Cap the in-flight count and space
 // successive requests so the whole app stays under the limit.
-const KNS_MAX_CONCURRENT = 3;
-const KNS_REQUEST_GAP_MS = 250;
+const KNS_MAX_CONCURRENT = 2;
+const KNS_REQUEST_GAP_MS = 400;
+const KNS_429_COOLDOWN_MS = 4000; // after a 429, pause all KNS requests to let the limit recover
 let knsActiveRequests = 0;
 const knsRequestWaiters = [];
+let knsCooldownUntil = 0;
+
+// Called on a 429 so the next requests wait out a cooldown instead of hammering the API.
+function noteKnsRateLimited() {
+  knsCooldownUntil = Date.now() + KNS_429_COOLDOWN_MS;
+}
 
 async function acquireKnsSlot() {
+  const wait = knsCooldownUntil - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   if (knsActiveRequests >= KNS_MAX_CONCURRENT) {
     await new Promise((resolve) => knsRequestWaiters.push(resolve));
   }
@@ -119,6 +128,7 @@ async function fetchJson(url, { method = "GET", body = null } = {}) {
       signal: controller.signal,
       cache: "no-store",
     });
+    if (response.status === 429) noteKnsRateLimited();
     if (response.status === 404 || response.headers.get("x-upstream-status") === "404") {
       return { ok: true, notFound: true, status: 404, json: null };
     }

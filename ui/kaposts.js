@@ -8,6 +8,7 @@
 import {
   KAPOSTS_POST_CHARACTER_LIMIT,
   fetchFollowingFeed,
+  fetchFollowList,
   fetchGlobalFeed,
   fetchKaPostNotifications,
   fetchKaPostUserDetails,
@@ -610,17 +611,55 @@ function countdownOrIconHtml(key, iconHtml) {
 const URL_PATTERN = /https?:\/\/[^\s<>"']+/gi;
 
 /** Escapes text and wraps URLs in clickable spans (confirmation popover on click). */
+// @mention token: `@domain` (optionally dotted, optional .kas), not part of an email — must be
+// at the start or follow whitespace / an opening bracket-quote. Matches the indexer spec so what
+// highlights here is exactly what triggers a mention notification server-side.
+const MENTION_PATTERN = /(^|[\s([{<"'])@([a-z0-9-]+(?:\.[a-z0-9-]+)*)/gi;
+
+// Escape a plain-text run, but wrap any @mention tokens in a highlight span first.
+function escapeWithMentions(rawText) {
+  const value = String(rawText || "");
+  let out = "";
+  let last = 0;
+  for (const m of value.matchAll(MENTION_PATTERN)) {
+    const lead = m[1] || "";
+    const domain = m[2];
+    const at = m.index + lead.length; // index of the '@'
+    out += deps.escapeHtml(value.slice(last, at));
+    out += `<span class="kaposts-mention" data-kaposts-mention="${deps.escapeHtml(domain.toLowerCase())}">@${deps.escapeHtml(domain)}</span>`;
+    last = at + 1 + domain.length;
+  }
+  out += deps.escapeHtml(value.slice(last));
+  return out;
+}
+
+// Resolve the @mentions in a post's text to the compressed pubkeys the indexer needs in
+// mentioned_pubkeys. Only mentionable contacts (1:1 chats with a KNS domain and a derivable
+// pubkey — see app.js getMentionCandidates) count; unknown @tokens stay plain text.
+function mentionedPubkeysFor(text) {
+  const candidates = deps.getMentionCandidates?.() || [];
+  if (!candidates.length) return [];
+  const byDomain = new Map(candidates.map((c) => [c.domain.toLowerCase(), c.pubkey]));
+  const found = new Set();
+  for (const m of String(text || "").matchAll(MENTION_PATTERN)) {
+    const domain = m[2].toLowerCase().replace(/\.kas$/, "");
+    const pubkey = byDomain.get(domain);
+    if (pubkey) found.add(pubkey);
+  }
+  return [...found];
+}
+
 function linkifyPostText(text) {
   const value = String(text || "");
   let result = "";
   let last = 0;
   for (const match of value.matchAll(URL_PATTERN)) {
-    result += deps.escapeHtml(value.slice(last, match.index));
+    result += escapeWithMentions(value.slice(last, match.index));
     const url = match[0];
     result += `<span class="kaposts-link" data-kaposts-link="${deps.escapeHtml(url)}">${deps.escapeHtml(url)}</span>`;
     last = match.index + url.length;
   }
-  result += deps.escapeHtml(value.slice(last));
+  result += escapeWithMentions(value.slice(last));
   return result;
 }
 
@@ -630,6 +669,8 @@ const ICONS = {
   like: `<svg viewBox="0 0 24 24"><path d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z"/></svg>`,
   dislike: `<svg viewBox="0 0 24 24"><path d="M7.498 15.25H4.372c-1.026 0-1.945-.694-2.054-1.715a12.137 12.137 0 0 1-.068-1.285c0-2.848.992-5.464 2.649-7.521C5.287 4.247 5.886 4 6.504 4h4.016a4.5 4.5 0 0 1 1.423.23l3.114 1.04a4.5 4.5 0 0 0 1.423.23h1.294M7.498 15.25c.618 0 .991.724.725 1.282A7.471 7.471 0 0 0 7.5 19.75 2.25 2.25 0 0 0 9.75 22a.75.75 0 0 0 .75-.75v-.633c0-.573.11-1.14.322-1.672.304-.76.93-1.33 1.653-1.715a9.04 9.04 0 0 0 2.86-2.4c.498-.634 1.226-1.08 2.032-1.08h.384m-10.253 1.5H9.7m8.075-9.75c.01.05.027.1.05.148.593 1.2.925 2.55.925 3.977 0 1.487-.36 2.89-.999 4.125m.023-8.25c-.076-.365.183-.75.575-.75h.908c.889 0 1.713.518 1.972 1.368.339 1.11.521 2.287.521 3.507 0 1.553-.295 3.036-.831 4.398-.306.774-1.086 1.227-1.918 1.227h-1.053c-.472 0-.745-.556-.5-.96a8.95 8.95 0 0 0 .303-.54"/></svg>`,
   share: `<svg viewBox="0 0 24 24"><path d="M7.217 10.907a2.25 2.25 0 1 0 0 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186 9.566-5.314m-9.566 7.5 9.566 5.314m0 0a2.25 2.25 0 1 0 3.935 2.186 2.25 2.25 0 0 0-3.935-2.186Zm0-12.814a2.25 2.25 0 1 0 3.933-2.185 2.25 2.25 0 0 0-3.933 2.185Z"/></svg>`,
+  bookmark: `<svg viewBox="0 0 24 24"><path d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z"/></svg>`,
+  tip: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.25"/><path d="M13.8 9.4c-.4-.7-1.1-1.15-2-1.15-1.24 0-2.05.83-2.05 1.83 0 1 .8 1.5 2.05 1.8 1.25.3 2.05.8 2.05 1.8 0 1-.81 1.84-2.05 1.84-.9 0-1.6-.45-2-1.15M11.85 6.7v10.6"/></svg>`,
 };
 
 function postCellHtml(post, { inThread = false, isRoot = false, replyInline = false } = {}) {
@@ -683,7 +724,9 @@ function postCellHtml(post, { inThread = false, isRoot = false, replyInline = fa
           <button class="kaposts-action${post.dislikedByMe ? " active-dislike" : ""}" type="button" data-kaposts-dislike="${post.id}" title="Dislike">
             ${countdownOrIconHtml(`dislike:${post.id}`, ICONS.dislike)}${post.dislikes > 0 ? `<span>${post.dislikes}</span>` : ""}
           </button>
+          <button class="kaposts-action${post.bookmarkedByMe ? " active-bookmark" : ""}" type="button" data-kaposts-bookmark="${post.id}" title="${post.bookmarkedByMe ? "Remove Bookmark" : "Bookmark"}">${ICONS.bookmark}</button>
           ${post.remoteId ? `<button class="kaposts-action" type="button" data-kaposts-share="${post.id}" title="Copy share link">${ICONS.share}</button>` : ""}
+          ${isMine ? "" : `<button class="kaposts-action kaposts-tip" type="button" data-kaposts-tip="${post.id}" title="Send a Kaspa tip">${ICONS.tip}<span>Tip</span></button>`}
         </div>
       </div>
     </article>`;
@@ -852,7 +895,7 @@ function schedulePost(text) {
   scheduleUndoable(key, async () => {
     renderToasts();
     try {
-      const txid = await submitKaPost({ engine: deps.engine, text });
+      const txid = await submitKaPost({ engine: deps.engine, text, mentionedPubkeys: mentionedPubkeysFor(text) });
       mutatePost(post.id, (p) => { p.remoteId = txid; p.delivery = "sent"; });
     } catch (error) {
       mutatePost(post.id, (p) => { p.delivery = "failed"; });
@@ -1056,7 +1099,7 @@ function retryPost(post) {
   renderAll();
   const submit = post.quoted?.remoteId && post.quoted?.posterPubkey
     ? submitKaPostQuote({ engine: deps.engine, text: post.text, contentId: post.quoted.remoteId, quotedAuthorPubkey: post.quoted.posterPubkey })
-    : submitKaPost({ engine: deps.engine, text: post.text });
+    : submitKaPost({ engine: deps.engine, text: post.text, mentionedPubkeys: mentionedPubkeysFor(post.text) });
   submit
     .then((txid) => { mutatePost(post.id, (p) => { p.remoteId = txid; p.delivery = "sent"; }); renderAll(); })
     .catch(() => { mutatePost(post.id, (p) => { p.delivery = "failed"; }); renderAll(); });
@@ -1171,8 +1214,8 @@ function renderPanel() {
             <strong>${deps.escapeHtml(posterName(address))}</strong>
             ${profile?.bio ? `<span class="kaposts-profile-bio">${deps.escapeHtml(profile.bio)}</span>` : ""}
             <span class="kaposts-profile-counts">
-              <b>${panel.details?.followingCount ?? "–"}</b> Following&nbsp;&nbsp;
-              <b>${panel.details?.followersCount ?? "–"}</b> Followers
+              <button type="button" class="kaposts-count-link" data-kaposts-follow-list="following"${panel.pubkey ? "" : " disabled"}><b>${panel.details?.followingCount ?? "–"}</b> Following</button>&nbsp;&nbsp;
+              <button type="button" class="kaposts-count-link" data-kaposts-follow-list="followers"${panel.pubkey ? "" : " disabled"}><b>${panel.details?.followersCount ?? "–"}</b> Followers</button>
             </span>
           </div>
           ${!isMine ? `<button class="kaposts-follow${isFollowing ? " following" : ""}" type="button" data-kaposts-profile-follow>${isFollowing ? "Following" : "Follow"}</button>` : ""}
@@ -1270,6 +1313,30 @@ function renderPanel() {
     return;
   }
 
+  if (panel.type === "followList") {
+    clearPanelPagerSentinels();
+    panelTitleEl.textContent = panel.mode === "followers" ? "Followers" : "Following";
+    const rows = panel.rows || [];
+    panelBodyEl.innerHTML = `<div class="kaposts-panel-list" data-kaposts-panel-list>${
+      panel.loading && rows.length === 0
+        ? `<div class="kaposts-feed-status">Loading…</div>`
+        : rows.length === 0
+          ? `<div class="no-results-card"><strong>${panel.mode === "followers" ? "No followers yet" : "Not following anyone yet"}</strong></div>`
+          : rows.map((row) => {
+              const isMe = row.address === deps.engine.address;
+              const isFollowing = prefs.following.includes(row.address);
+              return `
+              <div class="kaposts-notification-row openable" data-kaposts-follow-list-row data-address="${deps.escapeHtml(row.address)}" data-pubkey="${deps.escapeHtml(row.pubkey || "")}">
+                ${posterAvatarHtml(row.address)}
+                <div class="kaposts-notification-main"><span><strong>${deps.escapeHtml(posterName(row.address))}</strong></span></div>
+                ${isMe ? "" : `<button class="kaposts-follow${isFollowing ? " following" : ""}" type="button" data-kaposts-follow-list-follow data-address="${deps.escapeHtml(row.address)}" data-pubkey="${deps.escapeHtml(row.pubkey || "")}">${isFollowing ? "Following" : "Follow"}</button>`}
+              </div>`;
+            }).join("")
+    }</div>`;
+    restorePanelScroll();
+    return;
+  }
+
   if (panel.type === "list") {
     // Bookmarks/Muted/Blocked are pure client-side lists (see the note on openBookmarks-style
     // panels below) — nothing to page, so no sentinel may survive here.
@@ -1280,7 +1347,7 @@ function renderPanel() {
       // than paging itself.
       const bookmarks = allPostLists().filter((p) => p.bookmarkedByMe && !isHiddenAuthor(p.posterAddress));
       panelBodyEl.innerHTML = bookmarks.length === 0
-        ? `<div class="no-results-card"><strong>No bookmarks yet</strong><span>Bookmark posts from their ⋯ menu to find them here.</span></div>`
+        ? `<div class="no-results-card"><strong>No bookmarks yet</strong><span>Tap the bookmark icon on any post to save it here.</span></div>`
         : bookmarks.map((post) => postCellHtml(post, { inThread: true })).join("");
       restorePanelScroll();
       return;
@@ -1352,6 +1419,42 @@ async function openPosterProfile(address, pubkey) {
   }
 }
 
+// Followers / Following list, opened by tapping a profile's counts. `parent` carries the profile
+// we came from so the panel's Back button returns there instead of dropping to the feed.
+async function openFollowListPanel({ address, pubkey, mode, parent }) {
+  if (!pubkey) { deps.showToast?.("This profile has no public key to look up yet."); return; }
+  panelGeneration += 1;
+  clearPanelPagerSentinels();
+  const generation = panelGeneration;
+  activePanel = { type: "followList", mode, address, pubkey, parent: parent || null, rows: [], loading: true };
+  const panel = activePanel;
+  renderPanel();
+  syncRailActive();
+  try {
+    const raw = await fetchFollowList({ engine: deps.engine, pubkey, followers: mode === "followers" });
+    if (activePanel !== panel || generation !== panelGeneration) return;
+    // The list endpoints return each user under one of several possible pubkey fields; resolve
+    // whichever is present to a Kaspa address so the row can render a name/avatar and open.
+    const rows = [];
+    const seen = new Set();
+    for (const item of raw || []) {
+      const rowPubkey = item?.userPublicKey || item?.publicKey || item?.pubkey
+        || item?.followedPubkey || item?.followerPubkey || item?.user || "";
+      const rowAddress = item?.address || kaspaAddressFromPubkey(deps.engine, rowPubkey) || "";
+      if (!rowAddress || seen.has(rowAddress)) continue;
+      seen.add(rowAddress);
+      rows.push({ address: rowAddress, pubkey: rowPubkey });
+    }
+    panel.rows = rows;
+    panel.loading = false;
+    renderPanel();
+    resolvePosterIdentities(rows.map((row) => row.address), () => { if (activePanel === panel) renderPanel(); });
+  } catch (error) {
+    deps.appendEngineLog?.(`KaPost ${mode} list load failed: ${error.message}`);
+    if (activePanel === panel) { panel.loading = false; renderPanel(); }
+  }
+}
+
 /** Sentinel hit under a profile's Posts or Replies tab (own profile and other users' alike). */
 function loadMoreProfile(tab) {
   const panel = activePanel;
@@ -1414,6 +1517,7 @@ function kaPostsNotificationAction(n, text) {
   if (n.contentType === "reply") return "replied to your post";
   if (n.contentType === "quote") return text ? "quoted your post" : "reposted your post";
   if (n.contentType === "follow") return "followed you";
+  if (n.contentType === "mention") return "mentioned you in a post";
   return "interacted with your post";
 }
 
@@ -1437,6 +1541,17 @@ async function pollKaPostNotificationsForPings() {
     if (firstRun) continue; // baseline seeding — history never notifies
     const actorAddress = kaspaAddressFromPubkey(deps.engine, n.userPublicKey);
     if (!actorAddress || actorAddress === my || isHiddenAuthor(actorAddress)) continue;
+    // The global notification center lists every fresh KaPosts action (mentions included),
+    // independent of the per-type OS-ping gate below.
+    const centerText = stripKaChatMarker(n.postContent ? (decodePostContent({ postContent: n.postContent }) || "") : "").trim();
+    deps.recordGlobalNotification?.({
+      source: "kaposts",
+      id: `kaposts-${n.id}`,
+      title: `${posterName(actorAddress)} ${kaPostsNotificationAction(n, centerText)}`,
+      body: centerText ? `"${centerText.slice(0, 90)}${centerText.length > 90 ? "…" : ""}"` : "",
+      timestamp: Number(n.timestamp) || Date.now(),
+      targetKind: "kaposts",
+    });
     // Per-type gate (Settings > Notifications > KaPosts). Disabled types are
     // silently skipped — never queued for later. Unknown kinds always notify.
     if (deps.shouldNotifyKaPostsAction && !deps.shouldNotifyKaPostsAction(n.contentType, n.voteType)) continue;
@@ -1474,6 +1589,7 @@ function mapNotificationRow(n) {
     action = text ? "quoted your post" : "reposted your post";
     targetTxId = text ? n.id : n.contentId;
   } else if (n.contentType === "follow") { action = "followed you"; targetTxId = null; }
+  else if (n.contentType === "mention") { action = "mentioned you in a post"; targetTxId = n.contentId; }
   return { id: n.id, actorAddress, action, snippet: text || null, timestamp: Number(n.timestamp) || Date.now(), targetTxId };
 }
 
@@ -1659,10 +1775,10 @@ function openRepostPopover(anchor, post) {
 
 function openMorePopover(anchor, post) {
   const isMine = post.posterAddress === deps.engine.address;
+  // Bookmark and Share are their own buttons on every post's action bar (matches iOS), so the
+  // ⋯ menu is just Post Activity, Mute, and Block.
   openPopover(anchor, `
-    ${post.remoteId ? `<button type="button" data-kaposts-pop="share" data-kaposts-pop-id="${post.id}">Share</button>` : ""}
     ${post.remoteId ? `<button type="button" data-kaposts-pop="activity" data-kaposts-pop-id="${post.id}">Post Activity</button>` : ""}
-    <button type="button" data-kaposts-pop="bookmark" data-kaposts-pop-id="${post.id}">${post.bookmarkedByMe ? "Remove Bookmark" : "Bookmark"}</button>
     ${!isMine ? `<button type="button" data-kaposts-pop="mute" data-kaposts-pop-id="${post.id}">Mute</button>` : ""}
     ${!isMine ? `<button type="button" data-kaposts-pop="block" data-kaposts-pop-id="${post.id}" class="danger">Block</button>` : ""}`);
 }
@@ -1726,6 +1842,98 @@ export function resetKaPostsForAccount() {
   renderPanel();
 }
 
+// --- @mention autocomplete --------------------------------------------------
+// Attach to a composer textarea: typing "@" opens a menu of your 1:1 contacts that have a KNS
+// domain (deps.getMentionCandidates). Picking one inserts "@domain ". Only KNS-domain contacts
+// are mentionable — the same set the indexer will turn into mention notifications.
+const MENTION_QUERY_RE = /(?:^|[\s([{<"'])@([a-z0-9-]*)$/i;
+
+function attachMentionAutocomplete(textarea) {
+  if (!textarea || textarea.dataset.mentionWired) return;
+  textarea.dataset.mentionWired = "1";
+  let menu = null;
+  let items = [];
+  let activeIndex = 0;
+  let anchorStart = -1; // index of the '@' currently being completed
+
+  function close() {
+    if (menu) { menu.remove(); menu = null; }
+    items = [];
+    activeIndex = 0;
+    anchorStart = -1;
+  }
+
+  function currentQuery() {
+    const caret = textarea.selectionStart ?? textarea.value.length;
+    const before = textarea.value.slice(0, caret);
+    const match = before.match(MENTION_QUERY_RE);
+    if (!match) return null;
+    const query = match[1] || "";
+    return { query, atIndex: caret - query.length - 1, caret };
+  }
+
+  function render(query) {
+    const q = String(query || "").toLowerCase();
+    const candidates = deps.getMentionCandidates?.() || [];
+    items = candidates
+      .filter((c) => !q || c.domain.toLowerCase().startsWith(q) || c.name.toLowerCase().includes(q))
+      .slice(0, 6);
+    if (!items.length) { close(); return; }
+    if (activeIndex >= items.length) activeIndex = 0;
+    if (!menu) {
+      menu = document.createElement("div");
+      menu.className = "kaposts-mention-menu";
+      document.body.appendChild(menu);
+    }
+    menu.innerHTML = items.map((c, i) => `
+      <button type="button" class="kaposts-mention-option${i === activeIndex ? " active" : ""}" data-mention-index="${i}">
+        <strong>@${deps.escapeHtml(c.domain)}</strong>${c.name && c.name.toLowerCase() !== c.domain.toLowerCase() ? `<span>${deps.escapeHtml(c.name)}</span>` : ""}
+      </button>`).join("");
+    const rect = textarea.getBoundingClientRect();
+    menu.style.left = `${rect.left + window.scrollX}px`;
+    menu.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    menu.style.width = `${Math.min(rect.width, 320)}px`;
+  }
+
+  function choose(index) {
+    const item = items[index];
+    const caret = textarea.selectionStart ?? textarea.value.length;
+    if (!item || anchorStart < 0) { close(); return; }
+    const before = textarea.value.slice(0, anchorStart);
+    const after = textarea.value.slice(caret);
+    const insert = `@${item.domain} `;
+    textarea.value = before + insert + after;
+    const newCaret = before.length + insert.length;
+    close();
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.focus();
+    textarea.setSelectionRange(newCaret, newCaret);
+  }
+
+  function refresh() {
+    const ctx = currentQuery();
+    if (!ctx) { close(); return; }
+    anchorStart = ctx.atIndex;
+    render(ctx.query);
+  }
+
+  textarea.addEventListener("input", refresh);
+  textarea.addEventListener("keydown", (event) => {
+    if (!menu || !items.length) return;
+    if (event.key === "ArrowDown") { event.preventDefault(); activeIndex = (activeIndex + 1) % items.length; render(currentQuery()?.query || ""); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); activeIndex = (activeIndex - 1 + items.length) % items.length; render(currentQuery()?.query || ""); }
+    else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choose(activeIndex); }
+    else if (event.key === "Escape") { event.preventDefault(); close(); }
+  });
+  textarea.addEventListener("blur", () => { window.setTimeout(close, 150); });
+  document.addEventListener("mousedown", (event) => {
+    if (!menu) return;
+    const opt = event.target.closest?.("[data-mention-index]");
+    if (opt) { event.preventDefault(); choose(Number(opt.dataset.mentionIndex)); return; }
+    if (!menu.contains(event.target) && event.target !== textarea) close();
+  });
+}
+
 export function initKaPosts(dependencies) {
   deps = dependencies;
   startKaPostsNotificationPolling();
@@ -1746,6 +1954,8 @@ export function initKaPosts(dependencies) {
   replyInput = document.querySelector("[data-kaposts-reply-input]");
   replyMeter = document.querySelector("[data-kaposts-reply-meter]");
   replySend = document.querySelector("[data-kaposts-reply-send]");
+  attachMentionAutocomplete(composerInput);
+  attachMentionAutocomplete(replyInput);
   panelEl = document.querySelector("[data-kaposts-panel]");
   panelTitleEl = document.querySelector("[data-kaposts-panel-title]");
   panelBodyEl = document.querySelector("[data-kaposts-panel-body]");
@@ -1790,7 +2000,15 @@ export function initKaPosts(dependencies) {
       syncRailActive();
     });
   });
-  document.querySelector("[data-kaposts-panel-back]")?.addEventListener("click", () => { closePanel(); syncRailActive(); });
+  document.querySelector("[data-kaposts-panel-back]")?.addEventListener("click", () => {
+    // A follow list opened from a profile returns to that profile; everything else closes to the feed.
+    if (activePanel?.type === "followList" && activePanel.parent?.address) {
+      openPosterProfile(activePanel.parent.address, activePanel.parent.pubkey || null);
+      return;
+    }
+    closePanel();
+    syncRailActive();
+  });
   document.addEventListener("click", (event) => {
     if (!popoverEl || popoverEl.hidden) return;
     if (!popoverEl.contains(event.target) && !event.target.closest("[data-kaposts-more], [data-kaposts-repost], [data-kaposts-link]")) {
@@ -1938,6 +2156,31 @@ export function initKaPosts(dependencies) {
       return;
     }
 
+    const followListCount = event.target.closest("[data-kaposts-follow-list]");
+    if (followListCount && activePanel?.type === "profile") {
+      openFollowListPanel({
+        address: activePanel.address,
+        pubkey: activePanel.pubkey,
+        mode: followListCount.dataset.kapostsFollowList,
+        parent: { address: activePanel.address, pubkey: activePanel.pubkey },
+      });
+      return;
+    }
+
+    const followListFollow = event.target.closest("[data-kaposts-follow-list-follow]");
+    if (followListFollow) {
+      // Follow/unfollow straight from the row without opening the profile behind it.
+      toggleFollow({ posterAddress: followListFollow.dataset.address, posterPubkey: followListFollow.dataset.pubkey || null });
+      renderPanel();
+      return;
+    }
+
+    const followListRow = event.target.closest("[data-kaposts-follow-list-row]");
+    if (followListRow) {
+      openPosterProfile(followListRow.dataset.address, followListRow.dataset.pubkey || null);
+      return;
+    }
+
     const engagementTab = event.target.closest("[data-kaposts-engagement-tab]");
     if (engagementTab && activePanel?.type === "engagement") {
       activePanel.tab = engagementTab.dataset.kapostsEngagementTab;
@@ -1958,6 +2201,24 @@ export function initKaPosts(dependencies) {
 
     const follow = event.target.closest("[data-kaposts-follow]");
     if (follow) { const p = findPost(follow.dataset.kapostsFollow); if (p) toggleFollow(p); return; }
+
+    const tip = event.target.closest("[data-kaposts-tip]");
+    if (tip) {
+      const p = findPost(tip.dataset.kapostsTip);
+      if (p) deps.tipUser?.(p.posterAddress, posterName(p.posterAddress));
+      return;
+    }
+
+    const bookmark = event.target.closest("[data-kaposts-bookmark]");
+    if (bookmark) {
+      const p = findPost(bookmark.dataset.kapostsBookmark);
+      if (p) {
+        mutatePost(p.id, (target) => { target.bookmarkedByMe = !target.bookmarkedByMe; });
+        deps.showToast?.(p.bookmarkedByMe ? "Bookmarked" : "Bookmark removed");
+        renderAll();
+      }
+      return;
+    }
 
     const share = event.target.closest("[data-kaposts-share]");
     if (share) {

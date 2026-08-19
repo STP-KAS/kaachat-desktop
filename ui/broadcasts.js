@@ -181,6 +181,7 @@ function mergeMessages(channel, rows) {
   const seen = new Set(existing.map((m) => m.txId));
   let added = 0;
   let reactionsChanged = false;
+  const freshIncoming = [];
   for (const row of rows) {
     if (!row?.txId || seen.has(row.txId)) continue;
     seen.add(row.txId);
@@ -199,11 +200,17 @@ function mergeMessages(channel, rows) {
       blockTime,
     });
     added += 1;
+    if ((row.senderAddress || "") !== deps.engine.address) {
+      freshIncoming.push({ channel, senderAddress: row.senderAddress || "", content: row.content ?? "", txId: row.txId, blockTime });
+    }
   }
   existing.sort((a, b) => a.blockTime - b.blockTime);
   messageCache[channel] = existing;
   if (added > 0) saveCache();
   if (reactionsChanged) saveReactions();
+  // The global notification center gates these by arrival time (only live messages ping, not the
+  // backfilled history), so it's safe to hand it every fresh incoming row.
+  if (freshIncoming.length) deps.onIncomingBroadcast?.(freshIncoming);
   return added + (reactionsChanged ? 1 : 0);
 }
 

@@ -290,13 +290,21 @@ async function submitKaPostPayload(engine, protocolString) {
   return txid;
 }
 
-/** Publishes a post. The exclusivity marker is prepended INSIDE the message. Returns txid = post id. */
-export async function submitKaPost({ engine, text }) {
+/**
+ * Publishes a post. The exclusivity marker is prepended INSIDE the message. Returns txid = post id.
+ * `mentionedPubkeys` (compressed hex) are written to the payload's mentioned_pubkeys array; the
+ * indexer turns each into a `contentType: "mention"` notification for that user (client-resolved
+ * mentions — the server does not parse @text). Deduped; the author's own pubkey is dropped.
+ */
+export async function submitKaPost({ engine, text, mentionedPubkeys = [] }) {
   const b64 = utf8ToBase64(KACHAT_MARKER + String(text || ""));
-  const mentions = "[]";
-  const pubkey = requesterPubkeyFor(engine);
+  const me = requesterPubkeyFor(engine);
+  const clean = [...new Set((Array.isArray(mentionedPubkeys) ? mentionedPubkeys : [])
+    .map((p) => String(p || "").toLowerCase())
+    .filter((p) => /^0[23][0-9a-f]{64}$/.test(p) && p !== me))];
+  const mentions = JSON.stringify(clean);
   const signature = signKaPostString(engine, KAPOSTS_PROTOCOL.postSigningString(b64, mentions));
-  return submitKaPostPayload(engine, KAPOSTS_PROTOCOL.postPayload(pubkey, signature, b64, mentions));
+  return submitKaPostPayload(engine, KAPOSTS_PROTOCOL.postPayload(me, signature, b64, mentions));
 }
 
 /** Replies to a post (its K txid). Mention rule per spec: the parent author. */

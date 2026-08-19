@@ -1,7 +1,7 @@
 import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
 import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
-import { getBalance, sendKaspa, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
+import { getBalance, sendKaspa, sweepAllToSelf, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
 import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
@@ -629,6 +629,20 @@ export class KaspaEngine {
     });
   }
 
+  // Compound: sweep every UTXO at the chatting address into one (self-send, no change).
+  async compoundUtxos() {
+    this.requireWallet();
+    await this.connect();
+    return sweepAllToSelf({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      privateKey: this.privateKey,
+      sourceAddress: this.address,
+      log: this.log,
+    });
+  }
+
   // --- Spending-address chain (m/44'/111111'/1'/0/<index>) ---
   // Derive a spending address/key from the account's recovery phrase. Does NOT
   // change the active (chatting) wallet. `passphrase` must match what the seed
@@ -660,6 +674,37 @@ export class KaspaEngine {
       amountKas,
       feeKas,
       selectedOutpoints,
+      log: this.log,
+    });
+  }
+
+  // Fee estimate ({ sdkFeeKas, policyFeeKas }) for a send FROM an arbitrary address (spending
+  // addresses), mirroring estimateSendFee for the chatting address.
+  async estimateSendFeeForAddress(address, amountKas = "0.2", selectedOutpoints = null) {
+    if (!this.kaspa || !address) return null;
+    await this.connect();
+    return estimateSendFeeDetail({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      sourceAddress: address,
+      amountKas: String(amountKas || "0.2"),
+      payloadBytes: 0,
+      selectedOutpoints,
+    });
+  }
+
+  // Compound: sweep every UTXO at a spending address into one (self-send, no change).
+  async compoundSpending({ mnemonic, index, passphrase = "" }) {
+    this.requireSdk();
+    await this.connect();
+    const spending = deriveSpendingWallet(this.kaspa, mnemonic, index, passphrase);
+    return sweepAllToSelf({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      privateKey: spending.privateKey,
+      sourceAddress: spending.address,
       log: this.log,
     });
   }
@@ -966,6 +1011,22 @@ export class KaspaEngine {
 
   peekKnsAddressInfo(address) {
     return knsPeekAddressInfo(address);
+  }
+
+  // The 66-hex compressed KaPost pubkey for a Kaspa address, or null. Kaspa "PubKey" (schnorr,
+  // version 0) addresses carry the 32-byte x-only pubkey in their payload; the whole KaChat/Kasia
+  // stack is address-derived and uses the BIP-340 even-Y convention, so we prepend "02". Used to
+  // fill a post's mentioned_pubkeys for @mentions (see engine/kaposts.js submitKaPost).
+  kapostPubkeyForAddress(address) {
+    if (!this.kaspa) return null;
+    try {
+      const payload = String(new this.kaspa.Address(String(address)).payload || "").toLowerCase();
+      if (/^0[23][0-9a-f]{64}$/.test(payload)) return payload; // already compressed (ECDSA addr)
+      if (/^[0-9a-f]{64}$/.test(payload)) return `02${payload}`; // x-only -> even-parity compressed
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   peekKnsAddressProfile(address) {
