@@ -4947,9 +4947,13 @@ spendingConsolidateBtn?.addEventListener("click", async () => {
   }
 });
 
-// Gap-limit scan: reveal addresses beyond the current max that already hold a
-// balance, mirroring standard BIP44 recovery. Balance-based (desktop has no
-// message-history index here); stops after SPENDING_GAP_LIMIT empties in a row.
+// Discovery scan: reveal any derived address that already holds a BALANCE or owns a KNS
+// DOMAIN. The old gap-only loop started at maxIndex+1 and quit after 20 consecutive empties,
+// so a funded address far out (e.g. #97 on a fresh install) was unreachable. Now a guaranteed
+// window (at least the first SPENDING_SCAN_MIN_INDEX indices) is always swept - balances in
+// parallel chunks, KNS through the batched/cached/429-paced engine lookup - and a classic
+// gap-limit tail extends past the window while hits keep landing near its end.
+const SPENDING_SCAN_MIN_INDEX = 120;
 spendingScanBtn?.addEventListener("click", async () => {
   closeSpendingActionsMenu();
   if (!activeAccountMnemonic()) { showCopyToast("This account has no recovery phrase."); return; }
@@ -4959,25 +4963,60 @@ spendingScanBtn?.addEventListener("click", async () => {
   if (label) label.textContent = "Scanning…";
   try {
     const state = getSpendingState();
-    let index = state.maxIndex + 1;
-    let consecutiveEmpty = 0;
-    let highestFunded = state.maxIndex;
+    let highestHit = state.maxIndex;
+    const scanEnd = Math.max(state.maxIndex + SPENDING_GAP_LIMIT, SPENDING_SCAN_MIN_INDEX);
+
+    const windowEntries = [];
+    for (let i = state.maxIndex + 1; i <= scanEnd; i++) {
+      const address = deriveSpendingAddressAt(i);
+      if (address) windowEntries.push({ index: i, address });
+    }
+
+    // Balance sweep, 10 addresses at a time so ~120 lookups stay fast.
+    const hits = new Set();
+    for (let start = 0; start < windowEntries.length; start += 10) {
+      const chunk = windowEntries.slice(start, start + 10);
+      if (label) label.textContent = `Scanning… #${chunk[0].index}`;
+      await Promise.all(chunk.map(async (entry) => {
+        try {
+          const bal = await engine.balanceForAddress(entry.address);
+          if ((Number(bal?.totalKas) || 0) > 0) hits.add(entry.index);
+        } catch { /* lookup failed: skip this index */ }
+      }));
+    }
+
+    // KNS domains count as "in use" too - the engine batches, caches, and paces these.
+    if (label) label.textContent = "Checking KNS…";
+    try { await engine.refreshKnsIfNeeded?.(windowEntries.map((entry) => entry.address)); }
+    catch { /* fall back to whatever is cached */ }
+    for (const entry of windowEntries) {
+      const info = engine.peekKnsAddressInfo?.(entry.address);
+      if (info?.allDomains?.length) hits.add(entry.index);
+    }
+    for (const index of hits) highestHit = Math.max(highestHit, index);
+
+    // Gap-limit tail past the guaranteed window: keeps extending while recent hits keep the
+    // gap alive (seeded with the distance from the last hit to the window's end).
+    let index = scanEnd + 1;
+    let consecutiveEmpty = Math.max(0, scanEnd - highestHit);
     while (consecutiveEmpty < SPENDING_GAP_LIMIT) {
-      const addr = deriveSpendingAddressAt(index);
-      if (!addr) break;
+      const address = deriveSpendingAddressAt(index);
+      if (!address) break;
+      if (label) label.textContent = `Scanning… #${index}`;
       let held = 0;
-      try { const bal = await engine.balanceForAddress(addr); held = Number(bal?.totalKas) || 0; }
+      try { const bal = await engine.balanceForAddress(address); held = Number(bal?.totalKas) || 0; }
       catch { break; }
-      if (held > 0) { highestFunded = index; consecutiveEmpty = 0; }
+      if (held > 0) { highestHit = index; consecutiveEmpty = 0; }
       else consecutiveEmpty += 1;
       index += 1;
     }
-    if (highestFunded > state.maxIndex) {
-      saveSpendingState({ maxIndex: highestFunded });
+
+    if (highestHit > state.maxIndex) {
+      saveSpendingState({ maxIndex: highestHit });
       renderSpendingList();
-      showCopyToast(`Found funded addresses up to #${highestFunded}.`);
+      showCopyToast(`Found addresses in use up to #${highestHit}.`);
     } else {
-      showCopyToast("No additional funded spending addresses found.");
+      showCopyToast("No additional spending addresses with a balance or KNS domain found.");
     }
   } finally {
     spendingScanBtn.disabled = false;
@@ -5637,8 +5676,47 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
   let resolvedAddress = null;
   let resolveToken = 0;
 
+  // iOS WithdrawalSuccessCard parity: after a successful send the modal STAYS OPEN and flips
+  // to a checkmark + "Sent" + the clickable transaction id (explorer link) until Done/close.
+  function successHost() {
+    return els.submit?.closest(".contact-modal") || null;
+  }
+  function clearSendSuccess() {
+    const host = successHost();
+    if (!host) return;
+    host.classList.remove("send-success-active");
+    const card = host.querySelector("[data-send-success]");
+    if (card) card.hidden = true;
+  }
+  function showSendSuccess(txid, amountKas) {
+    const host = successHost();
+    if (!host) { onClose?.(); return; }
+    let card = host.querySelector("[data-send-success]");
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "send-success-card";
+      card.dataset.sendSuccess = "";
+      host.appendChild(card);
+    }
+    card.innerHTML = `
+      <span class="send-success-check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>
+      <strong>Sent ${escapeHtml(String(amountKas))} KAS</strong>
+      ${txid
+        ? `<span class="send-success-label">Transaction ID</span>
+           <a class="send-success-txid" href="${escapeHtml(explorerTxUrl(txid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(txid)}</a>`
+        : `<span class="send-success-label">Transaction broadcast to the network.</span>`}
+      <button class="primary-button full" type="button" data-send-success-done>Done</button>`;
+    card.hidden = false;
+    host.classList.add("send-success-active");
+    card.querySelector("[data-send-success-done]")?.addEventListener("click", () => {
+      clearSendSuccess();
+      onClose?.();
+    });
+  }
+
   async function open() {
     if (!engine.address) return;
+    clearSendSuccess();
     if (els.recipient) els.recipient.value = "";
     if (els.amount) els.amount.value = "";
     resolvedAddress = null;
@@ -5721,10 +5799,11 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
       const result = sendFn
         ? await sendFn({ destination, amountKas, feeKas, selectedOutpoints })
         : await engine.send(destination, amountKas, feeKas, selectedOutpoints.length ? { selectedOutpoints } : {});
-      const txid = (result?.txids || [])[0];
-      if (els.progress) els.progress.textContent = txid ? `Sent — txid ${txid}` : "Sent.";
-      showCopyToast(`Sent ${amountKas} KAS`);
-      window.setTimeout(() => onClose?.(), 900);
+      const submittedTxids = (result?.txids || []).map((value) => String(value || "").trim()).filter(Boolean);
+      const txid = submittedTxids.at(-1) || submittedTxids[0] || null;
+      if (els.progress) els.progress.hidden = true;
+      // Keep the modal open and flip to the success card (checkmark + clickable txid).
+      showSendSuccess(txid, amountKas);
       refreshBalanceOnly({ quiet: true }).catch(() => {});
     } catch (error) {
       if (els.error) { els.error.textContent = error.message || "Send failed."; els.error.hidden = false; }
