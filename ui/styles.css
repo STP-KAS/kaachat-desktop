@@ -6855,6 +6855,24 @@ body.session-logged-out [data-account-rename-modal] {
 /* App-wide settings from the signed-out screen: the overlay normally sits
    below the logged-out screen (z 1500 vs 2000) — app-only mode lifts it. */
 .account-overlay.over-logged-out { z-index: 2050; }
+/* Signed-out settings shows only a few app-wide rows: fit the card to its
+   content instead of the full-height account panel, and scale everything up. */
+.account-overlay.over-logged-out .account-overlay-card {
+  width: min(100%, 640px);
+  height: auto;
+  max-height: 86vh;
+}
+.account-overlay.over-logged-out .account-overlay-header { padding: 18px 24px; }
+.account-overlay.over-logged-out .account-overlay-title { font-size: 24px; }
+.account-overlay.over-logged-out .account-overlay-body { padding: 22px 26px 28px; flex: 0 1 auto; }
+.account-overlay.over-logged-out .settings-hub-row {
+  padding: 20px 22px;
+  font-size: 19px;
+}
+.account-overlay.over-logged-out .settings-hub-icon { width: 30px; }
+.account-overlay.over-logged-out .settings-hub-icon svg,
+.account-overlay.over-logged-out .settings-hub-row .settings-hub-icon svg { width: 24px; height: 24px; }
+.account-overlay.over-logged-out .settings-hub-row > svg:last-child { width: 20px; height: 20px; }
 .logged-out-settings-gear { position: absolute; top: 18px; right: 18px; z-index: 2; }
 /* Account-scoped rows hidden while settings is opened without an account. */
 .settings-screen.app-only [data-settings-open-subscreen="dock"],
