@@ -105,4 +105,9 @@ function nextcloudProxy() {
 
 export default defineConfig({
   plugins: [nextcloudProxy()],
+  server: {
+    // Vite rejects unknown Host headers by default; allow access via the
+    // DuckDNS domain fronted by Nginx Proxy Manager.
+    allowedHosts: [".duckdns.org"],
+  },
 });
