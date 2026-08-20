@@ -7684,6 +7684,15 @@ body.session-logged-out [data-account-rename-modal] {
   text-decoration: none;
 }
 .message-link-card:hover { background: var(--surface-2); }
+/* On the teal SENT bubble the translucent card surface let the teal bleed through,
+   washing the text out. Opaque panel instead — the card reads as its own block
+   underneath the message text, matching iOS. */
+.message-bubble.local .message-link-card {
+  background: var(--panel-3);
+  border-color: rgba(0, 0, 0, .28);
+  color: var(--text);
+}
+.message-bubble.local .message-link-card:hover { background: var(--panel-3); }
 .message-link-card-thumb {
   position: relative;
   width: 100%;
