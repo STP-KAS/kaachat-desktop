@@ -8812,6 +8812,25 @@ function renderMessages(conversationEntry) {
     bubble.dataset.messageId = message.id;
     // Set when a caption+link message builds a preview card: rendered below the bubble.
     let detachedLinkCard = null;
+
+    // Broadcast-room style card header: sender name + send time at the top of every
+    // bubble. Photo-only and link-only bubbles hide it via CSS and keep their overlay
+    // timestamp instead.
+    {
+      const cardHead = document.createElement("div");
+      cardHead.className = "message-card-head";
+      const cardSender = document.createElement("strong");
+      cardSender.textContent = message.direction === "incoming"
+        ? (displayNameForAddress(requestContact) || shortAddress(requestContact?.address || ""))
+        : "You";
+      cardHead.append(cardSender);
+      if (message.createdAt) {
+        const cardTime = document.createElement("span");
+        cardTime.textContent = formatTime(message.createdAt);
+        cardHead.append(cardTime);
+      }
+      bubble.append(cardHead);
+    }
     bubble.title = messageSelectionMode ? "Select message" : "Open message actions";
     bubble.tabIndex = 0;
     bubble.setAttribute("role", messageSelectionMode ? "checkbox" : "button");
@@ -14540,6 +14559,13 @@ queueMicrotask(async () => {
     parseImageEnvelope,
     parseAudioEnvelope,
     openPhotoPreview,
+    // Per-message avatars beside broadcast bubbles (1:1/group parity).
+    avatarHtmlForAddress: (address, className = "message-avatar") => {
+      if (address === engine.address) return selfAvatarHtml(className);
+      const contact = (state.contacts || []).find((c) => c.address === address);
+      if (contact) return avatarHtmlFor(contact, className);
+      return `<span class="${className}">${escapeHtml(initialsFor(shortAddress(address)))}</span>`;
+    },
     // Bell toggle requests OS notification permission on the spot.
     ensureNotificationPermission,
     // "Today"/"Yesterday" day pills, shared with 1:1 and group chats.
@@ -15311,15 +15337,24 @@ function renderGroupMessages() {
     // Set when a caption+link message builds a preview card: rendered below the bubble.
     let detachedLinkCard = null;
 
-    if (incoming) {
-      const prev = msgs[index - 1];
-      const firstInRun = !prev || prev.senderAddress !== message.senderAddress || prev.direction !== message.direction;
-      if (firstInRun) {
-        const sender = document.createElement("p");
-        sender.className = "group-message-sender";
-        sender.textContent = groupSenderLabel(message.senderAddress);
-        bubble.appendChild(sender);
+    // Broadcast-room style card header: sender name + send time at the top.
+    {
+      const cardHead = document.createElement("div");
+      cardHead.className = "message-card-head";
+      const cardSender = document.createElement("strong");
+      cardSender.textContent = incoming ? groupSenderLabel(message.senderAddress) : "You";
+      cardHead.append(cardSender);
+      if (message.createdAt) {
+        const cardTime = document.createElement("span");
+        cardTime.textContent = formatTime(message.createdAt);
+        cardHead.append(cardTime);
       }
+      bubble.append(cardHead);
+    }
+
+    if (incoming) {
+      // Sender name now lives in the card header on every message (broadcast-room style),
+      // so the old first-in-run sender label is gone.
       const next = msgs[index + 1];
       const lastInRun = !next || next.senderAddress !== message.senderAddress || next.direction !== message.direction;
       if (lastInRun) {

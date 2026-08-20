@@ -428,6 +428,21 @@ function renderChannelList() {
 /** One broadcast bubble: header, linkified body (+ the same preview card treatment as 1:1
  *  bubbles — Nextcloud shares get the progressive video→audio→img→attachment probe), hover
  *  reaction bar, and aggregated reaction chips. */
+/** Avatar + bubble row, matching 1:1/group chats: sender avatar beside every message
+ *  (left for others, right for your own). */
+function buildMessageRow(m) {
+  const mine = m.senderAddress === deps.engine.address;
+  const row = document.createElement("div");
+  row.className = `broadcast-row${mine ? " mine" : ""}`;
+  const avatar = document.createElement("span");
+  avatar.className = "broadcast-avatar-slot";
+  avatar.innerHTML = deps.avatarHtmlForAddress?.(m.senderAddress, "message-avatar") || "";
+  const card = buildMessageElement(m);
+  if (mine) row.append(card, avatar);
+  else row.append(avatar, card);
+  return row;
+}
+
 function buildMessageElement(m) {
   const mine = m.senderAddress === deps.engine.address;
   const el = document.createElement("div");
@@ -607,7 +622,7 @@ function renderRoom() {
           sep.append(pill);
           roomBodyEl.append(sep);
         }
-        roomBodyEl.append(buildMessageElement(m));
+        roomBodyEl.append(buildMessageRow(m));
       }
     }
     roomBodyEl.scrollTop = roomBodyEl.scrollHeight;
