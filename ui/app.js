@@ -2514,13 +2514,34 @@ function openOnchainConfirm({ conversationId, text }) {
 // Full, unwrapped display text for a message — reply envelopes show just
 // their own typed text, photo/audio envelopes show a friendly label. Used
 // anywhere the raw wire content (JSON envelope) shouldn't leak into the UI.
+// Cheap head-window sniff for the cross-platform {type:"file"} media envelope,
+// independent of field order, payload size, and "\/" escaping: some senders
+// (dictionary-based JSON serializers) put the multi-MB `content` before
+// `mimeType` — pushing the mime key far past any sane scan window — and escape
+// "/" as "\/". The data: URL right at the front names the mime either way.
+// Returns the mime string, "" for a file envelope whose mime can't be pinned
+// down, or null when the text isn't a file envelope at all.
+function sniffInlineFileMime(text) {
+  const head = String(text || "").slice(0, 2048).trimStart();
+  if (!head.startsWith("{") || !/"type"\s*:\s*"file"/.test(head)) return null;
+  const mime = head.match(/"mimeType"\s*:\s*"([^"]+)"/);
+  if (mime) return mime[1].replace(/\\\//g, "/");
+  const dataUrl = head.match(/"content"\s*:\s*"data:([^;",]+)/);
+  return dataUrl ? dataUrl[1].replace(/\\\//g, "/") : "";
+}
+
 function displayTextForMessage(message) {
   if (!message) return "";
   if (Chess.isChessEnvelope(Chess.unwrapReplyText(message.text))) return "♟ Chess";
   const replyEnvelope = parseReplyEnvelope(message.text);
   if (replyEnvelope) return replyEnvelope.text;
-  if (parseImageEnvelope(message.text)) return "📷 Photo";
-  if (parseAudioEnvelope(message.text)) return "🎤 Audio message";
+  const fileMime = sniffInlineFileMime(message.text);
+  if (fileMime != null) {
+    if (fileMime.startsWith("image/")) return "📷 Photo";
+    if (fileMime.startsWith("audio/")) return "🎤 Audio message";
+    if (fileMime.startsWith("video/")) return "🎬 Video";
+    return "📎 File";
+  }
   return message.text || "";
 }
 
@@ -11433,7 +11454,9 @@ document.querySelector("[data-voice-recording-cancel]")?.addEventListener("click
 // wire-level flag. Guards against parsing arbitrary long text as JSON.
 function parseImageEnvelope(text) {
   const trimmed = String(text || "").trim();
-  if (!trimmed.startsWith("{") || trimmed.length > 200000) return null;
+  // 8MB cap: group/Nextcloud photos can far exceed the on-chain payload sizes the
+  // old 200k cap assumed, and a too-small cap made big photos render as raw JSON.
+  if (!trimmed.startsWith("{") || trimmed.length > 8_000_000) return null;
   try {
     const parsed = JSON.parse(trimmed);
     if (!parsed || parsed.type !== "file") return null;
@@ -11452,7 +11475,8 @@ function parseImageEnvelope(text) {
 // distinguishes them, there's no separate wire type for audio.
 function parseAudioEnvelope(text) {
   const trimmed = String(text || "").trim();
-  if (!trimmed.startsWith("{") || trimmed.length > 200000) return null;
+  // Same 8MB cap rationale as parseImageEnvelope: long voice notes exceed 200k.
+  if (!trimmed.startsWith("{") || trimmed.length > 8_000_000) return null;
   try {
     const parsed = JSON.parse(trimmed);
     if (!parsed || parsed.type !== "file") return null;
@@ -11496,8 +11520,13 @@ function replyPreviewTextFor(message) {
   if (!message) return "";
   const asReply = parseReplyEnvelope(message.text);
   if (asReply) return asReply.text.slice(0, REPLY_PREVIEW_MAX_LENGTH);
-  if (parseImageEnvelope(message.text)) return "📷 Photo";
-  if (parseAudioEnvelope(message.text)) return "🎤 Audio message";
+  const fileMime = sniffInlineFileMime(message.text);
+  if (fileMime != null) {
+    if (fileMime.startsWith("image/")) return "📷 Photo";
+    if (fileMime.startsWith("audio/")) return "🎤 Audio message";
+    if (fileMime.startsWith("video/")) return "🎬 Video";
+    return "📎 File";
+  }
   return String(message.text || "").slice(0, REPLY_PREVIEW_MAX_LENGTH);
 }
 
@@ -14637,7 +14666,12 @@ const GROUP_AVATAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M
 function groupAvatarHtml() { return `<span class="group-avatar-fallback">${GROUP_AVATAR_SVG}</span>`; }
 
 function groupPreviewText(text) {
-  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  // Same humanizing as the 1:1 chat list: reply envelopes show their text,
+  // photos/voice notes show "📷 Photo" / "🎤 Audio message" instead of raw
+  // JSON, and mention tokens decode to @names.
+  const reaction = parseReactionEnvelope(text);
+  const effective = reaction ? `Reacted ${reaction.emoji}` : displayTextForMessage({ text });
+  const raw = decodeGroupMentions(String(effective || "")).replace(/\s+/g, " ").trim();
   return raw.length > 42 ? `${raw.slice(0, 41)}…` : raw;
 }
 function groupSenderLabel(address) {
