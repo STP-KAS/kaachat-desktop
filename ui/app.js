@@ -3810,6 +3810,7 @@ function formatSompiForNotification(sompi) {
 }
 
 async function fetchRecentFullTransactionsFor(address, limit = 10) {
+  if (!String(address || "").trim()) return []; // empty address would 404 as /addresses//…
   const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
   const url = `${base}/addresses/${encodeURIComponent(address)}/full-transactions?limit=${limit}&offset=0&resolve_previous_outpoints=light`;
   const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
@@ -4668,6 +4669,7 @@ function spendingRowHtml(index, address, state, balanceText, used, hasDomain = f
 // An address counts as "used" if it holds a balance now or has any on-chain
 // transaction history — mirrors iOS's everUsed || balance>0.
 async function spendingAddressHasHistory(address) {
+  if (!String(address || "").trim()) return false; // empty address would 404 as /addresses//…
   try {
     const url = `${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(address)}/full-transactions?limit=1&offset=0&resolve_previous_outpoints=no`;
     const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
@@ -6769,6 +6771,10 @@ function manageAddressTxDirection(tx, address) {
 
 async function loadManageAddressTransactions(address, listEl = manageAddressTransactionsList) {
   if (!listEl) return;
+  if (!String(address || "").trim()) { // empty address would 404 as /addresses//…
+    listEl.innerHTML = '<div class="manage-address-empty">No transactions yet.</div>';
+    return;
+  }
   listEl.innerHTML = '<div class="manage-address-empty">Loading…</div>';
   try {
     const url = `${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(address)}/full-transactions?limit=50&offset=0&resolve_previous_outpoints=light`;
@@ -10887,6 +10893,7 @@ function kaspaOutputAmount(output) {
 }
 
 async function transactionPaysRecipient(txid, recipientAddress, amountKas) {
+  if (!String(txid || "").trim() || !String(recipientAddress || "").trim()) return false;
   const expected = BigInt(Math.round(Number(amountKas) * 1e8));
   const urls = [
     `${getEndpoint("kaspaApi")}/transactions/${encodeURIComponent(txid)}?resolve_previous_outpoints=light`,

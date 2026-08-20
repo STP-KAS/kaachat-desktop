@@ -214,6 +214,7 @@ function displayLabelFor(account, index) {
 }
 
 async function fetchBalance(address) {
+  if (!String(address || "").trim()) return 0; // empty address would 404 as /addresses//…
   const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
   const response = await fetch(`${base}/addresses/${encodeURIComponent(address)}/balance`, {
     headers: { Accept: "application/json" }, cache: "no-store",
@@ -258,6 +259,7 @@ async function mapWithConcurrency(items, limit, worker) {
 // An address counts as "used" if it holds a balance now or has any on-chain
 // transaction history — mirrors iOS's everUsed || balance>0.
 async function addressHasHistory(address) {
+  if (!String(address || "").trim()) return false; // empty address would 404 as /addresses//…
   try {
     const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
     const url = `${base}/addresses/${encodeURIComponent(address)}/full-transactions?limit=1&offset=0&resolve_previous_outpoints=no`;
