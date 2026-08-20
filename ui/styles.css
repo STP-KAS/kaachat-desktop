@@ -2534,6 +2534,11 @@ body:has(.group-chat-screen:not([hidden])) .new-chat-fab { display: none; }
 }
 .message-row.local .message-bubble-stack { justify-self: end; align-items: flex-end; }
 .message-row.incoming .message-bubble-stack { justify-self: start; align-items: flex-start; }
+/* The stack stands in for the bubble in the ORDER-based local row grid — without the
+   bubble's order it auto-placed into the zero-width selector column and the whole
+   message rendered invisible. */
+.message-row.local .message-bubble-stack { order: 2; }
+.message-bubble-stack .message-bubble { max-width: 100%; }
 .message-bubble-stack > .message-link-card { margin-top: 6px; }
 
 .message-area.selection-mode .message-row {

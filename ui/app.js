@@ -3171,6 +3171,10 @@ async function refreshAllConversations({ quiet = true } = {}) {
     catch (error) { appendEngineLog(`Stranger payment sweep failed: ${error.message}`); }
     for (const conversationEntry of state.conversations || []) {
       const contact = contactForConversation(conversationEntry);
+      // The SELF-chat (stranger-payment collector) is fed by syncStrangerPaymentsIntoSelfChat
+      // above — running the per-contact indexer sync against your own address just burns
+      // REST quota (and helped trip api.kaspa.org's rate limiter).
+      if (contact?.address === engine.address) continue;
       // Match KaChat's relationship boundary: discovering an incoming
       // handshake must not import that unknown sender's historical contextual
       // messages before the user accepts the request.
