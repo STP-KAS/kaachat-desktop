@@ -8793,6 +8793,8 @@ function renderMessages(conversationEntry) {
     const bubble = document.createElement("div");
     bubble.className = `message-bubble ${message.direction === "incoming" ? "incoming" : "local"}`;
     bubble.dataset.messageId = message.id;
+    // Set when a caption+link message builds a preview card: rendered below the bubble.
+    let detachedLinkCard = null;
     bubble.title = messageSelectionMode ? "Select message" : "Open message actions";
     bubble.tabIndex = 0;
     bubble.setAttribute("role", messageSelectionMode ? "checkbox" : "button");
@@ -8907,7 +8909,9 @@ function renderMessages(conversationEntry) {
         bubble.append(card);
       } else {
         bubble.append(text);
-        if (card) bubble.append(card);
+        // iOS parity: with a caption the card is its OWN block BELOW the bubble,
+        // not inside it — stashed here and stacked at row-append time.
+        if (card) detachedLinkCard = card;
       }
     }
     }
@@ -8953,7 +8957,14 @@ function renderMessages(conversationEntry) {
     });
 
     const deliveryIcon = createDeliveryStatusIcon(message);
-    row.append(selector, avatarSlot, bubble);
+    if (detachedLinkCard) {
+      const stack = document.createElement("div");
+      stack.className = "message-bubble-stack";
+      stack.append(bubble, detachedLinkCard);
+      row.append(selector, avatarSlot, stack);
+    } else {
+      row.append(selector, avatarSlot, bubble);
+    }
     if (deliveryIcon) row.append(deliveryIcon);
     if (message.direction === "outgoing" && message.status === MESSAGE_STATUSES.FAILED) {
       const retryLink = document.createElement("button");
@@ -15280,6 +15291,8 @@ function renderGroupMessages() {
 
     const bubble = document.createElement("div");
     bubble.className = `message-bubble ${incoming ? "incoming" : "local"}`;
+    // Set when a caption+link message builds a preview card: rendered below the bubble.
+    let detachedLinkCard = null;
 
     if (incoming) {
       const prev = msgs[index - 1];
@@ -15351,7 +15364,8 @@ function renderGroupMessages() {
         bubble.appendChild(card);
       } else {
         bubble.appendChild(text);
-        if (card) bubble.appendChild(card);
+        // iOS parity: with a caption the card is its OWN block BELOW the bubble.
+        if (card) detachedLinkCard = card;
       }
     }
 
@@ -15392,7 +15406,14 @@ function renderGroupMessages() {
 
     bubble.addEventListener("contextmenu", (event) => { event.preventDefault(); openGroupMessageMenu(message, event.clientX, event.clientY); });
 
-    row.append(selector, avatarSlot, bubble);
+    if (detachedLinkCard) {
+      const stack = document.createElement("div");
+      stack.className = "message-bubble-stack";
+      stack.append(bubble, detachedLinkCard);
+      row.append(selector, avatarSlot, stack);
+    } else {
+      row.append(selector, avatarSlot, bubble);
+    }
     // Delivery status (checkmark / pending / failed) on your own messages — same as 1:1.
     // Group messages use direction "local", so shim it to "outgoing" for the shared icon.
     if (!incoming && message.status) {

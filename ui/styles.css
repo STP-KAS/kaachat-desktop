@@ -2523,6 +2523,18 @@ body:has(.group-chat-screen:not([hidden])) .new-chat-fab { display: none; }
 .message-row.local .message-bubble { justify-self: end; }
 .message-row.incoming .message-bubble { justify-self: start; }
 
+/* Caption + link messages: the preview card is its OWN block below the bubble (iOS
+   parity), never inside the teal/gray bubble. The stack stands in for the bubble in
+   the row and inherits its alignment. */
+.message-bubble-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.message-row.local .message-bubble-stack { justify-self: end; align-items: flex-end; }
+.message-row.incoming .message-bubble-stack { justify-self: start; align-items: flex-start; }
+.message-bubble-stack > .message-link-card { margin-top: 6px; }
+
 .message-area.selection-mode .message-row {
   grid-template-columns: 28px minmax(0, 1fr);
   column-gap: 10px;
