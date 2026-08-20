@@ -8718,6 +8718,13 @@ function createDeliveryStatusIcon(message) {
 function renderMessages(conversationEntry) {
   hydrateConversationMessages(conversationEntry);
   const messages = conversationEntry.messages || [];
+  // The thread re-renders constantly (sync polls, link previews resolving,
+  // reactions). Capture the scroll state BEFORE the rebuild so a user reading
+  // older history isn't yanked back to the bottom by every background render:
+  // stick-to-bottom only when they were already near it, or on a chat switch.
+  const isThreadSwitch = messageArea.dataset.renderedConversationId !== String(conversationEntry.id);
+  const wasNearBottom = messageArea.scrollHeight - messageArea.scrollTop - messageArea.clientHeight < 120;
+  const previousScrollTop = messageArea.scrollTop;
   messageArea.innerHTML = "";
 
   const requestContact = contactForConversation(conversationEntry);
@@ -8956,7 +8963,18 @@ function renderMessages(conversationEntry) {
     messageArea.appendChild(row);
   });
 
-  messageArea.scrollTop = messageArea.scrollHeight;
+  messageArea.dataset.renderedConversationId = String(conversationEntry.id);
+  // Sending your own message always snaps down, even from deep in history.
+  const lastMessage = messages[messages.length - 1];
+  const justSentOwn = lastMessage && lastMessage.direction !== "incoming"
+    && Date.now() - Number(lastMessage.createdAt || 0) < 2500;
+  if (isThreadSwitch || wasNearBottom || justSentOwn) {
+    messageArea.scrollTop = messageArea.scrollHeight;
+  } else {
+    // Content above the viewport is unchanged (sync only appends at the end),
+    // so restoring the old offset keeps the reader exactly where they were.
+    messageArea.scrollTop = previousScrollTop;
+  }
   // Keep an open chess board in sync with newly-arrived moves/invites/resigns.
   refreshChessOverlay();
 }
@@ -15211,6 +15229,11 @@ function renderGroupMessages() {
   const msgs = groupMessages(activeGroupId).filter(
     (m) => !(m.direction === "incoming" && isGroupMemberHidden(activeGroupId, m.senderAddress)),
   );
+  // Same stick-to-bottom rule as 1:1 renderMessages: background re-renders must
+  // not yank a reader who scrolled up back to the bottom.
+  const isThreadSwitch = groupMessageArea.dataset.renderedGroupId !== String(activeGroupId);
+  const wasNearBottom = groupMessageArea.scrollHeight - groupMessageArea.scrollTop - groupMessageArea.clientHeight < 120;
+  const previousScrollTop = groupMessageArea.scrollTop;
   groupMessageArea.innerHTML = "";
   if (!msgs.length) {
     if (groupMessageEmpty) {
@@ -15377,7 +15400,15 @@ function renderGroupMessages() {
     }
     groupMessageArea.appendChild(row);
   });
-  groupMessageArea.scrollTop = groupMessageArea.scrollHeight;
+  groupMessageArea.dataset.renderedGroupId = String(activeGroupId);
+  const lastGroupMessage = msgs[msgs.length - 1];
+  const justSentOwn = lastGroupMessage && lastGroupMessage.direction !== "incoming"
+    && Date.now() - Number(lastGroupMessage.createdAt || 0) < 2500;
+  if (isThreadSwitch || wasNearBottom || justSentOwn) {
+    groupMessageArea.scrollTop = groupMessageArea.scrollHeight;
+  } else {
+    groupMessageArea.scrollTop = previousScrollTop;
+  }
 }
 
 // --- create / add-member modal ---
