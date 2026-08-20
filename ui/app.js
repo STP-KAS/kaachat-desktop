@@ -1,7 +1,7 @@
 import { KaspaEngine } from "../engine/index.js";
 import { createGroupManager } from "../engine/group-store.js";
 import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount, openKaPostFromNotification } from "./kaposts.js";
-import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling } from "./broadcasts.js";
+import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling, openBroadcastChannelFromNotification } from "./broadcasts.js";
 import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
 import { initColdStorage, refreshColdStorage, resetColdStorageForAccount, listColdWatchedAddresses } from "./coldstorage.js";
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia, isNextcloudConnected, syncNextcloudContacts } from "./nextcloud.js";
@@ -3358,8 +3358,11 @@ document.querySelector("[data-notif-list]")?.addEventListener("click", (event) =
   const notif = globalNotifications.find((n) => n.id === row.dataset.notifId);
   closeNotifCenter();
   if (!notif) return;
-  if (notif.targetKind === "broadcast") setActiveAppTab("broadcasts");
-  else if (notif.targetKind === "group") {
+  if (notif.targetKind === "broadcast") {
+    setActiveAppTab("broadcasts");
+    // Land in the exact channel the message arrived in, not just the tab.
+    if (notif.targetId) { try { openBroadcastChannelFromNotification(notif.targetId); } catch {} }
+  } else if (notif.targetKind === "group") {
     setActiveAppTab("chats");
     if (notif.targetId) { try { openGroupChat(notif.targetId); } catch {} }
   } else {

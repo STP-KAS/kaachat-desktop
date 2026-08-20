@@ -1017,6 +1017,15 @@ export function stopBroadcastPolling() {
   stopPolling();
 }
 
+/** Deep-open a channel's room from OUTSIDE this module (the global bell center). */
+export function openBroadcastChannelFromNotification(channel) {
+  if (!deps) return;
+  const clean = normalizeBroadcastChannel(channel);
+  if (!clean) return;
+  loadState();
+  openRoom(clean);
+}
+
 export function initBroadcasts(dependencies) {
   deps = dependencies;
   listEl = document.querySelector("[data-broadcast-list]");

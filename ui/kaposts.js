@@ -1828,7 +1828,11 @@ function notificationTargetTxId(n, decodedText = "") {
   if (n.contentType === "reply") return n.id;
   if (n.contentType === "quote") return decodedText ? n.id : (n.contentId || null);
   if (n.contentType === "follow") return null;
-  return n.contentId || null; // vote, mention, unknown kinds
+  // A mention's acting content IS the post/comment that mentions you, so when the
+  // indexer leaves contentId empty (nothing of YOURS was acted on), fall back to
+  // the notification's own txid — without this, mention rows had no target at all.
+  if (n.contentType === "mention") return n.contentId || n.id || null;
+  return n.contentId || null; // vote, unknown kinds
 }
 
 /** Deep-open a post/comment by txid from OUTSIDE this module (the global bell center). */
@@ -1857,7 +1861,7 @@ function mapNotificationRow(n) {
     action = text ? "quoted your post" : "reposted your post";
     targetTxId = text ? n.id : n.contentId;
   } else if (n.contentType === "follow") { action = "followed you"; targetTxId = null; }
-  else if (n.contentType === "mention") { action = "mentioned you in a post"; targetTxId = n.contentId; }
+  else if (n.contentType === "mention") { action = "mentioned you in a post"; targetTxId = n.contentId || n.id; }
   return { id: n.id, actorAddress, action, snippet: text || null, timestamp: Number(n.timestamp) || Date.now(), targetTxId };
 }
 
