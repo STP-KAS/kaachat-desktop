@@ -4428,6 +4428,7 @@ body.session-logged-out [data-account-rename-modal] {
   border-radius: 12px;
   background: var(--surface-1, rgba(255, 255, 255, .04));
 }
+.spending-visibility-row { cursor: pointer; }
 .spending-visibility-row.off { opacity: .55; }
 .spending-visibility-toggle {
   width: 30px;

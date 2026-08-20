@@ -4864,9 +4864,10 @@ spendingVisNextBtn?.addEventListener("click", () => {
 });
 
 spendingVisibilityList?.addEventListener("click", async (event) => {
-  const toggle = event.target.closest("[data-spending-vis-toggle]");
-  if (!toggle) return;
-  const index = Number(toggle.dataset.spendingVisToggle);
+  // The WHOLE row toggles, not just the checkmark.
+  const row = event.target.closest("[data-vis-row]");
+  if (!row) return;
+  const index = Number(row.dataset.visRow);
   if (!Number.isInteger(index) || index < 0) return;
   const state = getSpendingState();
   if (index === state.activeIndex) {
