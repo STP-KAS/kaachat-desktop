@@ -6,6 +6,7 @@ import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./por
 import { initColdStorage, refreshColdStorage, resetColdStorageForAccount, listColdWatchedAddresses } from "./coldstorage.js";
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia, isNextcloudConnected, syncNextcloudContacts } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
+import { calculateMass, calculateFee, fetchQuotedFeeRateSompiPerGram } from "./kspt.js";
 import {
   initChildMode, isChildModeEnabled, CHILD_HIDDEN_TABS,
   isUserTypePending, markUserTypePending,
@@ -6488,11 +6489,14 @@ async function estimateSendKaspaBaseFee() {
     if (isFinite(policy) && policy > 0) {
       sendKaspaBaseFeeKas = policy;
       sendKaspaSdkBaseKas = Number(detail?.sdkFeeKas) || 0;
-    } else {
+    } else if (sendKaspaBaseFeeKas == null) {
+      // No previous estimate to keep — fall back to the 1-input placeholder. A FAILED
+      // estimate must never clobber a good earlier one (Max sets the all-input fee, and
+      // resetting it to 0.002 here made the subsequent send underpay and fail).
       sendKaspaBaseFeeKas = 0.002; sendKaspaSdkBaseKas = 0.00002;
     }
   } catch {
-    sendKaspaBaseFeeKas = 0.002; sendKaspaSdkBaseKas = 0.00002;
+    if (sendKaspaBaseFeeKas == null) { sendKaspaBaseFeeKas = 0.002; sendKaspaSdkBaseKas = 0.00002; }
   }
   applySendKaspaFeeField();
 }
@@ -6587,13 +6591,22 @@ async function fillMaxAmount() {
   if (spendable == null || !isFinite(spendable)) { showCopyToast("Balance unavailable right now."); return; }
 
   const selection = sendKaspaGetSelection();
-  const outpoints = selection.length ? selection : (sendKaspaUtxos || []).map((e) => utxoOutpointKey(e.outpoint || {}));
+  // iOS-parity Max fee (WalletManager/kspt estimateMaxAmount): compute the fee directly from
+  // the MASS of spending every input Max will use, at the live quoted rate with the 100
+  // sompi/gram policy floor. The old approach asked the WASM generator to build a tx of
+  // spendable-0.01 — on addresses with many UTXOs the true all-input fee exceeds that 0.01
+  // headroom, the generator throws, the error was swallowed, and the fee silently stayed at
+  // the 0.002 placeholder, so Max always produced a send that failed.
+  const inputCount = selection.length || (sendKaspaUtxos || []).length || 1;
   try {
-    const detail = await sendKaspaEstimateFee(trimKas8(Math.max(0.0001, spendable - 0.01)), outpoints.length ? outpoints : null);
-    const policy = Number(detail?.policyFeeKas);
-    if (isFinite(policy) && policy > 0) {
-      sendKaspaBaseFeeKas = policy;
-      sendKaspaSdkBaseKas = Number(detail?.sdkFeeKas) || 0;
+    const feeRate = await fetchQuotedFeeRateSompiPerGram();
+    const mass = calculateMass(inputCount, [34, 34], 0);
+    const policyKas = Number(calculateFee(mass, feeRate)) / 1e8;
+    if (isFinite(policyKas) && policyKas > 0) {
+      sendKaspaBaseFeeKas = policyKas;
+      // The SDK's own automatic base fee is ~1 sompi/gram of the same mass; the send path
+      // passes total - sdkBase as the priority tip, so this keeps paid == displayed.
+      sendKaspaSdkBaseKas = Number(mass) / 1e8;
       sendKaspaFeeCustomOverride = false;
       applySendKaspaFeeField();
     }
