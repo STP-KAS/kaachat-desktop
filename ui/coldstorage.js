@@ -1739,13 +1739,12 @@ async function pasteImport() {
   if (input) beginImport(input);
 }
 
-// --- QR scanning (BarcodeDetector where the browser supports it) -----------
+// --- QR scanning (jsQR frame decode — works in EVERY browser) ---------------
+// BarcodeDetector is missing from Chromium on Linux (Chrome/Brave) and from
+// Firefox entirely, so it must never be a requirement; jsQR is already bundled
+// for the signed-response scan and decodes plain-string QRs just as well.
 
 async function startScan() {
-  if (!("BarcodeDetector" in window)) {
-    deps.showToast?.("QR scanning isn't supported in this browser — use Paste kpub.");
-    return;
-  }
   const modal = modalsEl.querySelector("[data-cold-scan-modal]");
   const video = modalsEl.querySelector("[data-cold-scan-video]");
   if (!modal || !video) return;
@@ -1757,18 +1756,23 @@ async function startScan() {
   }
   video.srcObject = scanStream;
   modal.hidden = false;
-  const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
-  const tick = async () => {
+  const grab = document.createElement("canvas");
+  const ctx = grab.getContext("2d", { willReadFrequently: true });
+  const tick = () => {
     if (!scanStream) return;
-    try {
-      const codes = await detector.detect(video);
-      const value = codes?.[0]?.rawValue;
+    if (video.readyState >= 2 && video.videoWidth > 0) {
+      grab.width = video.videoWidth;
+      grab.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const image = ctx.getImageData(0, 0, grab.width, grab.height);
+      const code = jsQR(image.data, image.width, image.height, { inversionAttempts: "dontInvert" });
+      const value = code?.data?.trim();
       if (value) {
         stopScan();
         beginImport(value);
         return;
       }
-    } catch { /* detector not ready yet */ }
+    }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
