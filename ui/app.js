@@ -5252,6 +5252,25 @@ document.addEventListener("click", (event) => {
 // or with on-chain history, and any payment-pool reservation (those are
 // promised to a contact and must never be re-offered). Falls back to
 // revealing maxIndex+1 when every revealed index is spoken for.
+
+// Every revealed address's balance in ONE gRPC round trip — the per-address loop this
+// replaces could fail a low index's lookup mid-scan and skip it "to be safe", which on a
+// big wallet made Generate land on a higher number than the actual lowest unused one.
+async function spendingBalancesBatchSompi(addresses) {
+  await engine.connect();
+  const response = await engine.withRpc(
+    (rpc) => rpc.getUtxosByAddresses(addresses),
+    { retries: 1, label: "Spending balances" }
+  );
+  const byAddress = new Map(addresses.map((a) => [a, 0]));
+  for (const entry of response?.entries || []) {
+    const address = String(entry.address ?? entry.entry?.address ?? "");
+    if (!byAddress.has(address)) continue;
+    byAddress.set(address, byAddress.get(address) + Number(entry.amount ?? entry.entry?.amount ?? 0));
+  }
+  return byAddress;
+}
+
 let spendingGenerateBusy = false;
 spendingGenerateBtn?.addEventListener("click", async () => {
   closeSpendingActionsMenu();
@@ -5261,16 +5280,26 @@ spendingGenerateBtn?.addEventListener("click", async () => {
   try {
     const state = getSpendingState();
     const poolState = loadPoolState();
-    let pick = null;
+    const addressByIndex = new Map();
     for (let i = 0; i <= state.maxIndex; i++) {
-      if (i === state.activeIndex) continue;
       const address = deriveSpendingAddressAt(i);
-      if (!address) continue;
+      if (address) addressByIndex.set(i, address);
+    }
+    let balances = null;
+    try { balances = await spendingBalancesBatchSompi([...addressByIndex.values()]); }
+    catch { balances = null; } // node pool unreachable — fall back to per-address lookups
+    let pick = null;
+    for (const [i, address] of addressByIndex) {
+      if (i === state.activeIndex) continue;
       if (isReservedPoolAddress(poolState, address)) continue;
-      let kas = 0;
-      try { kas = Number((await engine.balanceForAddress(address)).totalKas) || 0; }
-      catch { continue; } // balance unknown — skip rather than risk recycling a funded address
-      if (kas > 0) continue;
+      if (balances) {
+        if ((balances.get(address) || 0) > 0) continue;
+      } else {
+        let kas = 0;
+        try { kas = Number((await engine.balanceForAddress(address)).totalKas) || 0; }
+        catch { continue; } // balance unknown — skip rather than risk recycling a funded address
+        if (kas > 0) continue;
+      }
       if (await spendingAddressHasHistory(address)) continue;
       pick = i;
       break;
