@@ -14685,6 +14685,12 @@ queueMicrotask(async () => {
     tipUser: (address, name) => openTipModal({ address, name }),
     // Feed the global notification center (top-bar bell) from the KaPosts notification stream.
     recordGlobalNotification: (item) => recordGlobalNotification(item),
+    // Your saved name for a contact wins over their KNS domain everywhere a poster is named
+    // (matches iOS: alias -> domain -> short address).
+    contactAliasFor: (address) => {
+      const name = ((state.contacts || []).find((c) => c.address === address)?.name || "").trim();
+      return name || null;
+    },
     // @mention autocomplete source: your 1:1 chat contacts that have a KNS domain. Returns
     // [{ domain (bare, no .kas), address, name }]. Only these people can be @-mentioned.
     getMentionCandidates: () => {

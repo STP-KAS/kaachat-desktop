@@ -125,6 +125,10 @@ function isHiddenAuthor(address) {
 
 function posterName(address) {
   if (!address) return "Unknown";
+  // Your saved contact name wins, then their KNS domain, then the short address —
+  // same order iOS resolves display names for notifications and posts.
+  const alias = deps.contactAliasFor?.(address);
+  if (alias) return alias.toLowerCase().endsWith(".kas") ? alias.slice(0, -4) : alias;
   const info = deps.engine.peekKnsAddressInfo?.(address);
   const domain = info?.explicitPrimaryDomain || info?.primaryDomain || "";
   if (domain) return domain.toLowerCase().endsWith(".kas") ? domain.slice(0, -4) : domain;
@@ -524,6 +528,32 @@ async function resolveAndOpenPost(txId) {
       }
     } catch (error) {
       deps.appendEngineLog?.(`KaPost own-content fetch failed: ${error.message}`);
+    }
+  }
+  if (!post) {
+    // Still unresolved: the txid is usually a notification's ACTING content — someone
+    // ELSE's reply/quote/mentioning post, which neither the feed window nor the own-content
+    // fetch above ever returns (there is no fetch-post-by-id endpoint). The notification
+    // stream knows who wrote it, so fetch THAT author's posts+replies and search those.
+    try {
+      const { notifications } = await fetchKaPostNotifications({ engine: deps.engine, limit: 100 });
+      const n = (notifications || []).find((x) => String(x?.id || "") === String(txId));
+      if (n?.userPublicKey) {
+        const [theirPosts, theirReplies] = await Promise.all([
+          fetchUserPosts({ engine: deps.engine, pubkey: n.userPublicKey }).catch(() => ({ posts: [] })),
+          fetchUserReplies({ engine: deps.engine, pubkey: n.userPublicKey }).catch(() => ({ posts: [] })),
+        ]);
+        const mapped = [...theirPosts.posts, ...theirReplies.posts].map(mapRemotePost).filter(Boolean);
+        // myContentPosts is purely the resolution pool behind findPostByRemoteId —
+        // widening it with the actor's content is safe (nothing renders it directly).
+        myContentPosts = [...myContentPosts, ...mapped];
+        post = findPostByRemoteId(txId);
+        // A reply's own thread can open directly; but when the target still isn't
+        // findable, fall back to the conversation it belongs to (the parent post).
+        if (!post && n.contentId) post = findPostByRemoteId(String(n.contentId));
+      }
+    } catch (error) {
+      deps.appendEngineLog?.(`KaPost actor-content fetch failed: ${error.message}`);
     }
   }
   if (post) {
@@ -1784,6 +1814,9 @@ async function pollKaPostNotificationsForPings() {
     if (firstRun) continue; // baseline seeding — history never notifies
     const actorAddress = kaspaAddressFromPubkey(deps.engine, n.userPublicKey);
     if (!actorAddress || actorAddress === my || isHiddenAuthor(actorAddress)) continue;
+    // Warm the KNS cache so posterName can use the actor's domain (peek is cache-only;
+    // a cold cache would fall back to the short address even when they own a domain).
+    try { await deps.engine.refreshKnsIfNeeded?.([actorAddress]); } catch { /* name falls back */ }
     // The global notification center lists every fresh KaPosts action (mentions included),
     // independent of the per-type OS-ping gate below.
     const centerText = stripKaChatMarker(n.postContent ? (decodePostContent({ postContent: n.postContent }) || "") : "").trim();
