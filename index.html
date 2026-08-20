@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=278" />
+  <link rel="stylesheet" href="./ui/styles.css?v=279" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -1384,7 +1384,10 @@
       <h2 class="setup-guide-title" data-setup-title></h2>
       <p class="setup-guide-body" data-setup-body></p>
       <div class="setup-guide-extra" data-setup-extra></div>
-      <button type="button" class="primary-button full setup-guide-next" data-setup-next>Next</button>
+      <div class="setup-guide-nav">
+        <button type="button" class="secondary-button setup-guide-back" data-setup-back hidden>Previous</button>
+        <button type="button" class="primary-button full setup-guide-next" data-setup-next>Next</button>
+      </div>
     </div>
   </div>
 
@@ -2527,7 +2530,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=271"></script>
+  <script type="module" src="./ui/app.js?v=272"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

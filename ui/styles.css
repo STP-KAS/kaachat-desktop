@@ -1302,6 +1302,11 @@ button { cursor: pointer; }
   border-bottom-left-radius: 7px;
 }
 
+/* Setup guide footer nav: Previous beside Next (Previous hidden on the first step). */
+.setup-guide-nav { display: flex; gap: 10px; }
+.setup-guide-nav .setup-guide-back { flex: 0 0 auto; }
+.setup-guide-nav .setup-guide-next { flex: 1; }
+
 /* Card header (broadcast-room parity): sender name + send time at the top. */
 .message-card-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--muted); }
 .message-card-head strong { color: var(--kaspa-ink); font-size: 12.5px; }

@@ -5917,6 +5917,8 @@ function dismissDockWizard() {
 function maybeShowDockWizard() {
   if (localStorage.getItem(DOCK_WIZARD_DISMISSED_KEY)) return;
   if (!engine.address) return;
+  // Child Mode skips the what's-new wizard - it opens with KaPosts, which Child Mode hides.
+  if (isChildModeEnabled()) return;
   dockWizardPage = 0;
   renderDockWizard();
   const backdrop = document.querySelector("[data-dock-wizard]");
@@ -13180,6 +13182,7 @@ const setupTitleEl = document.querySelector("[data-setup-title]");
 const setupBodyEl = document.querySelector("[data-setup-body]");
 const setupExtraEl = document.querySelector("[data-setup-extra]");
 const setupNextBtn = document.querySelector("[data-setup-next]");
+const setupBackBtn = document.querySelector("[data-setup-back]");
 const setupSkipBtn = document.querySelector("[data-setup-skip]");
 const setupProgressEl = document.querySelector("[data-setup-progress]");
 
@@ -13392,6 +13395,9 @@ function renderSetupStep() {
   if (setupBodyEl) { setupBodyEl.textContent = step.body || ""; setupBodyEl.hidden = !step.body; }
   renderSetupExtra(step.extra);
   if (setupNextBtn) setupNextBtn.textContent = setupStepIndex === SETUP_STEPS.length - 1 ? "Finish" : "Next";
+  // Previous is available on every step after the first, onboarding runs included -
+  // only skipping forward stays forbidden.
+  if (setupBackBtn) setupBackBtn.hidden = setupStepIndex === 0;
   if (setupProgressEl) setupProgressEl.textContent = `${setupStepIndex + 1} / ${SETUP_STEPS.length}`;
   // Skip exists ONLY on replays (Profile > Help). EVERY account-onboarding run
   // — create or import, fresh or re-presented after a page reload — is fully
@@ -13443,6 +13449,14 @@ setupNextBtn?.addEventListener("click", async () => {
   }
   if (setupStepIndex >= SETUP_STEPS.length - 1) { closeSetupGuide({ completed: true }); return; }
   setupStepIndex += 1;
+  renderSetupStep();
+});
+setupBackBtn?.addEventListener("click", () => {
+  if (setupStepIndex <= 0) return;
+  // Never back INTO the answered Adult/Child step - its choice applies the moment
+  // it's made, so the button steps over it back to Welcome.
+  const prev = setupStepIndex - 1;
+  setupStepIndex = SETUP_STEPS[prev]?.extra === "usertype" ? Math.max(0, prev - 1) : prev;
   renderSetupStep();
 });
 setupSkipBtn?.addEventListener("click", () => closeSetupGuide());
