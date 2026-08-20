@@ -2068,8 +2068,43 @@ function hydrateConversationMessages(conversationEntry) {
 }
 
 
+// --- Deleted-chat tombstones -----------------------------------------------
+// Deleting a chat records the contact's address here (account-scoped), and every
+// restore path (desktop snapshot, phone archive, shared kachat-backup.json merge)
+// honors the list so a deleted chat can never resurrect from a backup. Manually
+// re-adding the contact clears its tombstone.
+const DELETED_CONTACTS_KEY = "kachat-deleted-contacts-v1";
+
+function loadDeletedContactAddresses() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(accountScopedKey(DELETED_CONTACTS_KEY)) || "[]");
+    return new Set(Array.isArray(raw) ? raw.map(String).filter(Boolean) : []);
+  } catch { return new Set(); }
+}
+
+function recordDeletedContactAddresses(addresses) {
+  const set = loadDeletedContactAddresses();
+  for (const address of addresses || []) if (address) set.add(String(address));
+  try { localStorage.setItem(accountScopedKey(DELETED_CONTACTS_KEY), JSON.stringify([...set])); } catch {}
+}
+
+function clearDeletedContactAddress(address) {
+  const set = loadDeletedContactAddresses();
+  if (!set.delete(String(address || ""))) return;
+  try { localStorage.setItem(accountScopedKey(DELETED_CONTACTS_KEY), JSON.stringify([...set])); } catch {}
+}
+
 function buildFullyRestoredState() {
   const restored = mergeStoredMessageHistory(loadStoredState());
+  // Deletion tombstones win over restored state: a chat deleted on this device must
+  // not resurrect from a snapshot restore or a merged backup.
+  const tombstones = loadDeletedContactAddresses();
+  if (tombstones.size) {
+    const deletedContactIds = new Set((restored.contacts || [])
+      .filter((contact) => tombstones.has(contact.address)).map((contact) => contact.id));
+    restored.contacts = (restored.contacts || []).filter((contact) => !tombstones.has(contact.address));
+    restored.conversations = (restored.conversations || []).filter((entry) => !deletedContactIds.has(entry.contactId));
+  }
   for (const conversationEntry of restored.conversations || []) {
     hydrateConversationMessages(conversationEntry);
   }
@@ -2996,6 +3031,121 @@ async function syncIncomingHandshakeRequests({ quiet = true } = {}) {
   return added;
 }
 
+// ---------------------------------------------------------------------------
+// Stranger payments → the SELF-chat. A plain KAS payment from an address we have
+// no contact for must NOT open a chat with the stranger: it collects in a single
+// conversation with our own chatting address, noting the sender in the bubble.
+// Baseline-gated (first run just records "now") so historical payments never
+// flood in; internal moves from the own spending chain surface nowhere.
+// ---------------------------------------------------------------------------
+const STRANGER_PAYMENT_STATE_KEY = "kachat-stranger-payment-state-v1"; // account-scoped: { baselineMs, processedTxids }
+const KACHAT_PAYLOAD_HEX_PREFIX = "636970685f6d7367"; // "ciph_msg" — handled by the normal message sync
+
+function loadStrangerPaymentState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(accountScopedKey(STRANGER_PAYMENT_STATE_KEY)) || "{}") || {};
+    return { baselineMs: Number(raw.baselineMs) || 0, processedTxids: Array.isArray(raw.processedTxids) ? raw.processedTxids : [] };
+  } catch { return { baselineMs: 0, processedTxids: [] }; }
+}
+
+function saveStrangerPaymentState(store) {
+  try { localStorage.setItem(accountScopedKey(STRANGER_PAYMENT_STATE_KEY), JSON.stringify(store)); } catch {}
+}
+
+function ensureSelfConversation() {
+  let contact = state.contacts.find((entry) => entry.address === engine.address);
+  if (!contact) {
+    const createdAt = Date.now();
+    contact = {
+      id: nowId(), name: "My Address", nameIsCustom: true, address: engine.address,
+      avatar: initialsFor("My Address"), createdAt, updatedAt: createdAt,
+      relationshipState: "legacy-manual", handshakeTxid: "",
+    };
+    state.contacts.push(contact);
+  }
+  let conversationEntry = state.conversations.find((entry) => entry.contactId === contact.id);
+  if (!conversationEntry) {
+    conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
+    state.conversations.push(conversationEntry);
+  }
+  return { contact, conversationEntry };
+}
+
+async function syncStrangerPaymentsIntoSelfChat({ catchUp = false } = {}) {
+  const myAddress = engine.address;
+  if (!myAddress) return 0;
+  const store = loadStrangerPaymentState();
+  if (!store.baselineMs) {
+    // First run for this account: record the baseline and start collecting from now.
+    store.baselineMs = Date.now();
+    saveStrangerPaymentState(store);
+    return 0;
+  }
+  // The user deleted the self-chat — respect it.
+  if (loadDeletedContactAddresses().has(myAddress)) return 0;
+  let txs = [];
+  try {
+    const url = `${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(myAddress)}/full-transactions?limit=20&offset=0&resolve_previous_outpoints=light`;
+    const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!response.ok) return 0;
+    txs = await response.json();
+  } catch { return 0; }
+  if (!Array.isArray(txs)) return 0;
+
+  const processed = new Set(store.processedTxids);
+  const contactAddresses = new Set((state.contacts || []).map((entry) => entry.address));
+  const ownSpending = new Set(activeAccountMnemonic() ? spendingWatchedAddressList() : []);
+  let added = 0;
+  for (const tx of txs) {
+    const txid = String(tx?.transaction_id || tx?.transactionId || "").trim();
+    if (!txid || processed.has(txid)) continue;
+    const blockTime = Number(tx?.block_time || tx?.blockTime || 0);
+    if (!blockTime || blockTime < store.baselineMs) { processed.add(txid); continue; }
+    // KaChat protocol txs (messages/handshakes/payments-with-envelopes) are owned by
+    // the normal per-contact sync — only PLAIN payments belong here.
+    const payload = String(tx?.payload || "").toLowerCase();
+    if (payload.startsWith(KACHAT_PAYLOAD_HEX_PREFIX)) { processed.add(txid); continue; }
+    const receivedSompi = (Array.isArray(tx?.outputs) ? tx.outputs : [])
+      .filter((output) => (output?.script_public_key_address || output?.scriptPublicKeyAddress) === myAddress)
+      .reduce((sum, output) => sum + Number(output?.amount || 0), 0);
+    if (!(receivedSompi > 0)) { processed.add(txid); continue; }
+    const sender = (Array.isArray(tx?.inputs) ? tx.inputs : [])
+      .map((input) => input?.previous_outpoint_address || input?.previousOutpointAddress)
+      .find((address) => address && address !== myAddress) || "";
+    if (!sender) continue; // input may resolve on a later sweep — retry then
+    processed.add(txid);
+    if (contactAddresses.has(sender)) continue; // that contact's own sync owns it
+    if (ownSpending.has(sender)) continue; // internal move from the own spending chain
+    const { contact, conversationEntry } = ensureSelfConversation();
+    if ((conversationEntry.messages || []).some((entry) => entry.txid === txid)) continue;
+    const amountKas = trimKas8(receivedSompi / 1e8);
+    const message = createMessage({
+      conversationId: conversationEntry.id,
+      contactId: contact.id,
+      direction: "incoming",
+      text: `Received ${amountKas} KAS\nFrom: ${sender}`,
+      sender,
+      receiver: myAddress,
+      status: MESSAGE_STATUSES.CONFIRMED,
+      transport: "kaspa-payment",
+      createdAt: blockTime || Date.now(),
+    });
+    applyMessagePatch(message, { messageType: "payment", paymentAmountKas: String(amountKas), txid });
+    appendIncomingOrReactionMessage(conversationEntry, message);
+    conversationEntry.updatedAt = Date.now();
+    if (!catchUp) {
+      const appended = conversationEntry.messages.find((entry) => entry.txid === txid) || message;
+      maybeNotifyIncoming(conversationEntry, contact, appended);
+    }
+    if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+    added += 1;
+  }
+  store.processedTxids = [...processed].slice(-300);
+  saveStrangerPaymentState(store);
+  if (added > 0) { persistState(); renderChats(); }
+  return added;
+}
+
 async function refreshAllConversations({ quiet = true } = {}) {
   if (messageRefreshInFlight || !engine.address || !engine.isKasiaCipherLoaded?.()) return 0;
   messageRefreshInFlight = true;
@@ -3006,6 +3156,8 @@ async function refreshAllConversations({ quiet = true } = {}) {
   try {
     try { added += await syncIncomingHandshakeRequests({ quiet }); }
     catch (error) { appendEngineLog(`Incoming handshake sync failed: ${error.message}`); }
+    try { added += await syncStrangerPaymentsIntoSelfChat({ catchUp }); }
+    catch (error) { appendEngineLog(`Stranger payment sweep failed: ${error.message}`); }
     for (const conversationEntry of state.conversations || []) {
       const contact = contactForConversation(conversationEntry);
       // Match KaChat's relationship boundary: discovering an incoming
@@ -5900,7 +6052,51 @@ document.querySelector("[data-profile-donate]")?.addEventListener("click", async
 // `sendFn`/`getBalance` let a caller retarget the same controller at a different
 // source wallet (e.g. a spending address via engine.sendFromSpending); when
 // omitted it drives the chatting/identity address through engine.send/balance.
-function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountKas, getFeeKas, sendFn, getBalance } = {}) {
+// iOS parity: a withdrawal from the CHATTING address surfaces as a chat with the
+// destination (find-or-create), holding the outgoing payment bubble. Spending-chain
+// sends deliberately do not create chats.
+function recordOutgoingPaymentChat({ destination, amountKas, txid }) {
+  const clean = String(destination || "").trim();
+  if (!clean || clean === engine.address) return;
+  let contact = state.contacts.find((entry) => entry.address === clean);
+  if (!contact) {
+    const createdAt = Date.now();
+    contact = {
+      id: nowId(), name: "", nameIsCustom: false, address: clean,
+      avatar: initialsFor(shortAddress(clean)), createdAt, updatedAt: createdAt,
+      relationshipState: "legacy-manual", handshakeTxid: "",
+    };
+    clearDeletedContactAddress(clean);
+    state.contacts.push(contact);
+  }
+  let conversationEntry = state.conversations.find((entry) => entry.contactId === contact.id);
+  if (!conversationEntry) {
+    conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
+    state.conversations.push(conversationEntry);
+    refreshSubscriptionAddresses({ restart: true });
+  }
+  const cleanTxid = String(txid || "").trim();
+  if (cleanTxid && (conversationEntry.messages || []).some((entry) => entry.txid === cleanTxid)) return;
+  const message = createMessage({
+    conversationId: conversationEntry.id,
+    contactId: contact.id,
+    direction: "outgoing",
+    text: `Sent ${amountKas} KAS`,
+    sender: engine.address || null,
+    receiver: clean,
+    status: MESSAGE_STATUSES.CONFIRMED,
+    transport: "kaspa-payment",
+    createdAt: Date.now(),
+  });
+  applyMessagePatch(message, { messageType: "payment", paymentAmountKas: String(amountKas), ...(cleanTxid ? { txid: cleanTxid } : {}) });
+  appendIncomingOrReactionMessage(conversationEntry, message);
+  conversationEntry.updatedAt = Date.now();
+  persistState();
+  renderChats();
+  if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
+}
+
+function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountKas, getFeeKas, sendFn, getBalance, onSent } = {}) {
   let resolvedAddress = null;
   let resolveToken = 0;
 
@@ -6032,6 +6228,7 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
       if (els.progress) els.progress.hidden = true;
       // Keep the modal open and flip to the success card (checkmark + clickable txid).
       showSendSuccess(txid, amountKas);
+      try { onSent?.({ txid, destination, amountKas }); } catch { /* chat bookkeeping must never break the send UI */ }
       refreshBalanceOnly({ quiet: true }).catch(() => {});
     } catch (error) {
       if (els.error) { els.error.textContent = error.message || "Send failed."; els.error.hidden = false; }
@@ -6438,6 +6635,12 @@ const sendKaspaController = makeSendController({
       });
     }
     return engine.send(destination, amountKas, feeKas, selectedOutpoints && selectedOutpoints.length ? { selectedOutpoints } : {});
+  },
+  // iOS parity: a send from the CHATTING address (not a spending index, not a
+  // compound) surfaces as a chat with the destination holding the payment bubble.
+  onSent: ({ txid, destination, amountKas }) => {
+    if (sendKaspaCompound || sendKaspaSourceIndex != null) return;
+    recordOutgoingPaymentChat({ destination, amountKas, txid });
   },
 });
 function openSendKaspaModal(options = {}) {
@@ -9225,43 +9428,32 @@ async function openTipModal({ address, name } = {}) {
   if (clean === engine.address) { showCopyToast("That's your own address."); return; }
   if (!tipModal) return;
 
-  // Find-or-create the contact + conversation (no navigation; the bubble lands there).
-  let contact = state.contacts.find((entry) => entry.address === clean);
-  if (!contact) {
-    const createdAt = Date.now();
-    const displayName = String(name || "").trim();
-    contact = {
-      id: nowId(), name: displayName, nameIsCustom: Boolean(displayName), address: clean,
-      avatar: initialsFor(displayName || clean), createdAt, updatedAt: createdAt,
-      relationshipState: "legacy-manual", handshakeTxid: "",
-    };
-    state.contacts.push(contact);
-  }
-  let conversationEntry = state.conversations.find((entry) => entry.contactId === contact.id);
-  if (!conversationEntry) {
-    conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
-    state.conversations.push(conversationEntry);
-    refreshSubscriptionAddresses({ restart: true });
-  }
-  persistState();
-  renderChats();
+  // Look up an existing contact/conversation but deliberately create NOTHING yet:
+  // opening the tip sheet and cancelling must leave no trace in the Chats list.
+  // The contact + conversation are created in sendTipNow, on an actual send.
+  const displayName = String(name || "").trim();
+  const contact = state.contacts.find((entry) => entry.address === clean) || null;
+  const conversationEntry = contact
+    ? (state.conversations.find((entry) => entry.contactId === contact.id) || null)
+    : null;
 
   const privacyOn = chatsPrivacyEnabled();
   const fundingIndex = getActiveSpendingIndex();
   const fundingAddress = privacyOn && activeAccountMnemonic() ? deriveSpendingAddressAt(fundingIndex) : null;
   tipState = {
-    contact, conversationEntry, fundingIndex, fundingAddress,
+    contact, conversationEntry, address: clean, displayName, fundingIndex, fundingAddress,
     spendingFunded: Boolean(fundingAddress),
     availableKas: null, policyFeeKas: null, sdkFeeKas: null,
     tier: "normal", sending: false,
   };
 
+  const shownName = (contact?.name || displayName).trim() || shortAddress(clean);
   const nameEl = tipQ("[data-tip-name]");
-  if (nameEl) nameEl.textContent = (contact.name || "").trim() || shortAddress(clean);
+  if (nameEl) nameEl.textContent = shownName;
   const addressEl = tipQ("[data-tip-address]");
   if (addressEl) addressEl.textContent = shortAddress(clean);
   const titleEl = tipQ("[data-tip-title]");
-  if (titleEl) titleEl.textContent = `Tip ${(contact.name || "").trim() || shortAddress(clean)}`;
+  if (titleEl) titleEl.textContent = `Tip ${shownName}`;
   // Which privacy scenario this tip will hit (same signal as the chat composer).
   const destEl = tipQ("[data-tip-destination]");
   if (destEl) {
@@ -9288,7 +9480,7 @@ async function openTipModal({ address, name } = {}) {
   try {
     await ensureRuntimes({ quiet: true });
     const balance = fundingAddress ? await engine.balanceForAddress(fundingAddress) : await engine.balance();
-    if (tipState?.contact !== contact) return; // modal switched targets meanwhile
+    if (tipState?.address !== clean) return; // modal switched targets meanwhile
     tipState.availableKas = Number(balance.totalKas);
     if (availableEl) {
       availableEl.textContent = `Available: ${balance.totalKas} KAS from your ${tipState.spendingFunded ? "primary spending address" : "chatting address"}`;
@@ -9304,20 +9496,42 @@ function closeTipModal() {
 }
 
 async function sendTipNow() {
-  const state = tipState;
-  if (!state || state.sending) return;
+  const tip = tipState;
+  if (!tip || tip.sending) return;
   const amountKas = trimKas8(Number(tipQ("[data-tip-amount]")?.value || 0));
   if (!(Number(amountKas) > 0)) { tipSetError("Enter an amount."); return; }
-  if (state.availableKas != null && Number(amountKas) > state.availableKas) {
+  if (tip.availableKas != null && Number(amountKas) > tip.availableKas) {
     tipSetError("Amount exceeds the available balance.");
     return;
   }
-  state.sending = true;
+  tip.sending = true;
   tipSetError("");
   const sendBtn = tipQ("[data-tip-send]");
   if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = "Sending…"; }
 
-  const { contact, conversationEntry } = state;
+  // The chat with the poster is created HERE, on an actual send — not when the
+  // modal opened — so a cancelled tip never leaves an orphan conversation.
+  let { contact, conversationEntry } = tip;
+  if (!contact) {
+    const createdAt = Date.now();
+    contact = {
+      id: nowId(), name: tip.displayName, nameIsCustom: Boolean(tip.displayName), address: tip.address,
+      avatar: initialsFor(tip.displayName || tip.address), createdAt, updatedAt: createdAt,
+      relationshipState: "legacy-manual", handshakeTxid: "",
+    };
+    clearDeletedContactAddress(tip.address);
+    state.contacts.push(contact);
+  }
+  if (!conversationEntry) {
+    conversationEntry = createConversation({ contactId: contact.id, createdAt: Date.now() });
+    state.conversations.push(conversationEntry);
+    refreshSubscriptionAddresses({ restart: true });
+  }
+  tip.contact = contact;
+  tip.conversationEntry = conversationEntry;
+  persistState();
+  renderChats();
+
   // Recipient-governed destination: their fresh pool address when they shared one.
   const destinationAddress = consumePoolPaymentDestination(contact);
   const createdAt = Date.now();
@@ -9342,10 +9556,10 @@ async function sendTipNow() {
 
   try {
     await ensureRuntimes({ quiet: true });
-    const result = state.fundingAddress
+    const result = tip.fundingAddress
       ? await engine.sendFromSpending({
           mnemonic: activeAccountMnemonic(),
-          index: state.fundingIndex,
+          index: tip.fundingIndex,
           passphrase: activeAccountPassphrase(),
           destinationAddress,
           amountKas,
@@ -9377,7 +9591,7 @@ async function sendTipNow() {
     conversationEntry.updatedAt = Date.now();
     persistState();
     if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
-    state.sending = false;
+    tip.sending = false;
     tipSetError(error?.message || "Tip failed.");
     if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = "Send Tip"; }
   }
@@ -9808,6 +10022,8 @@ contactForm.addEventListener("submit", async (event) => {
       id: nowId(), name: displayName, nameIsCustom: Boolean(name), address, avatar: initialsFor(displayName), createdAt, updatedAt: createdAt,
       relationshipState: "legacy-manual", handshakeTxid: "",
     };
+    // Deliberate re-add wins over an old deletion — future restores may include it again.
+    clearDeletedContactAddress(address);
     const conversationEntry = createConversation({ contactId: contact.id, createdAt });
     state.contacts.push(contact);
     state.conversations.push(conversationEntry);
@@ -9988,6 +10204,11 @@ document.querySelector("[data-chat-delete-selected]")?.addEventListener("click",
   const idsToDelete = new Set(selectedChatConversationIds);
   const contactIdsToDelete = new Set(
     state.conversations.filter((entry) => idsToDelete.has(entry.id)).map((entry) => entry.contactId),
+  );
+  // Tombstone the addresses so no backup restore (snapshot, phone archive, shared
+  // kachat-backup.json) can resurrect these chats.
+  recordDeletedContactAddresses(
+    state.contacts.filter((contact) => contactIdsToDelete.has(contact.id)).map((contact) => contact.address),
   );
   state.conversations = state.conversations.filter((entry) => !idsToDelete.has(entry.id));
   state.contacts = state.contacts.filter((contact) => !contactIdsToDelete.has(contact.id));
@@ -11695,9 +11916,16 @@ function importPhoneChatArchive(json) {
   const addedMessageIds = new Set();
   const touchedConversationIds = new Set();
 
+  // Never resurrect a deleted chat: honor this device's tombstones AND the ones the
+  // archive itself carries (covers restoring onto a fresh install).
+  const localTombstones = loadDeletedContactAddresses();
+  const archivedTombstones = new Set(
+    (Array.isArray(archive.deletedContactAddresses) ? archive.deletedContactAddresses : []).map(String),
+  );
   for (const archived of archive.conversations) {
     const contactAddress = String(archived?.contactAddress || "").trim();
     if (!contactAddress) continue;
+    if (localTombstones.has(contactAddress) || archivedTombstones.has(contactAddress)) continue;
     const archivedMessages = Array.isArray(archived?.messages) ? archived.messages : [];
     if (!archivedMessages.length) continue;
 
@@ -12074,11 +12302,16 @@ function sortArchiveMessages(messages) {
 function buildLocalChatArchive() {
   const myAddress = String(engine.address || "");
   const conversations = [];
+  // Deleted chats are excluded from the export AND their tombstones travel with the
+  // archive (same deletedContactAddresses field as iOS/Android), so restoring
+  // anywhere never brings them back.
+  const tombstones = loadDeletedContactAddresses();
 
   for (const conversationEntry of state.conversations || []) {
     const contact = contactForConversation(conversationEntry);
     const contactAddress = String(contact?.address || "").trim();
     if (!contactAddress) continue;
+    if (tombstones.has(contactAddress)) continue;
 
     // A message the user deleted on this device stays deleted in what THIS
     // device contributes; the merge below still preserves any copy another
@@ -12133,6 +12366,7 @@ function buildLocalChatArchive() {
     walletAddress: myAddress || null,
     conversations,
     groups: buildArchiveGroups(),
+    ...(tombstones.size ? { deletedContactAddresses: [...tombstones].sort() } : {}),
   };
 }
 
@@ -12207,10 +12441,18 @@ function parseRemoteChatArchive(json) {
 function mergeChatArchives(remote, local) {
   const remoteIsNewer = archiveExportedAtMs(remote) > archiveExportedAtMs(local);
   const merged = new Map();
+  // Deletion tombstones: union of both sides, and tombstoned conversations are
+  // dropped from the merge — a chat deleted on one device stays deleted in the
+  // shared history instead of resurrecting from the other side's copy.
+  const tombstones = new Set([
+    ...(Array.isArray(remote?.deletedContactAddresses) ? remote.deletedContactAddresses : []),
+    ...(Array.isArray(local?.deletedContactAddresses) ? local.deletedContactAddresses : []),
+  ].map(String).filter(Boolean));
 
   const absorb = (conversation, isRemote) => {
     const contactAddress = String(conversation?.contactAddress || "").trim();
     if (!contactAddress) return;
+    if (tombstones.has(contactAddress)) return;
     const metadataWins = isRemote ? remoteIsNewer : !remoteIsNewer;
     const alias = String(conversation?.contactAlias || "").trim();
     const photo = String(conversation?.contactPhoto || "").trim();
@@ -12260,6 +12502,7 @@ function mergeChatArchives(remote, local) {
     exportedAt: local.exportedAt,
     walletAddress: local.walletAddress || String(remote?.walletAddress || "") || null,
     conversations,
+    ...(tombstones.size ? { deletedContactAddresses: [...tombstones].sort() } : {}),
   };
 }
 
