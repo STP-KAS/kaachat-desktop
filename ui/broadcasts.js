@@ -433,7 +433,7 @@ function renderChannelList() {
 function buildMessageRow(m) {
   const mine = m.senderAddress === deps.engine.address;
   const row = document.createElement("div");
-  row.className = `broadcast-row${mine ? " mine" : ""}`;
+  row.className = `broadcast-msg-row${mine ? " mine" : ""}`;
   const avatar = document.createElement("span");
   avatar.className = "broadcast-avatar-slot";
   avatar.innerHTML = deps.avatarHtmlForAddress?.(m.senderAddress, "message-avatar") || "";
