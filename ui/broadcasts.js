@@ -519,7 +519,81 @@ function buildMessageElement(m) {
   }
 
   appendReactionUi(el, m);
+  // 1:1 parity: right-click opens the reactions + Reply/Copy/Hide menu.
+  el.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openBroadcastMessageMenu(m, event.clientX, event.clientY);
+  });
   return el;
+}
+
+// ---------------------------------------------------------------------------
+// Right-click context menu (1:1 parity): quick reactions + Reply / Copy /
+// View in Explorer / Hide user. Reply-SENDING rides the same cross-platform
+// reply envelope the room already renders.
+// ---------------------------------------------------------------------------
+
+let broadcastReplyTarget = null; // { txId, senderAddress, preview }
+
+function startBroadcastReply(m) {
+  broadcastReplyTarget = {
+    txId: m.txId,
+    senderAddress: m.senderAddress,
+    preview: humanizeBroadcastContent(m.content).replace(/\s+/g, " ").slice(0, 90),
+  };
+  renderBroadcastReplyBanner();
+  composerInput?.focus();
+}
+
+function cancelBroadcastReply() {
+  broadcastReplyTarget = null;
+  renderBroadcastReplyBanner();
+}
+
+function renderBroadcastReplyBanner() {
+  const banner = document.querySelector("[data-broadcast-reply-banner]");
+  const preview = document.querySelector("[data-broadcast-reply-preview]");
+  if (!banner) return;
+  banner.hidden = !broadcastReplyTarget;
+  if (preview && broadcastReplyTarget) {
+    preview.textContent = `Reply to ${senderName(broadcastReplyTarget.senderAddress)}: ${broadcastReplyTarget.preview}`;
+  }
+}
+
+function openBroadcastMessageMenu(m, x, y) {
+  if (!deps.openMsgContextMenu) return;
+  const mine = m.senderAddress === deps.engine.address;
+  const pending = Boolean(m.status); // pending/failed rows have no on-chain txid yet
+  const myAddress = deps.engine.address || "";
+  const perReactor = reactionsFor(activeChannel)[m.txId] || {};
+  const myEntry = perReactor[myAddress];
+  const current = myEntry && !myEntry.removed ? myEntry.emoji : null;
+  const icons = deps.getMsgMenuIcons?.() || {};
+  const text = humanizeBroadcastContent(m.content);
+  const items = [];
+  if (!pending) {
+    items.push({ label: "Reply", icon: icons.reply, onClick: () => startBroadcastReply(m) });
+  }
+  if (text) {
+    items.push({
+      label: "Copy", icon: icons.copy,
+      onClick: () => deps.copyText?.(text).then(() => deps.showToast?.("Message copied")).catch(() => {}),
+    });
+  }
+  if (!pending && deps.explorerTxUrl) {
+    items.push({
+      label: "View in Explorer", icon: icons.explorer,
+      onClick: () => window.open(deps.explorerTxUrl(m.txId), "_blank", "noopener,noreferrer"),
+    });
+  }
+  if (!mine) {
+    items.push({ label: `Hide ${senderName(m.senderAddress)}`, icon: icons.trash, danger: true, onClick: () => hideSender(m.senderAddress) });
+  }
+  deps.openMsgContextMenu({
+    x, y,
+    reaction: pending ? null : { current, onPick: (emoji) => sendBroadcastReaction(m.txId, emoji) },
+    items,
+  });
 }
 
 /** Human text for previews/notifications: unwrap replies, name photos/voice notes. */
@@ -725,6 +799,7 @@ function cancelVoiceRecordingIfActive() {
 
 function openRoom(channel) {
   activeChannel = normalizeBroadcastChannel(channel);
+  cancelBroadcastReply(); // a reply drafted in another room must not leak across
   renderRoom();
   updateConnectionDot();
   backfillChannel(activeChannel, { quiet: true });
@@ -733,6 +808,7 @@ function openRoom(channel) {
 
 function closeRoom() {
   cancelVoiceRecordingIfActive();
+  cancelBroadcastReply();
   activeChannel = null;
   stopPolling();
   renderRoom();
@@ -781,8 +857,20 @@ async function sendCurrentMessage() {
   sendInFlight = true;
   composerInput.value = "";
   const channel = activeChannel;
+  // Reply mode: wrap in the exact cross-platform reply envelope the room renders.
+  const replyTarget = broadcastReplyTarget;
+  const content = replyTarget
+    ? JSON.stringify({
+        type: "reply",
+        replyToId: replyTarget.txId,
+        replyToSender: replyTarget.senderAddress,
+        replyToPreview: replyTarget.preview,
+        text,
+      })
+    : text;
+  cancelBroadcastReply();
   try {
-    await sendBroadcastText(channel, text);
+    await sendBroadcastText(channel, content);
     renderChannelList();
   } catch (error) {
     deps.showToast?.(error.message);
@@ -892,6 +980,7 @@ export function initBroadcasts(dependencies) {
   voicePanelEl = document.querySelector("[data-broadcast-voice-panel]");
   voiceTimeEl = document.querySelector("[data-broadcast-voice-time]");
   voiceBtn = document.querySelector("[data-broadcast-voice]");
+  document.querySelector("[data-broadcast-reply-cancel]")?.addEventListener("click", cancelBroadcastReply);
 
   loadState();
   renderChannelList();

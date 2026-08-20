@@ -14573,6 +14573,13 @@ queueMicrotask(async () => {
     parseImageEnvelope,
     parseAudioEnvelope,
     openPhotoPreview,
+    // Right-click context menu (1:1 parity): quick reactions + Reply/Copy/Explorer/Hide.
+    // Functions are hoisted; MSG_MENU_ICONS is a const declared later in the module, so
+    // it is handed over lazily to dodge the temporal dead zone at init time.
+    openMsgContextMenu,
+    getMsgMenuIcons: () => MSG_MENU_ICONS,
+    copyText: copyTextToClipboard,
+    explorerTxUrl,
     // Per-message avatars beside broadcast bubbles (1:1/group parity).
     avatarHtmlForAddress: (address, className = "message-avatar") => {
       if (address === engine.address) return selfAvatarHtml(className);

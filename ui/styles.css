@@ -5887,6 +5887,36 @@ body.session-logged-out [data-account-rename-modal] {
 }
 .broadcast-room-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
 /* Avatar + bubble rows (1:1/group parity): sender avatar beside every message. */
+/* Reply banner above the room composer (context-menu Reply). */
+.broadcast-reply-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--kaspa, #62f4d0);
+  border-radius: 10px;
+  background: var(--surface-1, rgba(255,255,255,.04));
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.broadcast-reply-banner-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.broadcast-reply-banner-cancel {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.broadcast-reply-banner-cancel:hover { color: var(--text); }
+
 /* NOTE: .broadcast-row is taken by the channel LIST rows (justify-content:
    space-between above) — the message rows use their own class so received
    bubbles stay LEFT beside their avatar and only your own sit right. */
