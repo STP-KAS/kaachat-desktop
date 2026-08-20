@@ -6581,11 +6581,10 @@ body.session-logged-out [data-account-rename-modal] {
 }
 .cold-inline-link svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
-.cold-hidden-link {
-  border: 0; background: transparent; padding: 0 6px 12px;
-  color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; text-align: left;
-}
-.cold-hidden-link:hover { color: var(--text); }
+/* Cold-storage Address Visibility checklist: rows/pager reuse the spending-chain
+   .spending-visibility-* styles wholesale; this only spaces them inside the tab. */
+.cold-visibility-list { margin-top: 12px; }
+.cold-visibility-list + .spending-visibility-pager { margin-top: 10px; }
 
 .cold-address-list { display: flex; flex-direction: column; gap: 10px; }
 .cold-addr-label { color: var(--kaspa-ink); font-size: 12.5px; font-weight: 750; }

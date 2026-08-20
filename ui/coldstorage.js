@@ -28,7 +28,13 @@ let rootEl = null;
 let modalsEl = null;
 let accounts = [];
 let activeAccountId = null;   // null = list screen
-let showingHidden = false;    // detail sub-screen listing hidden addresses
+// Address Visibility checklist sub-screen (paged whole-row toggles, same tool
+// as Manage Spending Addresses) — replaced the old Hidden Addresses list.
+let showingVisibility = false;
+let visibilityPage = 0;
+let visibilityToken = 0;
+// Session cache (address → { sompi, used }) so paging back and forth is instant.
+const visUsageCache = new Map();
 let detailEntries = [];       // [{ index, address, balanceSompi?, everUsed? }] undefined = pending
 let detailLoading = false;
 let detailBusy = null;        // "generate" | "discover" | "refresh" | null
@@ -275,15 +281,16 @@ const LOCK_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.75" y=
 const PENCIL_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>`;
 const COPY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>`;
 const QR_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/></svg>`;
-const EYE_OFF_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A9.7 9.7 0 0 1 12 5c7 0 10 7 10 7a17.4 17.4 0 0 1-3.2 4.2M6.6 6.6A17 17 0 0 0 2 12s3 7 10 7a9.6 9.6 0 0 0 4.3-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>`;
-const EYE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const TRASH_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13a1.5 1.5 0 0 0 1.5 1.4h7A1.5 1.5 0 0 0 17 20l1-13M9 7V5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5v2"/></svg>`;
 const DOTS_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`;
+
+const CHECKLIST_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 2 2 3-3"/><path d="M11 6h10"/><path d="m3 12.5 2 2 3-3"/><path d="M11 12.5h10"/><path d="m3 19 2 2 3-3"/><path d="M11 19h10"/></svg>`;
 
 function render() {
   if (!rootEl) return;
   closeAllColdMenus();
   if (activeAccountId && activeAddressIndex !== null) renderAddressScreen();
+  else if (activeAccountId && showingVisibility) renderVisibility();
   else if (activeAccountId) renderDetail();
   else renderList();
 }
@@ -328,7 +335,7 @@ function renderList() {
     </div>`;
 }
 
-function addressRowHtml(account, entry, { hiddenMode = false } = {}) {
+function addressRowHtml(account, entry) {
   const funded = (entry.balanceSompi || 0) > 0;
   const used = funded || entry.everUsed === true;
   const usageBadge = entry.balanceSompi === undefined || (!funded && entry.everUsed === undefined)
@@ -337,17 +344,13 @@ function addressRowHtml(account, entry, { hiddenMode = false } = {}) {
       ? '<span class="spending-address-usage used" data-cold-usage-cell="' + entry.index + '">Used</span>'
       : '<span class="spending-address-usage unused" data-cold-usage-cell="' + entry.index + '">Unused</span>';
   const balanceText = entry.balanceSompi === undefined ? "… KAS" : `${fmtKasExact(entry.balanceSompi)} KAS`;
-  const menuItems = hiddenMode
-    ? [
-      `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="unhide" data-index="${entry.index}">${EYE_ICON}Unhide</button>`,
-      `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="copy" data-index="${entry.index}">${COPY_ICON}Copy Address</button>`,
-    ]
-    : [
-      `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="rename" data-index="${entry.index}">${PENCIL_ICON}Rename Address</button>`,
-      `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="copy" data-index="${entry.index}">${COPY_ICON}Copy Address</button>`,
-      `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="qr" data-index="${entry.index}">${QR_ICON}Show QR Code</button>`,
-      !funded ? `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="hide" data-index="${entry.index}">${EYE_OFF_ICON}Hide</button>` : "",
-    ];
+  // Hide/Unhide left the ⋯ menu when the Address Visibility checklist became the
+  // one place to manage visibility — same retirement the spending side made.
+  const menuItems = [
+    `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="rename" data-index="${entry.index}">${PENCIL_ICON}Rename Address</button>`,
+    `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="copy" data-index="${entry.index}">${COPY_ICON}Copy Address</button>`,
+    `<button type="button" role="menuitem" class="spending-row-menu-item" data-cold-addr-action="qr" data-index="${entry.index}">${QR_ICON}Show QR Code</button>`,
+  ];
   return `
     <div class="spending-address-row cold-address-row" data-cold-address-row="${entry.index}">
       <button type="button" class="spending-address-row-main" data-cold-addr-open="${entry.index}" aria-label="Open address #${entry.index} on explorer">
@@ -372,32 +375,16 @@ function renderDetail() {
   if (!account) { activeAccountId = null; renderList(); return; }
   const hiddenSet = new Set(account.hidden.map(Number));
   const visible = detailEntries.filter((e) => !hiddenSet.has(e.index));
-  const hiddenEntries = detailEntries.filter((e) => hiddenSet.has(e.index));
   const totalSompi = visible.reduce((sum, e) => sum + (e.balanceSompi || 0), 0);
 
-  if (showingHidden) {
-    rootEl.innerHTML = `
-      <div class="kaposts-thread-header">
-        <button class="kaposts-icon-button" type="button" data-cold-hidden-back aria-label="Back">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
-        </button>
-        <strong>Hidden Addresses</strong>
-      </div>
-      <div class="cold-address-list">
-        ${hiddenEntries.length === 0
-          ? '<p class="cold-detail-note">No hidden addresses.</p>'
-          : hiddenEntries.map((e) => addressRowHtml(account, e, { hiddenMode: true })).join("")}
-      </div>`;
-    return;
-  }
-
   // Funded-or-domain-holding addresses first (the KNS tag promotes a row into
-  // the active group), newest index first within each group — same sort as iOS.
+  // the active group), lowest index first within each group — same sort as the
+  // spending-chain Manage Addresses list.
   const sorted = [...visible].sort((a, b) => {
     const aActive = (a.balanceSompi || 0) > 0 || detailDomainOwning.has(a.address);
     const bActive = (b.balanceSompi || 0) > 0 || detailDomainOwning.has(b.address);
     if (aActive !== bActive) return aActive ? -1 : 1;
-    return b.index - a.index;
+    return a.index - b.index;
   });
 
   const busyLabel = detailBusy === "generate" ? "Generating…" : detailBusy === "discover" ? "Discovering…" : detailBusy === "refresh" ? "Refreshing…" : null;
@@ -408,6 +395,7 @@ function renderDetail() {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
       </button>
       <strong>${deps.escapeHtml(account.label)}</strong>
+      <button class="kaposts-icon-button cold-checklist-button" type="button" data-cold-open-visibility aria-label="Manage address visibility" title="Manage address visibility">${CHECKLIST_ICON}</button>
       <button class="kaposts-icon-button cold-trash-button" type="button" data-cold-remove aria-label="Remove account">${TRASH_ICON}</button>
     </div>
     <div class="cold-summary">
@@ -428,7 +416,6 @@ function renderDetail() {
         <p class="cold-summary-balance">${fmtKasExact(totalSompi)} KAS</p>
       </div>
     </div>
-    ${hiddenEntries.length > 0 ? `<button class="cold-hidden-link" type="button" data-cold-show-hidden>Hidden (${hiddenEntries.length})</button>` : ""}
     <div class="cold-address-list">
       ${detailLoading && detailEntries.length === 0
         ? '<p class="cold-detail-note">Loading addresses…</p>'
@@ -453,6 +440,131 @@ function renderDetail() {
       </div>
     </div>
     <p class="broadcast-intro cold-detail-footnote">Keys never leave your KasSigner — sends are built here, signed on the device by QR, and broadcast after verification.</p>`;
+}
+
+// --- Address Visibility checklist (port of the spending-chain screen): a paged list of
+// EVERY derivable address with a whole-row check toggle. Pages past maxIndex derive
+// future indices on the fly — checking one reveals exactly it (intermediates stay
+// hidden so the main list doesn't flood). Funded rows stay visible. ------------------
+
+const COLD_VIS_PAGE_SIZE = 50;
+
+async function coldVisUsageFor(address, knownSompi) {
+  if (visUsageCache.has(address)) return visUsageCache.get(address);
+  let sompi = knownSompi;
+  if (sompi === undefined) {
+    try { sompi = await fetchBalance(address); } catch { sompi = 0; }
+  }
+  const used = sompi > 0 ? true : await addressHasHistory(address);
+  const result = { sompi, used };
+  visUsageCache.set(address, result);
+  return result;
+}
+
+function renderVisibility() {
+  const account = activeAccount();
+  if (!account) { activeAccountId = null; renderList(); return; }
+  const hiddenSet = new Set(account.hidden.map(Number));
+  const start = visibilityPage * COLD_VIS_PAGE_SIZE;
+  const end = start + COLD_VIS_PAGE_SIZE - 1;
+  let addresses = [];
+  try { addresses = deriveReceiveAddresses(account.kpub, start, end + 1); }
+  catch { addresses = []; }
+  const balanceByIndex = new Map(detailEntries.map((e) => [e.index, e.balanceSompi]));
+
+  const rowsHtml = addresses.map((address, i) => {
+    const index = start + i;
+    const isVisible = index <= account.maxIndex && !hiddenSet.has(index);
+    const customLabel = (account.labels?.[index] ?? account.labels?.[String(index)] ?? "").toString().trim();
+    const checkSvg = isVisible
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path class="spending-vis-check" d="m7.5 12.5 3 3 6-6.5"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.2"/></svg>';
+    return `
+      <div class="spending-visibility-row${isVisible ? "" : " off"}" data-cold-vis-row="${index}" data-address="${deps.escapeHtml(address)}">
+        <button type="button" class="spending-visibility-toggle${isVisible ? " on" : ""}" aria-pressed="${isVisible}" aria-label="Toggle visibility of address #${index}">${checkSvg}</button>
+        <div class="spending-visibility-info">
+          <div class="spending-visibility-head">
+            <span class="spending-address-index">#${index}</span>
+            ${customLabel ? `<span class="spending-visibility-label">${deps.escapeHtml(customLabel)}</span>` : ""}
+            <span class="spending-address-usage spending-visibility-usage" data-cold-vis-usage="${index}">…</span>
+          </div>
+          <span class="spending-address-value">${deps.escapeHtml(shortColdAddress(address))}</span>
+        </div>
+      </div>`;
+  }).join("");
+
+  rootEl.innerHTML = `
+    <div class="kaposts-thread-header cold-detail-header">
+      <button class="kaposts-icon-button" type="button" data-cold-vis-done aria-label="Back">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
+      </button>
+      <strong>Address Visibility</strong>
+      <button class="chatting-address-back spending-visibility-done" type="button" data-cold-vis-done>Done</button>
+    </div>
+    <div class="manage-address-list spending-visibility-list cold-visibility-list">
+      ${rowsHtml || '<p class="cold-detail-note">Could not derive addresses for this kpub.</p>'}
+    </div>
+    <div class="manage-address-actions spending-visibility-pager">
+      <button class="spending-visibility-page-btn" type="button" data-cold-vis-prev aria-label="Previous page" ${visibilityPage === 0 ? "disabled" : ""}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+      </button>
+      <span class="spending-visibility-range">#${start} - #${end}</span>
+      <button class="spending-visibility-page-btn" type="button" data-cold-vis-next aria-label="Next page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+    </div>`;
+
+  // Usage fill: funded rows show their balance, the rest Used/Unused. Chunked like the
+  // discovery scan so a page can't burst the REST rate limiter.
+  const token = ++visibilityToken;
+  (async () => {
+    for (let base = 0; base < addresses.length; base += 5) {
+      await Promise.all(addresses.slice(base, base + 5).map(async (address, offset) => {
+        const index = start + base + offset;
+        const usage = await coldVisUsageFor(address, balanceByIndex.get(index));
+        if (token !== visibilityToken) return;
+        const cell = rootEl?.querySelector(`[data-cold-vis-usage="${index}"]`);
+        if (!cell) return;
+        if (usage.sompi > 0) {
+          cell.textContent = `${(usage.sompi / 1e8).toFixed(4)} KAS`;
+          cell.classList.add("used");
+        } else {
+          cell.textContent = usage.used ? "Used" : "Unused";
+          cell.classList.add(usage.used ? "used" : "unused");
+        }
+      }));
+      if (token !== visibilityToken) return;
+    }
+  })();
+}
+
+function toggleVisibilityRow(index, address) {
+  const account = activeAccount();
+  if (!account) return;
+  const hiddenSet = new Set(account.hidden.map(Number));
+  const isVisible = index <= account.maxIndex && !hiddenSet.has(index);
+  if (isVisible) {
+    // Funded rows stay visible — hiding is a display preference, never a way to
+    // lose sight of real funds (same rule as the spending chain).
+    const knownSompi = detailEntries.find((e) => e.index === index)?.balanceSompi;
+    const cachedSompi = visUsageCache.get(address)?.sompi;
+    if ((knownSompi || 0) > 0 || (cachedSompi || 0) > 0) {
+      deps.showToast?.("Addresses holding a balance stay visible.");
+      return;
+    }
+    hiddenSet.add(index);
+  } else if (index <= account.maxIndex) {
+    hiddenSet.delete(index);
+  } else {
+    // Revealing a future index extends the chain to cover it, keeping the
+    // intermediate indices hidden so they don't flood the main list.
+    for (let i = account.maxIndex + 1; i < index; i++) hiddenSet.add(i);
+    hiddenSet.delete(index);
+    account.maxIndex = index;
+  }
+  account.hidden = [...hiddenSet];
+  saveState();
+  renderVisibility();
 }
 
 // --- Per-address screen (matches iOS ColdStorageAddressTransactionHistoryView:
@@ -1541,7 +1653,8 @@ function closeQrModal() {
 
 async function openAccount(id) {
   activeAccountId = id;
-  showingHidden = false;
+  showingVisibility = false;
+  visibilityPage = 0;
   detailEntries = [];
   balanceCache = new Map();
   saveColdSpot({ accountId: id, addressIndex: null });
@@ -1831,15 +1944,6 @@ async function handleAddressAction(action, index) {
     else { delete account.labels[index]; delete account.labels[String(index)]; }
     saveState();
     render();
-  } else if (action === "hide") {
-    if ((entry.balanceSompi || 0) > 0) return; // only zero-balance addresses can hide, like iOS
-    if (!account.hidden.includes(index)) account.hidden.push(index);
-    saveState();
-    render();
-  } else if (action === "unhide") {
-    account.hidden = account.hidden.filter((i) => Number(i) !== index);
-    saveState();
-    render();
   }
 }
 
@@ -1850,9 +1954,29 @@ async function runAddressAction(kind) {
   render();
   try {
     if (kind === "generate") {
-      account.maxIndex += 1;
+      // Recycling-aware, mirroring the spending chain's Generate: pick the LOWEST index
+      // that is truly unused (zero balance, no on-chain history), un-hiding it if the
+      // checklist had hidden it — only when every index is spoken for does the chain
+      // extend by one.
+      const hiddenSet = new Set(account.hidden.map(Number));
+      let pick = null;
+      const candidates = [...detailEntries].sort((a, b) => a.index - b.index);
+      for (const entry of candidates) {
+        if (entry.balanceSompi === undefined) continue; // unknown balance — never risk recycling
+        if ((entry.balanceSompi || 0) > 0) continue;
+        const used = entry.everUsed !== undefined ? entry.everUsed : await addressHasHistory(entry.address);
+        if (activeAccountId !== account.id) return;
+        if (!used) { pick = entry.index; break; }
+      }
+      if (pick === null) {
+        account.maxIndex += 1;
+        pick = account.maxIndex;
+      }
+      hiddenSet.delete(pick);
+      account.hidden = [...hiddenSet];
       saveState();
       await loadDetail();
+      deps.showToast?.(`Address #${pick} is ready.`);
     } else if (kind === "discover") {
       await discoverAddresses(account);
       await loadDetail();
@@ -1924,7 +2048,7 @@ export function resetColdStorageForAccount() {
   closeQrModal();
   activeAccountId = null;
   activeAddressIndex = null;
-  showingHidden = false;
+  showingVisibility = false;
   detailEntries = [];
   detailBusy = null;
   detailToken += 1;
@@ -1991,15 +2115,40 @@ export function initColdStorage(dependencies) {
       addrToken += 1;
       activeAccountId = null;
       activeAddressIndex = null;
-      showingHidden = false;
+      showingVisibility = false;
       detailEntries = [];
       detailBusy = null;
       saveColdSpot(null);
       render();
       return;
     }
-    if (event.target.closest("[data-cold-hidden-back]")) { showingHidden = false; render(); return; }
-    if (event.target.closest("[data-cold-show-hidden]")) { showingHidden = true; render(); return; }
+    if (event.target.closest("[data-cold-open-visibility]")) {
+      showingVisibility = true;
+      visibilityPage = 0;
+      render();
+      return;
+    }
+    if (event.target.closest("[data-cold-vis-done]")) {
+      showingVisibility = false;
+      // loadDetail re-renders instantly from cached balances, so the edits (including a
+      // maxIndex the pager may have extended) show the moment Done is clicked.
+      loadDetail();
+      return;
+    }
+    if (event.target.closest("[data-cold-vis-prev]")) {
+      if (visibilityPage > 0) { visibilityPage -= 1; renderVisibility(); }
+      return;
+    }
+    if (event.target.closest("[data-cold-vis-next]")) {
+      visibilityPage += 1;
+      renderVisibility();
+      return;
+    }
+    const visRow = event.target.closest("[data-cold-vis-row]");
+    if (visRow) {
+      toggleVisibilityRow(Number(visRow.dataset.coldVisRow), visRow.dataset.address || "");
+      return;
+    }
     if (event.target.closest("[data-cold-paste]")) { pasteImport(); return; }
     if (event.target.closest("[data-cold-scan]")) { startScan(); return; }
     if (event.target.closest("[data-cold-remove]")) { removeActiveAccount(); return; }
