@@ -1017,12 +1017,36 @@ export class KaspaEngine {
   // version 0) addresses carry the 32-byte x-only pubkey in their payload; the whole KaChat/Kasia
   // stack is address-derived and uses the BIP-340 even-Y convention, so we prepend "02". Used to
   // fill a post's mentioned_pubkeys for @mentions (see engine/kaposts.js submitKaPost).
+  // Address -> KaPosts pubkey. WASM's Address.payload is the bech32 TEXT of the address body,
+  // NOT hex — the old regex-on-payload approach therefore returned null for every normal
+  // (schnorr) address, which left mention-opened profiles without a pubkey: posts, followers
+  // and following all silently empty. Decode the bech32 payload to bytes ourselves instead
+  // (charset + 5→8-bit regroup, checksum chars dropped; verified against a WASM roundtrip).
+  // Schnorr addresses carry only the x coordinate, so parity is unknowable — "02"+x follows
+  // the same convention as iOS's pubkey(from:), and the indexer matches pubkeys x-only.
   kapostPubkeyForAddress(address) {
-    if (!this.kaspa) return null;
+    const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
     try {
-      const payload = String(new this.kaspa.Address(String(address)).payload || "").toLowerCase();
-      if (/^0[23][0-9a-f]{64}$/.test(payload)) return payload; // already compressed (ECDSA addr)
-      if (/^[0-9a-f]{64}$/.test(payload)) return `02${payload}`; // x-only -> even-parity compressed
+      const body = String(address || "").trim().toLowerCase().replace(/^kaspa:/, "");
+      if (body.length <= 8) return null;
+      const values = [];
+      for (const ch of body) {
+        const v = CHARSET.indexOf(ch);
+        if (v < 0) return null;
+        values.push(v);
+      }
+      let acc = 0, bits = 0;
+      const bytes = [];
+      for (const v of values.slice(0, -8)) { // last 8 chars are the checksum
+        acc = (acc << 5) | v;
+        bits += 5;
+        if (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 0xff); }
+      }
+      if (bytes.length < 2) return null;
+      const version = bytes[0];
+      const hex = bytes.slice(1).map((b) => b.toString(16).padStart(2, "0")).join("");
+      if (version === 0x00 && hex.length === 64) return `02${hex}`; // schnorr x-only
+      if (version === 0x01 && /^0[23][0-9a-f]{64}$/.test(hex)) return hex; // ECDSA, already compressed
       return null;
     } catch {
       return null;
