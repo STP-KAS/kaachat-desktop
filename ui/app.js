@@ -942,6 +942,15 @@ function resolveLinkPreview(url) {
   const p = fetcher.catch(() => null).then((data) => {
     linkPreviewCache.set(url, data || null);
     linkPreviewPending.delete(url);
+    // A failed scrape is NOT cached forever: a transient proxy/network hiccup right
+    // when a link is SENT would otherwise permanently kill its preview card while
+    // the same link received later (fresh fetch) shows one. Expire the negative
+    // entry so a later render retries.
+    if (!data) {
+      window.setTimeout(() => {
+        if (linkPreviewCache.get(url) === null) linkPreviewCache.delete(url);
+      }, 30000);
+    }
     return data || null;
   });
   linkPreviewPending.set(url, p);

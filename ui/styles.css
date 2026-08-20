@@ -1285,8 +1285,9 @@ button { cursor: pointer; }
 
 .message-bubble.local {
   justify-self: end;
-  color: #06110f;
-  background: var(--kaspa);
+  /* iOS parity: kaspaBubbleColor #70C7BA with white text (MessageBubbleView). */
+  color: #fff;
+  background: #70c7ba;
   border-bottom-right-radius: 7px;
 }
 
@@ -6660,8 +6661,10 @@ body.session-logged-out [data-account-rename-modal] {
 .cold-compound-note { margin: 0 2px 10px; font-size: 12px; color: var(--muted); }
 
 /* Message link previews (docs/NEXTCLOUD_MEDIA_PREVIEW.md) */
-.message-link { color: var(--kaspa-ink); word-break: break-all; text-decoration: underline; }
+.message-link { color: #0a84ff; word-break: break-all; text-decoration: underline; }
 .message-link:hover { opacity: .85; }
+/* On the teal sent bubble the iOS screenshot's link blue reads darker for contrast. */
+.message-bubble.local .message-link { color: #1d4ed8; }
 .message-link-image {
   display: block; max-width: min(100%, 280px); max-height: 320px;
   margin-top: 8px; border-radius: 12px; cursor: pointer; object-fit: contain;
