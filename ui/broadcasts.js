@@ -617,7 +617,7 @@ function appendReactionUi(el, m) {
   bar.className = "message-reaction-bar";
   const barPill = document.createElement("div");
   barPill.className = "message-reaction-bar-pill";
-  for (const emoji of deps.quickReactionEmojis || []) {
+  for (const emoji of (typeof deps.quickReactionEmojis === "function" ? deps.quickReactionEmojis() : deps.quickReactionEmojis) || []) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = emoji;

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=281" />
+  <link rel="stylesheet" href="./ui/styles.css?v=282" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -927,6 +927,7 @@
             <p class="settings-group-label">Chats</p>
             <div class="settings-list-card">
               <div class="settings-toggle-row"><span><strong>Show Fee Estimate</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
+              <button class="settings-list-row" type="button" data-open-quick-reactions><span class="settings-row-copy"><strong>Quick Reactions</strong><small data-quick-reactions-preview>👍 ❤️ 😂 😮 😢 🙏</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
               <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
               <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
             </div>
@@ -2529,12 +2530,28 @@
     </div>
   </div>
 
+  <!-- Quick Reactions editor (Settings > Chats) — iOS parity: exactly 6 slots + reset. -->
+  <div class="modal-backdrop" data-quick-reactions-modal hidden>
+    <div class="contact-modal quick-reactions-modal" role="dialog" aria-modal="true" aria-label="Quick Reactions">
+      <header>
+        <div><p class="modal-kicker">Chats</p><h2>Quick Reactions</h2></div>
+        <button class="icon-button" type="button" data-close-quick-reactions aria-label="Close">✕</button>
+      </header>
+      <p class="field-hint">Click a slot and type the emoji to use. These six appear in every reaction menu and hover bar.</p>
+      <div class="quick-reactions-slots" data-quick-reactions-slots></div>
+      <div class="quick-reactions-actions">
+        <button class="secondary-button" type="button" data-quick-reactions-reset>Reset to Default</button>
+        <button class="primary-button" type="button" data-quick-reactions-save>Save</button>
+      </div>
+    </div>
+  </div>
+
   <div class="copy-toast" data-copy-toast hidden role="status" aria-live="polite">
     <span class="copy-toast-icon" aria-hidden="true">✓</span>
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=273"></script>
+  <script type="module" src="./ui/app.js?v=274"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

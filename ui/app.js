@@ -11853,7 +11853,73 @@ function parseReactionEnvelope(text) {
 
 // Fixed 6-emoji tapback set, byte-for-byte the same as iOS/Android — not a
 // full emoji keyboard, keeps reactions identical across every client.
-const QUICK_REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+// --- Quick Reactions editor (Settings > Chats) — iOS parity: 6 slots + reset ---
+const quickReactionsModal = document.querySelector("[data-quick-reactions-modal]");
+
+/** First grapheme cluster of the input — one emoji, however many code points it takes. */
+function firstGrapheme(value) {
+  const s = String(value || "").trim();
+  if (!s) return "";
+  try {
+    const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    return [...seg.segment(s)][0]?.segment || s;
+  } catch {
+    return [...s].slice(0, 2).join(""); // surrogate-pair-safe fallback
+  }
+}
+
+function renderQuickReactionSlots() {
+  const wrap = document.querySelector("[data-quick-reactions-slots]");
+  if (!wrap) return;
+  wrap.innerHTML = quickReactionEmojis()
+    .map((emoji, index) => `<input class="quick-reaction-slot" data-quick-slot="${index}" type="text" value="${escapeHtml(emoji)}" aria-label="Reaction ${index + 1}">`)
+    .join("");
+}
+
+function updateQuickReactionsPreview() {
+  const el = document.querySelector("[data-quick-reactions-preview]");
+  if (el) el.textContent = quickReactionEmojis().join(" ");
+}
+
+document.querySelector("[data-open-quick-reactions]")?.addEventListener("click", () => {
+  if (!quickReactionsModal) return;
+  renderQuickReactionSlots();
+  quickReactionsModal.hidden = false;
+});
+function closeQuickReactionsModal() { if (quickReactionsModal) quickReactionsModal.hidden = true; }
+document.querySelector("[data-close-quick-reactions]")?.addEventListener("click", closeQuickReactionsModal);
+quickReactionsModal?.addEventListener("click", (event) => { if (event.target === quickReactionsModal) closeQuickReactionsModal(); });
+document.querySelector("[data-quick-reactions-reset]")?.addEventListener("click", () => {
+  localStorage.removeItem(QUICK_REACTIONS_KEY);
+  renderQuickReactionSlots();
+  updateQuickReactionsPreview();
+  showCopyToast("Quick reactions reset to default");
+});
+document.querySelector("[data-quick-reactions-save]")?.addEventListener("click", () => {
+  const inputs = [...document.querySelectorAll("[data-quick-slot]")];
+  const emojis = inputs.map((input) => firstGrapheme(input.value));
+  if (emojis.some((e) => !e)) { showCopyToast("Every slot needs an emoji."); return; }
+  localStorage.setItem(QUICK_REACTIONS_KEY, JSON.stringify(emojis));
+  updateQuickReactionsPreview();
+  closeQuickReactionsModal();
+  showCopyToast("Quick reactions saved");
+});
+
+const DEFAULT_QUICK_REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+// User-customizable via Settings > Chats > Quick Reactions (iOS parity: exactly 6
+// slots, global — not per-account — and defensive against malformed stored data).
+const QUICK_REACTIONS_KEY = "kachat-quick-reactions-v1";
+function quickReactionEmojis() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(QUICK_REACTIONS_KEY) || "null");
+    if (Array.isArray(raw) && raw.length === 6 && raw.every((e) => typeof e === "string" && e.trim())) {
+      return raw;
+    }
+  } catch { /* fall through to default */ }
+  return DEFAULT_QUICK_REACTION_EMOJIS;
+}
+// Seed the Settings > Chats row preview once everything above is initialized.
+updateQuickReactionsPreview();
 
 function applyLocalReaction(conversationEntry, targetTxId, reactorAddress, emoji) {
   if (!conversationEntry.reactionsByTxId) conversationEntry.reactionsByTxId = {};
@@ -14566,7 +14632,8 @@ queueMicrotask(async () => {
     uploadNextcloudMedia,
     // Reactions: identical wire parser and fixed tapback set across all clients.
     parseReactionEnvelope,
-    quickReactionEmojis: QUICK_REACTION_EMOJIS,
+    // Getter, not a snapshot: the set is user-customizable (Settings > Chats).
+    quickReactionEmojis: () => quickReactionEmojis(),
     // Same wire envelopes as 1:1 chats — replies, photos, and voice notes must decode
     // in broadcast rooms too instead of rendering raw JSON.
     parseReplyEnvelope,
@@ -15178,7 +15245,7 @@ function openMsgContextMenu({ x, y, reaction, items }) {
   if (reaction) {
     const row = document.createElement("div");
     row.className = "msg-context-reactions";
-    for (const emoji of QUICK_REACTION_EMOJIS) {
+    for (const emoji of quickReactionEmojis()) {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = emoji;
