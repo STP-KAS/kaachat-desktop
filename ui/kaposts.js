@@ -1059,8 +1059,11 @@ async function continueThread(localId) {
     while (state.segments.length && state.parentTxId) {
       await new Promise((resolve) => setTimeout(resolve, 1500)); // let the previous change settle
       const segment = state.segments[0];
-      const txid = await submitWithUtxoRetry(() =>
-        submitKaPostReply({ engine: deps.engine, text: segment, postId: state.parentTxId, parentAuthorPubkey: myPubkey }));
+      const txid = await submitWithUtxoRetry(async () =>
+        submitKaPostReply({
+          engine: deps.engine, text: segment, postId: state.parentTxId, parentAuthorPubkey: myPubkey,
+          mentionedPubkeys: await mentionedPubkeysFor(segment),
+        }));
       state.segments.shift();
       state.parentTxId = txid;
     }
@@ -1254,6 +1257,8 @@ async function submitReply(parent, text) {
   try {
     const txid = await submitKaPostReply({
       engine: deps.engine, text, postId: parent.remoteId, parentAuthorPubkey: parent.posterPubkey,
+      // @mentions work in comments exactly like in posts: resolved client-side to pubkeys.
+      mentionedPubkeys: await mentionedPubkeysFor(text),
     });
     mutatePost(comment.id, (p) => { p.remoteId = txid; p.delivery = "sent"; });
   } catch (error) {
@@ -1768,6 +1773,9 @@ async function pollKaPostNotificationsForPings() {
       body: centerText ? `"${centerText.slice(0, 90)}${centerText.length > 90 ? "…" : ""}"` : "",
       timestamp: Number(n.timestamp) || Date.now(),
       targetKind: "kaposts",
+      // Clicking the bell row deep-opens the exact post/comment (same per-kind
+      // target rule as the in-app notifications panel).
+      targetId: notificationTargetTxId(n, centerText) || undefined,
     });
     // Per-type gate (Settings > Notifications > KaPosts). Disabled types are
     // silently skipped — never queued for later. Unknown kinds always notify.
@@ -1778,13 +1786,35 @@ async function pollKaPostNotificationsForPings() {
 
   for (const { n, actorAddress } of fresh.slice(0, 5)) {
     const text = stripKaChatMarker(n.postContent ? (decodePostContent({ postContent: n.postContent }) || "") : "").trim();
+    const target = notificationTargetTxId(n, text);
     deps.postDesktopNotification?.({
       title: "KaPosts",
       body: `${posterName(actorAddress)} ${kaPostsNotificationAction(n, text)}`,
       tag: `kachat-kaposts-${n.id}`,
-      onClick: () => { openNotificationsPanel(); },
+      // Land on the exact post/comment: switch to the KaPosts tab first (the
+      // notification can arrive while another tab is active), then deep-open.
+      onClick: () => {
+        deps.openKaPostsTab?.();
+        if (target) resolveAndOpenPost(target);
+        else openNotificationsPanel();
+      },
     });
   }
+}
+
+/** Which post/comment a notification should open — same per-kind rule as mapNotificationRow. */
+function notificationTargetTxId(n, decodedText = "") {
+  if (n.contentType === "reply") return n.id;
+  if (n.contentType === "quote") return decodedText ? n.id : (n.contentId || null);
+  if (n.contentType === "follow") return null;
+  return n.contentId || null; // vote, mention, unknown kinds
+}
+
+/** Deep-open a post/comment by txid from OUTSIDE this module (the global bell center). */
+export function openKaPostFromNotification(txId) {
+  if (!deps) return;
+  if (txId) resolveAndOpenPost(txId);
+  else openNotificationsPanel();
 }
 
 function startKaPostsNotificationPolling() {

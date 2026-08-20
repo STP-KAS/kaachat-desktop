@@ -1,6 +1,6 @@
 import { KaspaEngine } from "../engine/index.js";
 import { createGroupManager } from "../engine/group-store.js";
-import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount } from "./kaposts.js";
+import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount, openKaPostFromNotification } from "./kaposts.js";
 import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling } from "./broadcasts.js";
 import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
 import { initColdStorage, refreshColdStorage, resetColdStorageForAccount, listColdWatchedAddresses } from "./coldstorage.js";
@@ -1480,6 +1480,8 @@ function shouldNotifyKaPostsAction(contentType, voteType) {
     case "reply": return accountShellPrefs.kaPostsNotifyComments ?? true;
     case "quote": return accountShellPrefs.kaPostsNotifyReposts ?? true;
     case "follow": return accountShellPrefs.kaPostsNotifyFollows ?? true;
+    // Being @mentioned always pings — deliberate, not the unknown-kind fallback.
+    case "mention": return true;
     default: return true;
   }
 }
@@ -3358,6 +3360,10 @@ document.querySelector("[data-notif-list]")?.addEventListener("click", (event) =
     if (notif.targetId) { try { openGroupChat(notif.targetId); } catch {} }
   } else {
     setActiveAppTab("kaposts");
+    // KaPosts rows deep-open the exact post/comment when a target txid was recorded.
+    if (notif.targetKind === "kaposts" && notif.targetId) {
+      try { openKaPostFromNotification(notif.targetId); } catch {}
+    }
   }
 });
 loadNotifCenter();
@@ -14448,6 +14454,9 @@ queueMicrotask(async () => {
     // Background activity pings (Settings > Notifications > KaPosts).
     shouldNotifyKaPostsAction,
     postDesktopNotification,
+    // OS-notification clicks land on the exact post — the KaPosts tab must be
+    // fronted first since the ping can arrive while another tab is active.
+    openKaPostsTab: () => setActiveAppTab("kaposts"),
     kaPostsSuppressed: () => isChildModeEnabled(),
     // "Tip" button on a post: quick Send-Kaspa-style modal, direct send through the chat
     // payment rules (matches iOS's KaPostTipSheet).

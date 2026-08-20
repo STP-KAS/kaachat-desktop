@@ -307,13 +307,21 @@ export async function submitKaPost({ engine, text, mentionedPubkeys = [] }) {
   return submitKaPostPayload(engine, KAPOSTS_PROTOCOL.postPayload(me, signature, b64, mentions));
 }
 
-/** Replies to a post (its K txid). Mention rule per spec: the parent author. */
-export async function submitKaPostReply({ engine, text, postId, parentAuthorPubkey = null }) {
+/**
+ * Replies to a post (its K txid). mentioned_pubkeys carries the parent author (the spec's
+ * reply-notification hook) PLUS any @mentions the comment text resolved to — same dedupe/
+ * validate/self-drop rules as submitKaPost, so @someone works in comments exactly like in
+ * top-level posts.
+ */
+export async function submitKaPostReply({ engine, text, postId, parentAuthorPubkey = null, mentionedPubkeys = [] }) {
   const b64 = utf8ToBase64(KACHAT_MARKER + String(text || ""));
-  const mentions = parentAuthorPubkey ? `["${parentAuthorPubkey}"]` : "[]";
-  const pubkey = requesterPubkeyFor(engine);
+  const me = requesterPubkeyFor(engine);
+  const clean = [...new Set([parentAuthorPubkey, ...(Array.isArray(mentionedPubkeys) ? mentionedPubkeys : [])]
+    .map((p) => String(p || "").toLowerCase())
+    .filter((p) => /^0[23][0-9a-f]{64}$/.test(p) && p !== me))];
+  const mentions = JSON.stringify(clean);
   const signature = signKaPostString(engine, KAPOSTS_PROTOCOL.replySigningString(postId, b64, mentions));
-  return submitKaPostPayload(engine, KAPOSTS_PROTOCOL.replyPayload(pubkey, signature, postId, b64, mentions));
+  return submitKaPostPayload(engine, KAPOSTS_PROTOCOL.replyPayload(me, signature, postId, b64, mentions));
 }
 
 /** vote ∈ upvote | downvote | unvote (unvote = the fork's removal counter-action). */
