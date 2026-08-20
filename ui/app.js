@@ -4179,6 +4179,13 @@ async function reserveAndSendAddressPool(contact, { replace, toggleTransition = 
       return;
     }
     if (fresh.length) {
+      // Pool reservations are internal plumbing: born HIDDEN so each offer batch doesn't
+      // flood the Manage Addresses list with 5 fresh "Unused" rows. markReservationFunded
+      // unhides one the moment it actually holds money.
+      const spendingState = getSpendingState();
+      const hiddenSet = new Set(spendingState.hidden);
+      for (const { index } of fresh) hiddenSet.add(index);
+      saveSpendingState({ hidden: [...hiddenSet] });
       const entries = fresh.map(({ address, index }) => ({ address, index, offered: false, funded: false }));
       poolState = loadPoolState();
       const list = poolState.myReservations[contactAddress] || [];
@@ -4365,6 +4372,12 @@ function markReservationFunded(address, contactAddress) {
   if (!entry || entry.funded === true) return;
   entry.funded = true;
   savePoolState(poolState);
+  // The reserved address now holds money — funded addresses are always visible.
+  if (Number.isInteger(entry.index)) {
+    const spendingState = getSpendingState();
+    const hiddenSet = new Set(spendingState.hidden);
+    if (hiddenSet.delete(entry.index)) saveSpendingState({ hidden: [...hiddenSet] });
+  }
 }
 
 // Renders a received payment_notice as a normal incoming payment bubble,
