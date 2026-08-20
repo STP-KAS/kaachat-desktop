@@ -2125,6 +2125,9 @@ export function initColdStorage(dependencies) {
     if (event.target.closest("[data-cold-open-visibility]")) {
       showingVisibility = true;
       visibilityPage = 0;
+      // Every open starts from live data: any action since the last visit (generate,
+      // discover, a send landing, a compound) may have changed balances/usage.
+      visUsageCache.clear();
       render();
       return;
     }

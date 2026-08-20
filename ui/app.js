@@ -4840,6 +4840,9 @@ function openSpendingVisibilityScreen() {
     return;
   }
   spendingVisibilityPage = 0;
+  // Every open starts from live data: any action since the last visit (generate, a payment
+  // landing, consolidate) may have changed balances/usage, and this cache never expired.
+  spendingUsageCache.clear();
   spendingVisibilityScreen.hidden = false;
   renderSpendingVisibilityPage();
 }
