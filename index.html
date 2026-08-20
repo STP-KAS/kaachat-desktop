@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop — Step 101</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=275" />
+  <link rel="stylesheet" href="./ui/styles.css?v=276" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#070a0d" />
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
@@ -835,6 +835,7 @@
               <div class="settings-toggle-row"><span><strong>Password for Account Login</strong><small>Require your password when signing in to a saved account.</small></span><label class="switch-control"><input type="checkbox" data-pref-password-login><span></span></label></div>
               <button class="settings-list-row" type="button" data-change-password><span class="settings-row-copy"><strong>Change Password</strong><small data-password-status>No password set</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
               <button class="settings-list-row" type="button" data-settings-open-subscreen="child-mode"><span class="settings-row-copy"><strong>Child Mode</strong><small>Limit KaChat to Chats, Portfolio and Cold Storage.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+              <div class="settings-toggle-row"><span><strong>Chats Payment Privacy</strong><small>Payments in your chats travel between fresh private addresses instead of your public chatting address. Stored per account.</small></span><label class="switch-control"><input type="checkbox" data-chats-privacy-toggle checked><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Save account on this device</strong><small>Encrypted key storage arrives in the next security phase.</small></span><label class="switch-control"><input type="checkbox" data-pref-save-account checked><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Keep me signed in</strong><small>Restore the active account when KaChat opens.</small></span><label class="switch-control"><input type="checkbox" data-pref-keep-signed-in checked><span></span></label></div>
             </div>
@@ -921,7 +922,6 @@
           <section class="settings-group">
             <p class="settings-group-label">Chats</p>
             <div class="settings-list-card">
-              <div class="settings-toggle-row"><span><strong>Chats Payment Privacy</strong><small>Payments in your chats travel between fresh private addresses instead of your public chatting address. Stored per account.</small></span><label class="switch-control"><input type="checkbox" data-chats-privacy-toggle checked><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Show Fee Estimate</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
               <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
               <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
@@ -2527,7 +2527,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=267"></script>
+  <script type="module" src="./ui/app.js?v=268"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>

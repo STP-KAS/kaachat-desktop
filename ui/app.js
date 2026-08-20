@@ -3309,9 +3309,9 @@ function unreadNotifCount() {
 function updateNotifBadge() {
   const badge = document.querySelector("[data-notif-badge]");
   if (!badge) return;
-  const count = unreadNotifCount();
-  if (count > 0) { badge.textContent = count > 99 ? "99+" : String(count); badge.hidden = false; }
-  else badge.hidden = true;
+  // A plain red dot, not a number — "there is something unread" is the whole signal.
+  badge.textContent = "";
+  badge.hidden = unreadNotifCount() === 0;
 }
 function renderNotifCenter() {
   const list = document.querySelector("[data-notif-list]");

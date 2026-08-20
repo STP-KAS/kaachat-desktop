@@ -872,16 +872,26 @@ function renderThread() {
   }
 }
 
+/** Toast label per pending-action key: EVERY interaction gets a visible undo toast. */
+function toastLabelFor(key) {
+  if (key.startsWith("post:quote")) return "Posting quote";
+  if (key.startsWith("post:")) return "Posting";
+  if (key.startsWith("like:")) return "Liking";
+  if (key.startsWith("dislike:")) return "Disliking";
+  if (key.startsWith("repost:")) return "Reposting";
+  if (key.startsWith("comment:")) return "Posting comment";
+  return "Posting";
+}
+
 function renderToasts() {
   if (!toastsEl) return;
   const parts = [];
   for (const [key, pending] of pendingActions) {
-    if (!key.startsWith("post:")) continue;
     const seconds = Math.max(0, Math.ceil((pending.deadline - Date.now()) / 1000));
     parts.push(`
       <div class="kaposts-toast">
         <span class="kaposts-countdown" data-kaposts-countdown="${deps.escapeHtml(key)}">${seconds}</span>
-        <span>${key.startsWith("post:quote") ? "Posting quote" : "Posting"}</span>
+        <span>${deps.escapeHtml(toastLabelFor(key))}</span>
         <button type="button" data-kaposts-undo="${deps.escapeHtml(key)}">Undo</button>
       </div>`);
   }
@@ -1254,18 +1264,26 @@ async function submitReply(parent, text) {
   const comment = makeLocalPost(text);
   mutatePost(parent.id, (p) => { p.comments = [...p.comments, comment]; });
   renderThread();
-  try {
-    const txid = await submitKaPostReply({
-      engine: deps.engine, text, postId: parent.remoteId, parentAuthorPubkey: parent.posterPubkey,
-      // @mentions work in comments exactly like in posts: resolved client-side to pubkeys.
-      mentionedPubkeys: await mentionedPubkeysFor(text),
-    });
-    mutatePost(comment.id, (p) => { p.remoteId = txid; p.delivery = "sent"; });
-  } catch (error) {
-    mutatePost(comment.id, (p) => { p.delivery = "failed"; });
-    deps.appendEngineLog?.(`KaPost reply failed: ${error.message}`);
-  }
-  renderThread();
+  // Same 5s undo window as every other interaction: the optimistic comment shows
+  // immediately, the on-chain submit fires when the toast's countdown runs out,
+  // and Undo removes the comment before anything hits the network.
+  scheduleUndoable(`comment:${comment.id}`, async () => {
+    try {
+      const txid = await submitKaPostReply({
+        engine: deps.engine, text, postId: parent.remoteId, parentAuthorPubkey: parent.posterPubkey,
+        // @mentions work in comments exactly like in posts: resolved client-side to pubkeys.
+        mentionedPubkeys: await mentionedPubkeysFor(text),
+      });
+      mutatePost(comment.id, (p) => { p.remoteId = txid; p.delivery = "sent"; });
+    } catch (error) {
+      mutatePost(comment.id, (p) => { p.delivery = "failed"; });
+      deps.appendEngineLog?.(`KaPost reply failed: ${error.message}`);
+    }
+    renderThread();
+  }, () => {
+    mutatePost(parent.id, (p) => { p.comments = p.comments.filter((c) => c.id !== comment.id); });
+    renderThread();
+  });
 }
 
 function retryPost(post) {

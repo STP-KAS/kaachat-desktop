@@ -690,10 +690,11 @@ button { cursor: pointer; }
 }
 .topbar-notif-button:hover { background: rgba(255,255,255,.06); }
 .topbar-notif-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* Unread indicator: a plain red DOT (no count) — matches the mobile bells. */
 .topbar-notif-badge {
-  position: absolute; top: -3px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px;
-  border-radius: 999px; background: #e0245e; color: #fff; font-size: 10px; font-weight: 700;
-  display: grid; place-items: center; line-height: 1;
+  position: absolute; top: -1px; right: -1px; width: 10px; height: 10px;
+  border-radius: 999px; background: #e0245e;
+  border: 2px solid var(--panel, #101419);
 }
 .notif-center-card { max-width: 460px; }
 .notif-center-header-actions { display: flex; align-items: center; gap: 10px; }
