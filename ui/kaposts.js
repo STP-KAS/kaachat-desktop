@@ -543,6 +543,9 @@ function scheduleUndoable(key, action, undo = null) {
   const timer = setTimeout(() => {
     pendingActions.delete(key);
     stopTickerIfIdle();
+    // Clear this toast NOW rather than trusting the action to re-render the toast layer —
+    // a comment's action only re-renders the thread, which left its toast lingering at "1".
+    renderToasts();
     action();
   }, UNDO_DELAY_MS);
   pendingActions.set(key, { deadline: Date.now() + UNDO_DELAY_MS, timer, undo });
