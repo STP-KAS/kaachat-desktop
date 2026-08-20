@@ -652,6 +652,9 @@ function appendReactionUi(el, m) {
         countEl.textContent = String(count);
         chip.append(countEl);
       }
+      // Delivery indicator on YOUR just-sent reaction: ✓ once on-chain, red ! to retry.
+      const statusEl = broadcastReactionStatusEl(`${m.txId}|${emoji}`);
+      if (statusEl) chip.append(statusEl);
       chips.append(chip);
     }
     el.append(chips);
@@ -902,18 +905,66 @@ async function sendBroadcastReaction(targetTxId, emoji) {
   renderChannelList();
 
   const payload = JSON.stringify({ type: "reaction", targetTxId, emoji, action });
-  try {
-    const txid = await enqueueBroadcastSend(() => sendBroadcastMessage({ engine: deps.engine, channel, content: payload }));
-    // Remember our own reaction tx so the next poll doesn't re-process it.
-    const entry = reactionsCache[channel];
-    if (entry && txid) {
-      (entry.txIds ||= []).push(txid);
-      saveReactions();
+  // Delivery indicator only for ADDs — a removal deletes the chip (matches iOS/1:1).
+  const statusKey = action === "add" ? `${targetTxId}|${emoji}` : null;
+  const attempt = async () => {
+    if (statusKey) setBroadcastReactionStatus(statusKey, "pending");
+    try {
+      const txid = await enqueueBroadcastSend(() => sendBroadcastMessage({ engine: deps.engine, channel, content: payload }));
+      // Remember our own reaction tx so the next poll doesn't re-process it.
+      const entry = reactionsCache[channel];
+      if (entry && txid) {
+        (entry.txIds ||= []).push(txid);
+        saveReactions();
+      }
+      if (statusKey) setBroadcastReactionStatus(statusKey, "sent");
+    } catch (error) {
+      deps.appendEngineLog?.(`Broadcast reaction send failed (local state already applied): ${error.message}`);
+      if (statusKey) setBroadcastReactionStatus(statusKey, "failed", attempt);
     }
-  } catch (error) {
-    deps.showToast?.(error.message);
-    deps.appendEngineLog?.(`Broadcast reaction send failed (non-fatal, local state already applied): ${error.message}`);
+  };
+  await attempt();
+}
+
+// Reaction delivery status (1:1 parity): ✓ once on-chain (auto-hides after 60s),
+// red "!" that retries on click when the send failed. In-memory only.
+const broadcastReactionStatus = new Map(); // "txId|emoji" -> { status, retry }
+
+function setBroadcastReactionStatus(key, status, retry = null) {
+  broadcastReactionStatus.set(key, { status, retry });
+  if (status === "sent") {
+    window.setTimeout(() => {
+      if (broadcastReactionStatus.get(key)?.status === "sent") {
+        broadcastReactionStatus.delete(key);
+        renderRoom();
+      }
+    }, 60_000);
   }
+  renderRoom();
+}
+
+function broadcastReactionStatusEl(key) {
+  const entry = broadcastReactionStatus.get(key);
+  if (!entry) return null;
+  const el = document.createElement("span");
+  if (entry.status === "pending") {
+    el.className = "reaction-status pending";
+    el.textContent = "…";
+    el.title = "Sending reaction…";
+  } else if (entry.status === "sent") {
+    el.className = "reaction-status sent";
+    el.textContent = "✓";
+    el.title = "Reaction sent";
+  } else {
+    el.className = "reaction-status failed";
+    el.textContent = "!";
+    el.title = "Reaction failed to send — click to retry";
+    el.addEventListener("click", (event) => {
+      event.stopPropagation();
+      entry.retry?.();
+    });
+  }
+  return el;
 }
 
 function hideSender(address) {

@@ -8973,6 +8973,9 @@ function renderMessages(conversationEntry) {
           countEl.textContent = String(count);
           entryEl.append(countEl);
         }
+        // Delivery indicator on YOUR just-sent reaction: ✓ once on-chain, red ! to retry.
+        const statusEl = reactionStatusIndicator(`dm|${message.txid || message.id}|${emoji}`);
+        if (statusEl) entryEl.append(statusEl);
         pill.append(entryEl);
       }
       pill.addEventListener("click", (event) => event.stopPropagation());
@@ -12726,6 +12729,52 @@ function importDesktopStateFromSharedArchive(json) {
 // optimistically to the local reactions store first, then fires the actual
 // send in the background through the same serialized send queue every other
 // on-chain action uses.
+// ---------------------------------------------------------------------------
+// Reaction delivery status (iOS parity): a just-sent reaction shows a small
+// checkmark once it is on-chain (auto-hides after 60s) or a red "!" that
+// retries on click when the send failed. Keyed "surface|targetKey|emoji",
+// in-memory only — history never shows stale indicators.
+// ---------------------------------------------------------------------------
+const reactionSendStatus = new Map();
+
+function setReactionSendStatus(key, status, { retry = null, rerender = null } = {}) {
+  reactionSendStatus.set(key, { status, retry });
+  if (status === "sent") {
+    window.setTimeout(() => {
+      if (reactionSendStatus.get(key)?.status === "sent") {
+        reactionSendStatus.delete(key);
+        try { rerender?.(); } catch {}
+      }
+    }, 60_000);
+  }
+  try { rerender?.(); } catch {}
+}
+
+/** Tiny status element for a reaction chip, or null when there's nothing to show. */
+function reactionStatusIndicator(key) {
+  const entry = reactionSendStatus.get(key);
+  if (!entry) return null;
+  const el = document.createElement("span");
+  if (entry.status === "pending") {
+    el.className = "reaction-status pending";
+    el.textContent = "…";
+    el.title = "Sending reaction…";
+  } else if (entry.status === "sent") {
+    el.className = "reaction-status sent";
+    el.textContent = "✓";
+    el.title = "Reaction sent";
+  } else {
+    el.className = "reaction-status failed";
+    el.textContent = "!";
+    el.title = "Reaction failed to send — click to retry";
+    el.addEventListener("click", (event) => {
+      event.stopPropagation();
+      entry.retry?.();
+    });
+  }
+  return el;
+}
+
 async function sendReaction(conversationEntry, targetMessage, emoji) {
   const contact = contactForConversation(conversationEntry);
   if (!contact || !engine.address) return;
@@ -12741,20 +12790,30 @@ async function sendReaction(conversationEntry, targetMessage, emoji) {
   renderChats();
 
   const payload = JSON.stringify({ type: "reaction", targetTxId, emoji, action });
-  try {
-    const envelope = await engine.createEncryptedMessageEnvelope({
-      conversationId: conversationEntry.id,
-      contactId: contact.id,
-      toAddress: contact.address,
-      fromAddress: engine.address,
-      text: payload,
-      localNonce: nowId(),
-      createdAt: Date.now(),
-    });
-    await engine.sendMessageOnchain({ envelope, amountKas: onchainAmountKas(), feeKas: "0", onStatus: () => {} });
-  } catch (error) {
-    appendEngineLog(`Reaction send failed (non-fatal, local state already applied): ${error.message}`);
-  }
+  // Delivery indicator only for ADDs — a removal deletes the chip, so there is
+  // nothing to badge (matches iOS).
+  const statusKey = action === "add" ? `dm|${targetTxId}|${emoji}` : null;
+  const rerender = () => { if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry); };
+  const attempt = async () => {
+    if (statusKey) setReactionSendStatus(statusKey, "pending", { rerender });
+    try {
+      const envelope = await engine.createEncryptedMessageEnvelope({
+        conversationId: conversationEntry.id,
+        contactId: contact.id,
+        toAddress: contact.address,
+        fromAddress: engine.address,
+        text: payload,
+        localNonce: nowId(),
+        createdAt: Date.now(),
+      });
+      await engine.sendMessageOnchain({ envelope, amountKas: onchainAmountKas(), feeKas: "0", onStatus: () => {} });
+      if (statusKey) setReactionSendStatus(statusKey, "sent", { rerender });
+    } catch (error) {
+      appendEngineLog(`Reaction send failed (local state already applied): ${error.message}`);
+      if (statusKey) setReactionSendStatus(statusKey, "failed", { retry: attempt, rerender });
+    }
+  };
+  await attempt();
 }
 
 pendingPhotoRemove?.addEventListener("click", clearPendingPhoto);
@@ -14926,8 +14985,19 @@ async function sendGroupReaction(groupId, targetMessage, emoji) {
   applyGroupReaction(groupId, targetKey, engine.address, action === "remove" ? null : emoji, action);
   if (activeGroupId === groupId) renderGroupMessages();
   const payload = JSON.stringify({ type: "reaction", targetTxId: targetKey, emoji, action });
-  try { await mgr.sendGroupMessage(groupId, payload); }
-  catch (error) { appendEngineLog(`Group reaction send failed (local applied): ${error.message}`); }
+  const statusKey = action === "add" ? `grp|${targetKey}|${emoji}` : null;
+  const rerender = () => { if (activeGroupId === groupId) renderGroupMessages(); };
+  const attempt = async () => {
+    if (statusKey) setReactionSendStatus(statusKey, "pending", { rerender });
+    try {
+      await mgr.sendGroupMessage(groupId, payload);
+      if (statusKey) setReactionSendStatus(statusKey, "sent", { rerender });
+    } catch (error) {
+      appendEngineLog(`Group reaction send failed (local applied): ${error.message}`);
+      if (statusKey) setReactionSendStatus(statusKey, "failed", { retry: attempt, rerender });
+    }
+  };
+  await attempt();
 }
 
 // --- hidden group members (per wallet, per group): filters a member's messages from view ---
@@ -15538,6 +15608,9 @@ function renderGroupMessages() {
           countEl.textContent = String(count);
           entryEl.append(countEl);
         }
+        // Delivery indicator on YOUR just-sent reaction: ✓ once on-chain, red ! to retry.
+        const statusEl = reactionStatusIndicator(`grp|${key}|${emoji}`);
+        if (statusEl) entryEl.append(statusEl);
         pill.append(entryEl);
       }
       pill.addEventListener("click", (event) => event.stopPropagation());

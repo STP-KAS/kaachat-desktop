@@ -5887,6 +5887,19 @@ body.session-logged-out [data-account-rename-modal] {
 }
 .broadcast-room-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
 /* Avatar + bubble rows (1:1/group parity): sender avatar beside every message. */
+/* Reaction delivery status (iOS parity): tiny ✓ when sent, red ! retries on click. */
+.reaction-status {
+  margin-left: 3px;
+  font-size: 9px;
+  font-weight: 800;
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
+}
+.reaction-status.pending { color: var(--muted); }
+.reaction-status.sent { color: var(--kaspa, #62f4d0); }
+.reaction-status.failed { color: #e05555; cursor: pointer; }
+
 /* Quick Reactions editor (Settings > Chats): six emoji slots, iOS-style. */
 .quick-reactions-modal { max-width: 380px; }
 .quick-reactions-slots {
