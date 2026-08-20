@@ -1,7 +1,7 @@
 import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
 import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
-import { getBalance, sendKaspa, sweepAllToSelf, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
+import { getBalance, sendKaspa, sendMaxKaspa, sweepAllToSelf, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
 import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
@@ -625,6 +625,42 @@ export class KaspaEngine {
       amountKas,
       feeKas,
       selectedOutpoints: options.selectedOutpoints || null,
+      log: this.log,
+    });
+  }
+
+  // True "Max" send from the chatting address: exact-fee single-output sweep to the
+  // recipient (see sendMaxKaspa — near-max amounts with change get rejected by KIP-9).
+  async sendMax(destinationAddress, totalFeeKas = null, selectedOutpoints = null) {
+    this.requireWallet();
+    await this.connect();
+    return sendMaxKaspa({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      privateKey: this.privateKey,
+      sourceAddress: this.address,
+      destinationAddress,
+      totalFeeSompi: totalFeeKas != null ? BigInt(this.kaspa.kaspaToSompi(String(totalFeeKas))) : null,
+      selectedOutpoints,
+      log: this.log,
+    });
+  }
+
+  // True "Max" send from a spending address (same exact-fee, single-output build).
+  async sendMaxFromSpending({ mnemonic, index, passphrase = "", destinationAddress, totalFeeKas = null, selectedOutpoints = null }) {
+    this.requireSdk();
+    await this.connect();
+    const spending = deriveSpendingWallet(this.kaspa, mnemonic, index, passphrase);
+    return sendMaxKaspa({
+      kaspa: this.kaspa,
+      rpc: this.rpc,
+      withRpc: this.withRpc.bind(this),
+      privateKey: spending.privateKey,
+      sourceAddress: spending.address,
+      destinationAddress,
+      totalFeeSompi: totalFeeKas != null ? BigInt(this.kaspa.kaspaToSompi(String(totalFeeKas))) : null,
+      selectedOutpoints,
       log: this.log,
     });
   }

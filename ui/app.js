@@ -6343,6 +6343,9 @@ const sendKaspaCoinSummary = document.querySelector("[data-send-kaspa-coin-summa
 let sendKaspaUnit = "kas";        // "kas" | "fiat"
 let sendKaspaPrice = null;        // live KAS price in selectedCurrency
 let sendKaspaAvailableKas = null; // available balance for the Max button
+// True while the amount field holds an untouched Max fill — the send then goes through the
+// exact-fee single-output max path instead of the normal amount+change build.
+let sendKaspaMaxMode = false;
 let sendKaspaFeeTier = "normal";
 let sendKaspaUtxos = [];           // UTXO entries at the source address, for coin control
 const sendKaspaSelected = new Set();
@@ -6534,6 +6537,7 @@ function renderSendKaspaCoinControl() {
     checkbox.className = "manage-send-coin-check";
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) sendKaspaSelected.add(outpointKey); else sendKaspaSelected.delete(outpointKey);
+      sendKaspaMaxMode = false; // a changed input set invalidates a filled Max — re-click Max
       updateSendKaspaCoinSummary();
       scheduleSendKaspaFeeEstimate();
     });
@@ -6613,7 +6617,10 @@ async function fillMaxAmount() {
   } catch { /* keep whatever base fee we have */ }
 
   const totalFeeKas = sendKaspaTotalFeeKas();
-  const maxKas = spendable - totalFeeKas - 0.00001; // + a sompi of slack against rounding
+  // Exact, no slack: the max send path spends (balance - fee) precisely so the generator
+  // emits a single output. Leaving even a sompi-sized remainder used to create a dust
+  // change output that Kaspa's KIP-9 storage-mass rule rejected — "Send failed." every time.
+  const maxKas = spendable - totalFeeKas;
   if (!(maxKas > 0)) { showCopyToast("Balance too low after network fees."); return; }
   sendKaspaAmountInput.value = (sendKaspaUnit === "fiat" && sendKaspaPrice)
     ? (maxKas * sendKaspaPrice).toFixed(selectedCurrency === "btc" ? 8 : 2)
@@ -6622,8 +6629,14 @@ async function fillMaxAmount() {
   // Re-run send validity (enables Send). The re-estimate this triggers uses the same near-full
   // amount, so it lands on the same all-input fee and doesn't disturb the reserved Max.
   sendKaspaAmountInput.dispatchEvent(new Event("input"));
+  // Route the actual send through the exact-fee max path (set AFTER the dispatch above —
+  // the amount listener clears this flag on every USER edit).
+  sendKaspaMaxMode = true;
 }
 sendKaspaMaxButton?.addEventListener("click", () => { fillMaxAmount(); });
+// Any USER edit of the amount leaves max mode (the programmatic fill from fillMaxAmount
+// dispatches an untrusted Event, so it never clears its own flag).
+sendKaspaAmountInput?.addEventListener("input", (event) => { if (event.isTrusted) sendKaspaMaxMode = false; });
 
 sendKaspaPasteButton?.addEventListener("click", async () => {
   try {
@@ -6636,6 +6649,7 @@ sendKaspaPasteButton?.addEventListener("click", async () => {
 // Reset the extra controls and (re)load price + balance/UTXOs each time the modal opens.
 function resetSendKaspaExtras() {
   sendKaspaUnit = "kas";
+  sendKaspaMaxMode = false;
   applySendKaspaUnit();
   // Clear any stale "valid address" check from a previous open (e.g. a compound self-send) - the
   // recipient starts empty, so the check stays hidden until a valid address is entered.
@@ -6705,21 +6719,32 @@ const sendKaspaController = makeSendController({
   resolveAmountKas: sendKaspaResolveAmountKas,
   getFeeKas: sendKaspaGetFeeKas,
   getSelection: sendKaspaGetSelection,
-  // Routes by source (chatting vs a spending index) and mode (compound = no-change sweep).
+  // Routes by source (chatting vs a spending index) and mode (compound = no-change sweep,
+  // untouched Max fill = exact-fee single-output max send).
   sendFn: ({ destination, amountKas, feeKas, selectedOutpoints }) => {
+    const outpoints = selectedOutpoints && selectedOutpoints.length ? selectedOutpoints : null;
     if (sendKaspaCompound) {
       return sendKaspaSourceIndex == null
         ? engine.compoundUtxos()
         : engine.compoundSpending({ mnemonic: activeAccountMnemonic(), index: sendKaspaSourceIndex, passphrase: activeAccountPassphrase() });
     }
+    if (sendKaspaMaxMode) {
+      const totalFeeKas = trimKas8(sendKaspaTotalFeeKas());
+      return sendKaspaSourceIndex == null
+        ? engine.sendMax(destination, totalFeeKas, outpoints)
+        : engine.sendMaxFromSpending({
+          mnemonic: activeAccountMnemonic(), index: sendKaspaSourceIndex, passphrase: activeAccountPassphrase(),
+          destinationAddress: destination, totalFeeKas, selectedOutpoints: outpoints,
+        });
+    }
     if (sendKaspaSourceIndex != null) {
       return engine.sendFromSpending({
         mnemonic: activeAccountMnemonic(), index: sendKaspaSourceIndex, passphrase: activeAccountPassphrase(),
         destinationAddress: destination, amountKas, feeKas,
-        selectedOutpoints: selectedOutpoints && selectedOutpoints.length ? selectedOutpoints : null,
+        selectedOutpoints: outpoints,
       });
     }
-    return engine.send(destination, amountKas, feeKas, selectedOutpoints && selectedOutpoints.length ? { selectedOutpoints } : {});
+    return engine.send(destination, amountKas, feeKas, outpoints ? { selectedOutpoints: outpoints } : {});
   },
   // iOS parity: a send from the CHATTING address (not a spending index, not a
   // compound) surfaces as a chat with the destination holding the payment bubble.

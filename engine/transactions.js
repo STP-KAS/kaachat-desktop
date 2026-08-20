@@ -84,6 +84,68 @@ async function sweepAllToSelfNow({ kaspa, rpc, withRpc, privateKey, sourceAddres
   return { result, txids };
 }
 
+// True "Max" send to a recipient: probe the exact fee for spending every input, then send
+// exactly (total - totalFee) with the difference over the base fee paid as priority — so the
+// generator emits a SINGLE output and folds any sub-dust remainder into the fee. A near-max
+// amount sent through the normal path can't work: whatever tiny remainder is left becomes a
+// dust change output, and Kaspa's KIP-9 storage-mass rule rejects the transaction (the same
+// reason sweepAllToSelf above is a two-pass exact sweep). `totalFeeSompi` is the UI's
+// displayed policy fee; it is clamped up to the generator's own base fee if too low.
+export async function sendMaxKaspa(args) {
+  return enqueueSend(args.sourceAddress, () => sendMaxKaspaNow(args));
+}
+async function sendMaxKaspaNow({ kaspa, rpc, withRpc = null, privateKey, sourceAddress, destinationAddress, totalFeeSompi = null, selectedOutpoints = null, log = () => {} }) {
+  const fetchUtxos = (activeRpc) => activeRpc.getUtxosByAddresses([sourceAddress]);
+  let { entries } = withRpc
+    ? await withRpc(fetchUtxos, { retries: 1, label: "Max send UTXO fetch" })
+    : await fetchUtxos(rpc);
+  if (!entries || entries.length === 0) throw new Error("No UTXOs to send.");
+  if (selectedOutpoints && selectedOutpoints.length) {
+    const wanted = new Set(selectedOutpoints);
+    entries = entries.filter((entry) => {
+      const outpoint = entry.outpoint || {};
+      return wanted.has(`${outpoint.transactionId}:${outpoint.index}`);
+    });
+    if (entries.length === 0) throw new Error("The selected coins are no longer available.");
+  }
+  entries.sort((a, b) => BigInt(a.amount) > BigInt(b.amount) ? 1 : -1);
+  const total = entries.reduce((sum, e) => sum + BigInt(e.amount || 0), 0n);
+
+  // Pass 1: fee for a ~95% send (ample headroom the generator covers with real change).
+  const probe = await kaspa.createTransactions({
+    entries,
+    outputs: [{ address: destinationAddress, amount: total - (total / 20n) }],
+    priorityFee: 0n,
+    changeAddress: sourceAddress,
+    networkId: NETWORK_ID,
+  });
+  const baseFeeSompi = BigInt(probe.summary?.fees ?? 0n);
+  let totalFee = totalFeeSompi != null ? BigInt(totalFeeSompi) : baseFeeSompi;
+  if (totalFee < baseFeeSompi) totalFee = baseFeeSompi;
+  const amount = total - totalFee;
+  if (amount <= 0n) throw new Error("Balance too low after network fees.");
+
+  // Pass 2: send exactly (total - totalFee) -> single output, remainder folded into fee.
+  const result = await kaspa.createTransactions({
+    entries,
+    outputs: [{ address: destinationAddress, amount }],
+    priorityFee: totalFee - baseFeeSompi,
+    changeAddress: sourceAddress,
+    networkId: NETWORK_ID,
+  });
+  const txids = [];
+  for (const pending of result.transactions) {
+    await pending.sign([privateKey]);
+    const submitSigned = (activeRpc) => pending.submit(activeRpc);
+    const txid = withRpc
+      ? await withRpc(submitSigned, { retries: 1, label: "Max send broadcast" })
+      : await submitSigned(rpc);
+    txids.push(txid);
+    log("Max send txid:", txid);
+  }
+  return { result, txids, amountSompi: amount };
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Back-to-back self-sends (spamming chat/group messages) each spend the wallet's UTXO and
