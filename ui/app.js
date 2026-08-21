@@ -3180,6 +3180,15 @@ async function syncStrangerPaymentsIntoSelfChat({ catchUp = false } = {}) {
     if (!catchUp) {
       const appended = conversationEntry.messages.find((entry) => entry.txid === txid) || message;
       maybeNotifyIncoming(conversationEntry, contact, appended);
+      // Received KAS at your chatting address — also list it in the global notifications bell.
+      recordGlobalNotification({
+        id: `wallet-${txid}`,
+        source: "wallet",
+        title: `Received ${amountKas} KAS`,
+        body: "Your chatting address",
+        timestamp: Date.now(),
+        targetKind: "wallet",
+      });
     }
     if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
     added += 1;
@@ -3330,7 +3339,7 @@ const NOTIF_SESSION_START = Date.now();
 const notifOverlay = document.querySelector("[data-notif-overlay]");
 let globalNotifications = [];
 let notifCenterLastSeenAt = 0;
-const NOTIF_SOURCE_LABELS = { kaposts: "KaPosts", group: "Group", broadcast: "Broadcast" };
+const NOTIF_SOURCE_LABELS = { kaposts: "KaPosts", group: "Group", broadcast: "Broadcast", wallet: "Wallet" };
 
 function loadNotifCenter() {
   try { globalNotifications = JSON.parse(localStorage.getItem(accountScopedKey(NOTIF_CENTER_KEY)) || "[]"); }
@@ -3418,6 +3427,9 @@ document.querySelector("[data-notif-list]")?.addEventListener("click", (event) =
   } else if (notif.targetKind === "group") {
     setActiveAppTab("chats");
     if (notif.targetId) { try { openGroupChat(notif.targetId); } catch {} }
+  } else if (notif.targetKind === "wallet") {
+    // Received-Kaspa rows open the Portfolio tab.
+    setActiveAppTab("portfolio");
   } else {
     setActiveAppTab("kaposts");
     // KaPosts rows deep-open the exact post/comment when a target txid was recorded.
@@ -3975,6 +3987,15 @@ async function attributeAndNotifyAddressActivity(increases) {
           tag: `kachat-addr-activity-${txid}`,
           onClick: () => {},
         });
+        // Also record it in the global notifications bell (Profile), alongside KaPosts/mentions.
+        recordGlobalNotification({
+          id: `wallet-${txid}`,
+          source: "wallet",
+          title: `Received ${formatSompiForNotification(toAddress)} KAS`,
+          body: describeActivityAddress(kind, address),
+          timestamp: Date.now(),
+          targetKind: "wallet",
+        });
         appendEngineLog(`Address activity: external receive ${txid.slice(0, 12)}… on ${shortAddress(address)}`);
       } else {
         appendEngineLog(`Address activity: suppressed self-send ${txid.slice(0, 12)}…`);
@@ -3988,6 +4009,14 @@ async function attributeAndNotifyAddressActivity(increases) {
         body: describeActivityAddress(kind, address),
         tag: `kachat-addr-activity-bal-${address.slice(-12)}-${Date.now()}`,
         onClick: () => {},
+      });
+      recordGlobalNotification({
+        id: `wallet-bal-${address.slice(-12)}-${Date.now()}`,
+        source: "wallet",
+        title: `Balance increased by ${formatSompiForNotification(delta)} KAS`,
+        body: describeActivityAddress(kind, address),
+        timestamp: Date.now(),
+        targetKind: "wallet",
       });
     }
   }
