@@ -27,6 +27,21 @@ function nextcloudProxy() {
           res.end("Bad proxy target");
           return;
         }
+        // SSRF guard: this proxy is reachable from the LAN (--host 0.0.0.0) and, through the
+        // reverse proxy, from the internet — so it must never forward into the dev machine
+        // itself or the link-local/cloud-metadata range. RFC1918 LAN targets stay allowed on
+        // purpose (a self-hosted Nextcloud on the LAN is a supported setup). Note: a public
+        // DNS name resolving to a blocked address (rebinding) is not caught here — this is a
+        // dev-server hardening layer, not a security boundary for production.
+        const host = origin.hostname.toLowerCase();
+        const blockedHost = host === "localhost" || host === "0.0.0.0" || host.endsWith(".localhost")
+          || /^127\./.test(host) || host === "::1" || host === "[::1]"
+          || /^169\.254\./.test(host) || host === "metadata.google.internal";
+        if (blockedHost) {
+          res.statusCode = 403;
+          res.end("Proxy target not allowed");
+          return;
+        }
         const headers = { ...req.headers, host: origin.host };
         // The browser's origin/referer would confuse some reverse-proxy setups — drop them.
         delete headers.origin;
@@ -77,7 +92,12 @@ function nextcloudProxy() {
                 upstreamRes.resume(); // discard the redirect body
                 let next = null;
                 try { next = new URL(location, target); } catch { next = null; }
-                if (next && (next.protocol === "http:" || next.protocol === "https:")) {
+                // A redirect must obey the same SSRF guard as the original target.
+                const nextHost = (next?.hostname || "").toLowerCase();
+                const nextBlocked = !next || nextHost === "localhost" || nextHost === "0.0.0.0"
+                  || nextHost.endsWith(".localhost") || /^127\./.test(nextHost) || nextHost === "::1"
+                  || nextHost === "[::1]" || /^169\.254\./.test(nextHost) || nextHost === "metadata.google.internal";
+                if (!nextBlocked && (next.protocol === "http:" || next.protocol === "https:")) {
                   forward(next, hop + 1);
                   return;
                 }

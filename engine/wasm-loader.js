@@ -1,18 +1,10 @@
 export async function loadKaspaModule() {
-  try {
-    const mod = await import("../kaspa/kaspa.js");
-    // wasm-bindgen deprecated positional init params — pass the single-object form
-    // (silences the "using deprecated parameters for the initialization function" warning).
-    await mod.default({ module_or_path: "../kaspa/kaspa_bg.wasm" });
-    return mod;
-  } catch (firstError) {
-    try {
-      // Legacy fallback bundle: predates the object-form init, keep the positional param.
-      const mod = await import("../kaspa/kaspa-wasm.js");
-      await mod.default("../kaspa/kaspa-wasm_bg.wasm");
-      return mod;
-    } catch {
-      throw firstError;
-    }
-  }
+  const mod = await import("../kaspa/kaspa.js");
+  // wasm-bindgen deprecated positional init params — pass the single-object form
+  // (silences the "using deprecated parameters for the initialization function" warning).
+  await mod.default({ module_or_path: "../kaspa/kaspa_bg.wasm" });
+  return mod;
+  // The old kaspa-wasm.js/kaspa-wasm_bg.wasm "legacy fallback" was deleted: it was a
+  // byte-identical copy of the files above (12.5 MB of duplicated repo weight), so the
+  // fallback could only ever load the exact same bytes that just failed.
 }

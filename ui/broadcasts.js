@@ -123,8 +123,16 @@ function retentionCutoffMs(channel) {
 
 function saveCache() {
   try { localStorage.setItem(CACHE_KEY, JSON.stringify(messageCache)); }
-  catch { /* quota — drop oldest channels rather than crash */
-    messageCache = {};
+  catch {
+    // Quota: actually drop the OLDEST HALF of each channel's messages (the old code wiped
+    // messageCache entirely, silently deleting every channel's history) and retry once.
+    try {
+      for (const channel of Object.keys(messageCache)) {
+        const rows = messageCache[channel] || [];
+        if (rows.length > 50) messageCache[channel] = rows.slice(Math.floor(rows.length / 2));
+      }
+      localStorage.setItem(CACHE_KEY, JSON.stringify(messageCache));
+    } catch { /* still over quota — keep the in-memory copy, skip persisting */ }
   }
 }
 
@@ -303,7 +311,7 @@ async function backfillChannel(channel, { quiet = true } = {}) {
 
 function startPolling(channel) {
   stopPolling();
-  pollTimer = window.setInterval(() => backfillChannel(channel), POLL_MS);
+  pollTimer = window.setInterval(() => { if (!document.hidden) backfillChannel(channel); }, POLL_MS);
 }
 
 function stopPolling() {

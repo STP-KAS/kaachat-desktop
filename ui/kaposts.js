@@ -400,7 +400,38 @@ function fetchFeedPage(before, limit = PAGER_PAGE_SIZE) {
 }
 
 /** Page one. Resets the endless-scroll window: new cursor, cleared end-reached, top of list. */
+// One-shot per session: rebuild the LOCAL follow set from the on-chain follow graph. Every
+// Follow button and the Following tab filter read prefs.following, which lives only in
+// localStorage — a cleared profile left users "following 0" with Follow buttons beside
+// people they already follow on-chain. Chain entries are only ever ADDED (never removed),
+// so a just-clicked local unfollow the indexer hasn't caught up on can't be resurrected.
+let followingChainSynced = false;
+async function syncFollowingFromChain() {
+  if (followingChainSynced) return;
+  followingChainSynced = true;
+  try {
+    const pubkey = safeRequesterPubkey();
+    if (!pubkey) { followingChainSynced = false; return; }
+    const raw = await fetchFollowList({ engine: deps.engine, pubkey, followers: false, limit: 500 });
+    const merged = new Set(prefs.following);
+    for (const item of raw || []) {
+      const rowPubkey = item?.userPublicKey || item?.publicKey || item?.pubkey || item?.followedPubkey || item?.user || "";
+      const address = item?.address || kaspaAddressFromPubkey(deps.engine, rowPubkey) || "";
+      if (address) merged.add(address);
+    }
+    merged.delete(deps.engine.address || "");
+    if (merged.size !== prefs.following.length) {
+      prefs.following = [...merged];
+      savePrefs();
+      renderAll();
+    }
+  } catch {
+    followingChainSynced = false; // network miss — retry on the next feed load
+  }
+}
+
 async function loadFeed() {
+  syncFollowingFromChain();
   // The KaPosts tab can be clicked before initKaPosts has run (startup awaits storage/engine
   // first) — deps is still null then, and every deps.* access below would throw.
   if (!deps) return;

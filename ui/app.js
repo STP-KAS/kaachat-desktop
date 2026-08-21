@@ -830,7 +830,7 @@ function openPhotoPreview(dataUrl) {
 
 photoPreviewOverlay?.addEventListener("click", () => { photoPreviewOverlay.hidden = true; });
 
-// --- Message link previews (docs/NEXTCLOUD_MEDIA_PREVIEW.md) -----------------
+// --- Message link previews -----------------------------------------------------
 // Linkifies URLs in message text and, for previewable links, appends a media
 // card. Nextcloud public shares are privacy-gated: nothing is fetched from the
 // sender's server until the recipient taps "view" (the share URL alone doesn't
@@ -3190,8 +3190,15 @@ async function refreshAllConversations({ quiet = true } = {}) {
     }
     try { added += await syncGroupsNow(); }
     catch (error) { appendEngineLog(`Group sync failed: ${error.message}`); }
-    persistState();
-    if (!activeConversationId) renderChats();
+    // Persist and re-render ONLY when the sweep actually changed something. state holds
+    // every inline base64 photo/voice message, so the unconditional persist here was two
+    // full multi-MB JSON.stringify passes + a string compare on the main thread every 5
+    // seconds forever — the single biggest source of periodic typing/scroll hitches. The
+    // chat-list rebuild on every sweep also killed hover/selection for no reason.
+    if (added > 0) {
+      persistState();
+      if (!activeConversationId) renderChats();
+    }
     return added;
   } finally {
     messageRefreshInFlight = false;
@@ -3202,8 +3209,10 @@ async function refreshAllConversations({ quiet = true } = {}) {
 }
 
 function startAutomaticRefresh() {
-  if (!balanceRefreshTimer) balanceRefreshTimer = window.setInterval(() => refreshBalanceOnly({ quiet: true }), BALANCE_REFRESH_MS);
-  if (!messageRefreshTimer) messageRefreshTimer = window.setInterval(() => refreshAllConversations({ quiet: true }), MESSAGE_REFRESH_MS);
+  // Hidden-tab polls burn network + CPU for a page nobody is looking at; the
+  // visibilitychange handler already forces a full refresh the moment the tab returns.
+  if (!balanceRefreshTimer) balanceRefreshTimer = window.setInterval(() => { if (!document.hidden) refreshBalanceOnly({ quiet: true }); }, BALANCE_REFRESH_MS);
+  if (!messageRefreshTimer) messageRefreshTimer = window.setInterval(() => { if (!document.hidden) refreshAllConversations({ quiet: true }); }, MESSAGE_REFRESH_MS);
 }
 
 function renderTransportReadiness() {

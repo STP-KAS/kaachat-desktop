@@ -1,4 +1,4 @@
-// Nextcloud integration (docs/NEXTCLOUD_MEDIA_PREVIEW.md) — desktop port of the iOS stack:
+// Nextcloud integration — desktop port of the iOS stack:
 // connect a server with an app password, browse it over WebDAV, send photos/videos in chats as
 // public /s/TOKEN share links (rendered by the link-preview feature), and back up the account's
 // chat data to the server (manual + automatic with hourly throttle and launch catch-up).

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEFAULT_ZIP="$ROOT/vendor/rusty-kaspa-master-2.zip"
+DEFAULT_ZIP="$HOME/Downloads/rusty-kaspa-master-2.zip" # the vendored copy was removed from the repo (6.2 MB); pass a path explicitly
 ZIP="${1:-$DEFAULT_ZIP}"
 WORK="$ROOT/.rusty-build"
 
@@ -73,8 +73,6 @@ echo "Building Rusty Kaspa browser WASM from included source..."
 mkdir -p "$ROOT/kaspa"
 if [[ -f web/kaspa/kaspa.js && -f web/kaspa/kaspa_bg.wasm ]]; then
   cp web/kaspa/kaspa.js web/kaspa/kaspa_bg.wasm "$ROOT/kaspa/"
-  cp web/kaspa/kaspa.js "$ROOT/kaspa/kaspa-wasm.js"
-  cp web/kaspa/kaspa_bg.wasm "$ROOT/kaspa/kaspa-wasm_bg.wasm"
 else
   echo "Build finished, but expected web/kaspa/kaspa.js and web/kaspa/kaspa_bg.wasm were not found."
   find web -maxdepth 3 -type f | sort
