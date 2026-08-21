@@ -7931,3 +7931,17 @@ body.session-logged-out [data-account-rename-modal] {
 }
 .group-member-resend-btn:hover { background: var(--surface-2); }
 .group-member-resend-btn:disabled { opacity: .5; cursor: default; }
+.group-member-remove-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--danger, #ff3b30);
+  cursor: pointer;
+}
+.group-member-remove-btn:hover { background: var(--surface-2); }
+.group-member-remove-btn:disabled { opacity: .5; cursor: default; }
