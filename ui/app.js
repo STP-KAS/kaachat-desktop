@@ -8320,6 +8320,15 @@ document.querySelectorAll("[data-close-kns-editor]").forEach((button) => {
   button.addEventListener("click", () => { if (knsEditorModal) knsEditorModal.hidden = true; });
 });
 
+// iOS-style "setup guide" — an in-app walkthrough opened from the editor (stacks on top of it).
+const knsGuideModal = document.querySelector("[data-kns-guide-modal]");
+document.querySelector("[data-open-kns-guide]")?.addEventListener("click", () => {
+  if (knsGuideModal) knsGuideModal.hidden = false;
+});
+document.querySelectorAll("[data-close-kns-guide]").forEach((button) => {
+  button.addEventListener("click", () => { if (knsGuideModal) knsGuideModal.hidden = true; });
+});
+
 document.querySelector("[data-kns-editor-save]")?.addEventListener("click", async () => {
   const errorEl = document.querySelector("[data-kns-editor-error]");
   const progressEl = document.querySelector("[data-kns-editor-progress]");

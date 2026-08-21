@@ -5187,7 +5187,89 @@ body.session-logged-out [data-account-rename-modal] {
 
 .chat-info-social-link:hover { background: var(--line); }
 
-.kns-register-modal { max-width: 420px; }
+.kns-register-modal { max-width: 440px; }
+
+/* Consistent breathing room for the stacked KNS fields — the shared .compact rule zeroes the
+   gap, which cramped each label against the field above. Applies to both the register wizard's
+   details step and the standalone editor. */
+.kns-register-modal .field-label.compact { margin-bottom: 14px; }
+.kns-register-modal .field-label.compact:last-of-type { margin-bottom: 4px; }
+.kns-register-modal textarea.field-input { min-height: 70px; resize: vertical; line-height: 1.45; }
+.kns-register-modal .field-hint { margin-bottom: 18px; }
+.kns-register-modal .modal-actions { margin-top: 18px; }
+
+/* The multi-step register wizard can get tall (details step = 7 fields) — let the whole modal
+   scroll rather than overflow the viewport. Same for the informational guide sheet. */
+[data-kns-register-modal] .kns-register-modal,
+[data-kns-guide-modal] .kns-register-modal { max-height: 88vh; overflow-y: auto; }
+
+/* The flat editor pins its header/hint/actions and scrolls only the field list, iOS-style. */
+[data-kns-editor-modal] .kns-register-modal {
+  max-height: min(88vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+[data-kns-editor-modal] .kns-register-modal .modal-header,
+[data-kns-editor-modal] .kns-register-modal > .field-hint,
+[data-kns-editor-modal] .kns-register-modal > .modal-actions { flex: 0 0 auto; }
+[data-kns-editor-modal] .kns-editor-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 2px 4px;
+}
+
+/* iOS-style "setup guide" callout at the top of the KNS editor. */
+.kns-editor-guide {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(98,244,208,.22);
+  background: rgba(78,205,196,.08);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.kns-editor-guide:hover { background: rgba(78,205,196,.14); border-color: rgba(98,244,208,.4); }
+.kns-editor-guide-icon {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(98,244,208,.16);
+  font-size: 18px;
+}
+.kns-editor-guide-text { display: grid; gap: 2px; }
+.kns-editor-guide-title { font-size: 13.5px; font-weight: 700; color: var(--kaspa-ink); }
+.kns-editor-guide-sub { font-size: 12px; color: var(--muted); }
+.kns-editor-guide-chevron { margin-left: auto; color: var(--muted); flex: 0 0 auto; }
+
+/* The in-app KNS setup-guide steps sheet. */
+.kns-guide-steps { display: grid; gap: 14px; margin: 4px 0 4px; }
+.kns-guide-step { display: flex; gap: 12px; align-items: flex-start; }
+.kns-guide-step-num {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(98,244,208,.16);
+  color: var(--kaspa-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+.kns-guide-step-body { display: grid; gap: 3px; }
+.kns-guide-step-title { font-size: 14px; font-weight: 650; color: var(--text); }
+.kns-guide-step-desc { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
 
 .kns-domain-input-row {
   display: flex;

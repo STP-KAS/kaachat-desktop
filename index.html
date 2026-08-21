@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=292" />
+  <link rel="stylesheet" href="./ui/styles.css?v=293" />
   <meta name="theme-color" content="#070a0d" />
   <!-- The KaChat logo the app already ships (432px PNG) doubles as the tab icon. -->
   <link rel="icon" type="image/png" href="./ui/assets/kachat-logo.png" />
@@ -1723,7 +1723,7 @@
 
       <div data-kns-step="details" hidden>
         <p class="field-hint"><strong data-kns-registered-domain></strong> is yours. Add optional profile details now, or skip and add them later from your Profile screen.</p>
-        <label class="field-label compact">Bio<textarea class="field-input" data-kns-field="bio" maxlength="300" rows="2"></textarea></label>
+        <label class="field-label compact">Bio<textarea class="field-input" data-kns-field="bio" maxlength="300" rows="3"></textarea></label>
         <label class="field-label compact">Website<input class="field-input" type="text" data-kns-field="website" maxlength="2048" /></label>
         <label class="field-label compact">X (Twitter)<input class="field-input" type="text" data-kns-field="x" maxlength="64" /></label>
         <label class="field-label compact">Telegram<input class="field-input" type="text" data-kns-field="telegram" maxlength="64" /></label>
@@ -1757,18 +1757,76 @@
         <button class="modal-close" type="button" data-close-kns-editor aria-label="Close">×</button>
       </div>
       <p class="field-hint">Each changed field is a separate on-chain write (~2 KAS commit + ~1 KAS reveal, offset by network fees).</p>
-      <label class="field-label compact">Bio<textarea class="field-input" data-kns-editor-field="bio" maxlength="300" rows="2"></textarea></label>
-      <label class="field-label compact">Website<input class="field-input" type="text" data-kns-editor-field="website" maxlength="2048" /></label>
-      <label class="field-label compact">X (Twitter)<input class="field-input" type="text" data-kns-editor-field="x" maxlength="64" /></label>
-      <label class="field-label compact">Telegram<input class="field-input" type="text" data-kns-editor-field="telegram" maxlength="64" /></label>
-      <label class="field-label compact">Discord<input class="field-input" type="text" data-kns-editor-field="discord" maxlength="128" /></label>
-      <label class="field-label compact">Email<input class="field-input" type="text" data-kns-editor-field="contactEmail" maxlength="254" /></label>
-      <label class="field-label compact">GitHub<input class="field-input" type="text" data-kns-editor-field="github" maxlength="64" /></label>
-      <p class="field-error" data-kns-editor-error hidden></p>
-      <div class="kns-progress" data-kns-editor-progress hidden></div>
+      <div class="kns-editor-scroll">
+        <button class="kns-editor-guide" type="button" data-open-kns-guide>
+          <span class="kns-editor-guide-icon" aria-hidden="true">📘</span>
+          <span class="kns-editor-guide-text">
+            <span class="kns-editor-guide-title">KNS profile setup guide</span>
+            <span class="kns-editor-guide-sub">How each field works &amp; what it costs</span>
+          </span>
+          <svg class="kns-editor-guide-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <label class="field-label compact">Bio<textarea class="field-input" data-kns-editor-field="bio" maxlength="300" rows="3"></textarea></label>
+        <label class="field-label compact">Website<input class="field-input" type="text" data-kns-editor-field="website" maxlength="2048" /></label>
+        <label class="field-label compact">X (Twitter)<input class="field-input" type="text" data-kns-editor-field="x" maxlength="64" /></label>
+        <label class="field-label compact">Telegram<input class="field-input" type="text" data-kns-editor-field="telegram" maxlength="64" /></label>
+        <label class="field-label compact">Discord<input class="field-input" type="text" data-kns-editor-field="discord" maxlength="128" /></label>
+        <label class="field-label compact">Email<input class="field-input" type="text" data-kns-editor-field="contactEmail" maxlength="254" /></label>
+        <label class="field-label compact">GitHub<input class="field-input" type="text" data-kns-editor-field="github" maxlength="64" /></label>
+        <p class="field-error" data-kns-editor-error hidden></p>
+        <div class="kns-progress" data-kns-editor-progress hidden></div>
+      </div>
       <div class="modal-actions">
         <button class="secondary-button" type="button" data-close-kns-editor>Cancel</button>
         <button class="primary-button" type="button" data-kns-editor-save>Save Changes</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-kns-guide-modal hidden>
+    <section class="contact-modal kns-register-modal" role="dialog" aria-modal="true" aria-label="KNS profile setup guide">
+      <div class="modal-header">
+        <div>
+          <p class="modal-kicker">Setup guide</p>
+          <h2>KNS Profile Setup</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-kns-guide aria-label="Close">×</button>
+      </div>
+      <p class="field-hint">Your KNS domain is your on-chain identity. Here's how each part works — every domain and profile field is a real Kaspa transaction.</p>
+      <div class="kns-editor-scroll">
+        <div class="kns-guide-steps">
+          <div class="kns-guide-step">
+            <span class="kns-guide-step-num">1</span>
+            <div class="kns-guide-step-body">
+              <span class="kns-guide-step-title">Fund your chatting address</span>
+              <span class="kns-guide-step-desc">Keep at least ~50 KAS on your chatting address before starting. Registering a name and each profile field are separate on-chain writes, so you need a small buffer to cover them.</span>
+            </div>
+          </div>
+          <div class="kns-guide-step">
+            <span class="kns-guide-step-num">2</span>
+            <div class="kns-guide-step-body">
+              <span class="kns-guide-step-title">Register your domain</span>
+              <span class="kns-guide-step-desc">Pick a name (shorter names cost more). Check availability &amp; fee, then inscribe it on-chain — a commit followed by a reveal transaction. Once confirmed, you're known across KaChat as <strong>yourname.kas</strong>.</span>
+            </div>
+          </div>
+          <div class="kns-guide-step">
+            <span class="kns-guide-step-num">3</span>
+            <div class="kns-guide-step-body">
+              <span class="kns-guide-step-title">Add your profile details</span>
+              <span class="kns-guide-step-desc">Bio, Website, X, Telegram, Discord, Email and GitHub. Each field you change is its own on-chain write (~2 KAS commit + ~1 KAS reveal, most of which returns to you as change).</span>
+            </div>
+          </div>
+          <div class="kns-guide-step">
+            <span class="kns-guide-step-num">4</span>
+            <div class="kns-guide-step-body">
+              <span class="kns-guide-step-title">Edit anytime</span>
+              <span class="kns-guide-step-desc">Reopen <strong>Edit KNS Profile</strong> whenever you like. Only the fields you actually change are re-written, so you only pay for what you update.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="primary-button full" type="button" data-close-kns-guide>Got it</button>
       </div>
     </section>
   </div>
@@ -2550,7 +2608,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=303"></script>
+  <script type="module" src="./ui/app.js?v=304"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>
