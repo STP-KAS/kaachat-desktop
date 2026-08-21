@@ -1,5 +1,5 @@
 import { loadKaspaModule } from "./wasm-loader.js";
-import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
+import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, forgetEndpoint, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
 import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
 import { getBalance, sendKaspa, sendMaxKaspa, sweepAllToSelf, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
@@ -516,6 +516,11 @@ export class KaspaEngine {
 
   clearNodeRegistry() {
     return clearNodeRegistry();
+  }
+
+  // Drop a specific node from the registry so Automatic mode won't reconnect to it.
+  forgetNode(endpoint) {
+    return forgetEndpoint(endpoint);
   }
 
   async disconnect() {

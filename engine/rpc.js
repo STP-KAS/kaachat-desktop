@@ -176,6 +176,29 @@ export function clearNodeRegistry() {
   try { localStorage.removeItem(NODE_REGISTRY_KEY); } catch {}
 }
 
+// Compare two wRPC URLs ignoring a trailing slash and host casing.
+function sameEndpoint(a, b) {
+  const norm = (u) => String(u || "").trim().replace(/\/+$/, "").toLowerCase();
+  return norm(a) && norm(a) === norm(b);
+}
+
+// Purge a specific endpoint from the registry (its scored record AND the last-good pointer).
+// Used when the user leaves a custom node for Automatic: without this, Automatic mode would
+// immediately reconnect to that same node via `lastGoodEndpoint` or the standby pool. Returns
+// true if anything was removed.
+export function forgetEndpoint(endpoint) {
+  const target = String(endpoint || "").trim();
+  if (!target) return false;
+  const registry = loadRegistry();
+  let changed = false;
+  for (const key of Object.keys(registry.endpoints || {})) {
+    if (sameEndpoint(key, target)) { delete registry.endpoints[key]; changed = true; }
+  }
+  if (sameEndpoint(registry.lastGoodEndpoint, target)) { registry.lastGoodEndpoint = ""; changed = true; }
+  if (changed) { registry.updatedAt = now(); saveRegistry(registry); }
+  return changed;
+}
+
 export function getNodeRegistrySnapshot() {
   const registry = loadRegistry();
   const endpoints = Object.values(registry.endpoints || {}).sort((a, b) => {

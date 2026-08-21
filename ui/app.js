@@ -3550,6 +3550,17 @@ document.querySelector("[data-node-apply]")?.addEventListener("click", async (ev
       setStatus("Checking your node…");
       await engine.verifyNode(url);
     }
+    // Leaving a custom node for Automatic: forget that node entirely, otherwise Automatic would
+    // immediately reconnect to it via last-good / the standby pool. The user asked for it to be
+    // removed and only auto-discovered nodes used.
+    if (mode !== "custom") {
+      const previousCustom = getEndpointOverride("trustedNode").trim();
+      // Purge both the URL the user typed AND the URL we're actually connected on — the WASM
+      // client can normalize the endpoint, so the registry key may differ from the typed value.
+      const liveEndpoint = engine.rpc?.url || engine.connectionSnapshot?.().primaryEndpoint || "";
+      if (previousCustom) engine.forgetNode?.(previousCustom);
+      if (liveEndpoint) engine.forgetNode?.(liveEndpoint);
+    }
     setEndpoint("trustedNode", url); // "" clears the override, returning to Automatic
     setStatus(mode === "custom" ? "Connecting to your node…" : "Finding a healthy node…");
     await engine.connect({ force: true });
