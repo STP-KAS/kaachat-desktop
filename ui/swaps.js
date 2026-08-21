@@ -2,13 +2,21 @@
 // The agreement gate (terms link + required checkbox), estimate, exchange creation, and a
 // per-account history with live status refresh + "Add to Portfolio" on finished swaps.
 //
-// The ChangeNOW API key is stored locally (Settings-style field on this screen) rather than
-// baked into the repo — this is a public web codebase, unlike the store app binaries.
+// The ChangeNOW API key ships with the build, exactly like the iOS/Android apps: Vite inlines
+// `VITE_CHANGENOW_API_KEY` from a gitignored `.env` at build time (mirroring Android's
+// local.properties → BuildConfig and iOS's Secrets.xcconfig), so the key never lands in the
+// public source but rides in the shipped bundle — same exposure as the store-app binaries.
+// So swaps just work with no key to paste. A device-level localStorage override is still honored
+// for forks that build without the .env or want their own ChangeNOW key.
 
 import { listPortfolios, addTransactionToPortfolio } from "./portfolio.js";
 
 const CN_BASE = "https://api.changenow.io/v1";
-const API_KEY_KEY = "kachat-changenow-api-key-v1";           // global (device-level)
+const API_KEY_KEY = "kachat-changenow-api-key-v1";           // global (device-level) override
+// Build-time key (inlined by Vite). Guarded because `import.meta.env` doesn't exist outside a
+// Vite transform (e.g. bare test harnesses) — falls back to empty, then to the localStorage key.
+let BUILTIN_KEY = "";
+try { BUILTIN_KEY = String(import.meta.env.VITE_CHANGENOW_API_KEY || "").trim(); } catch { BUILTIN_KEY = ""; }
 const AGREED_KEY = "kachat-swap-disclaimer-agreed-v1";       // account-scoped
 const HISTORY_KEY = "kachat-swap-history-v1";                // account-scoped
 const COINS = ["btc", "eth", "sol", "ltc", "doge", "usdttrc20", "usdterc20", "xmr"];
@@ -25,7 +33,8 @@ let estimateError = null;
 let creating = false;
 
 function apiKey() {
-  return String(localStorage.getItem(API_KEY_KEY) || "").trim();
+  // Device-level override wins (a fork's own key); otherwise the key baked into this build.
+  return String(localStorage.getItem(API_KEY_KEY) || "").trim() || BUILTIN_KEY;
 }
 
 function loadState() {
