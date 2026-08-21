@@ -16404,7 +16404,7 @@ async function syncGroupsNow() {
     if (ev.kind === "photo-updated") {
       if (ev.changed) {
         const who = groupSenderLabel(ev.adminAddress);
-        appendGroupSystemMessage(ev.groupId, ev.cleared ? `${who} removed the group photo` : `${who} changed the group photo`, Date.now(), `sys:${ev.groupId}:photo:${ev.cleared ? "cleared" : "set"}:${ev.epoch || ""}:${Date.now()}`);
+        appendGroupSystemMessage(ev.groupId, ev.cleared ? `${who} removed the group photo` : `${who} changed the group photo`, Date.now(), `sys:${ev.groupId}:photo:${ev.photoKey || (ev.cleared ? "cleared" : "set")}`);
       }
       if (ev.groupId === activeGroupId) { try { openGroupChat(activeGroupId); } catch {} }
       if (groupManageScreen && !groupManageScreen.hidden && activeGroupId === ev.groupId) { try { openGroupManage(activeGroupId); } catch {} }
@@ -16925,7 +16925,7 @@ groupManageBody?.addEventListener("click", async (event) => {
         if (!confirm(`Set this as the group photo for everyone?${feeLine}`)) { setStatus(""); return; }
         setStatus("Updating group photo…");
         await mgr.setGroupPhoto(gid, hex);
-        appendGroupSystemMessage(gid, "You changed the group photo", Date.now(), `sys:${gid}:photo:${hex.length}:${hex.slice(0, 8)}`);
+        appendGroupSystemMessage(gid, "You changed the group photo", Date.now(), `sys:${gid}:photo:${hex.length}:${hex.slice(0, 16)}`);
         openGroupManage(gid);
         openGroupChat(gid);
         renderGroupList();
@@ -16947,7 +16947,7 @@ groupManageBody?.addEventListener("click", async (event) => {
     try {
       setStatus("Removing group photo…");
       await mgr.setGroupPhoto(activeGroupId, "");
-      appendGroupSystemMessage(activeGroupId, "You removed the group photo", Date.now(), `sys:${activeGroupId}:photo:cleared:${Date.now()}`);
+      appendGroupSystemMessage(activeGroupId, "You removed the group photo", Date.now(), `sys:${activeGroupId}:photo:cleared`);
       openGroupManage(activeGroupId);
       openGroupChat(activeGroupId);
       renderGroupList();

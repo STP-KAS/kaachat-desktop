@@ -447,7 +447,7 @@ export class GroupManager {
   // --- apply an incoming control message (gctl_root / gctl_epoch) ---
   // `senderAddress` comes from the indexer row. Returns a small event describing
   // what changed, or null if it wasn't for us / was invalid / was stale.
-  async applyControl(payloadString, senderAddress) {
+  async applyControl(payloadString, senderAddress, blockTime = 0) {
     const parsed = G.parseControlPayload(payloadString);
     if (!parsed) return null;
     // The indexer strips the recipient in REST responses, so parsed.recipientXOnlyPubKey
@@ -471,11 +471,21 @@ export class GroupManager {
       const record = this.getGroup(payload.group_id);
       if (!record) return null;
       if (payload.signing_pub !== record.adminSigningPub || !G.verifyPhotoPayload(payload)) return null;
+      // The by-recipient control scan has no cursor, so it re-returns historical controls every
+      // sync. Photo controls oscillate photoHex (set/clear), which would re-apply and re-emit a
+      // system message on every poll. Guard by block time: ignore any photo control not strictly
+      // newer than the last one we applied. (photoUpdatedAt is preserved across root rebuilds.)
+      const bt = Number(blockTime || 0);
+      if (bt > 0 && bt <= Number(record.photoUpdatedAt || 0)) return null;
       const newHex = String(payload.photo || "");
       const changed = (record.photoHex || "") !== newHex;
       record.photoHex = newHex;
+      if (bt > 0) record.photoUpdatedAt = bt;
       this._put(record);
-      return { kind: "photo-updated", groupId: record.groupId, changed, cleared: newHex === "", adminAddress: record.adminAddress };
+      // Content-stable key so the actor's own "You changed…" line and this self-echo dedupe
+      // to a single message instead of doubling.
+      const photoKey = newHex === "" ? "cleared" : `${newHex.length}:${newHex.slice(0, 16)}`;
+      return { kind: "photo-updated", groupId: record.groupId, changed, cleared: newHex === "", photoKey, adminAddress: record.adminAddress };
     }
     if (payload.type === "gctl_tombstone") {
       if (payload.signing_pub !== this.selfPubHex() || !G.verifyTombstonePayload(payload)) return null;
@@ -545,6 +555,7 @@ export class GroupManager {
       selfInviteEpoch: isAdminRecord ? payload.epoch : existing?.selfInviteEpoch,
       // Group photo isn't carried in the root (separate gctl_photo control) — preserve it.
       photoHex: existing?.photoHex || null,
+      photoUpdatedAt: existing?.photoUpdatedAt || 0,
       updatedAt: 0,
     };
     this._put(record);
@@ -643,7 +654,7 @@ export class GroupManager {
     try {
       const recips = await this.engine.scanGroupControlByRecipient();
       for (const row of recips) {
-        const ev = await this.applyControl(row.payloadString, row.sender);
+        const ev = await this.applyControl(row.payloadString, row.sender, row.blockTime);
         if (ev) events.push(ev);
       }
     } catch { /* indexer hiccup — try messages anyway */ }
