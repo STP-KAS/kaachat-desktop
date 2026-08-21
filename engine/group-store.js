@@ -128,6 +128,9 @@ export class GroupManager {
   importGroupRecord(g) {
     if (!g || !g.groupId) return false;
     const groupId = String(g.groupId);
+    // A tombstoned (deleted) group is never re-created from a backup — same rule as the
+    // on-chain recovery path, so a restore can't resurrect a group you deleted.
+    if (this.isGroupTombstoned(groupId)) return false;
     const incomingEpoch = Number(g.currentEpoch || 0);
     const existing = this.getGroup(groupId);
     // Never downgrade to an older epoch than what we already hold.

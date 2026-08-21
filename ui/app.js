@@ -12462,7 +12462,29 @@ function importPhoneChatArchive(json) {
     const mgr = getGroupManager();
     if (mgr) {
       for (const g of archive.groups) {
-        try { if (mgr.importGroupRecord(g)) importedGroups += 1; } catch { /* skip a malformed group */ }
+        try {
+          // importGroupRecord refuses a tombstoned (deleted) group, so a restore never
+          // resurrects one you deleted — and we then skip its messages too.
+          if (!mgr.importGroupRecord(g)) continue;
+          importedGroups += 1;
+          // Restore decrypted message history so it survives even if the indexer pruned it.
+          for (const m of Array.isArray(g.messages) ? g.messages : []) {
+            const content = String(m?.content ?? m?.text ?? "");  // accept legacy `text` too
+            const blockTime = Number(m?.blockTime ?? m?.createdAt ?? 0) || Date.now();
+            appendGroupMessage(g.groupId, {
+              id: nowId(),
+              senderAddress: m?.senderAddress || "",
+              direction: (typeof m?.isOutgoing === "boolean")
+                ? (m.isOutgoing ? "local" : "incoming")
+                : ((m?.senderAddress && m.senderAddress === engine.address) ? "local" : "incoming"),
+              text: content,
+              createdAt: blockTime,
+              txId: m?.txId || null,
+              msgIdHex: m?.msgIdHex || null,
+              senderIsAdmin: Boolean(m?.senderIsAdmin),
+            });
+          }
+        } catch { /* skip a malformed group */ }
       }
     }
   }
@@ -12733,13 +12755,51 @@ function buildLocalChatArchive() {
     exportedAt: archiveIsoTimestamp(Date.now()),
     walletAddress: myAddress || null,
     conversations,
-    // Groups are NO LONGER backed up: both member groups (via their on-chain invite) and admin
-    // groups (via the self-addressed recovery invite added in this release) now rediscover from
-    // chain on a seedless import, so shipping their secret key material to a cloud file is
-    // unnecessary. Old archives that still carry a `groups` array are still IMPORTED (below),
-    // so nobody mid-transition loses anything.
+    // Groups ARE backed up again — now including decrypted message HISTORY, not just keys. The
+    // on-chain recovery invite rebuilds a group and re-scans recent messages, but the indexer's
+    // retention window can miss old ones; the backup preserves the full decrypted history so it
+    // always comes back. Keys still travel too (belt-and-suspenders recovery).
+    groups: buildArchiveGroups(),
     ...(tombstones.size ? { deletedContactAddresses: [...tombstones].sort() } : {}),
   };
+}
+
+// Full group key material PLUS decrypted message history for the shared backup archive, so a
+// second device of the same account recovers every group (including admin groups, whose seed
+// exists only on the creating device) with its complete history even if the indexer has pruned
+// old messages. deviceId/msgCounter are per-device and deliberately omitted (the importer mints
+// its own). Field names match the iOS/Android archive decoders.
+function buildArchiveGroups() {
+  const mgr = getGroupManager();
+  if (!mgr) return [];
+  try {
+    return mgr.listGroups().map((g) => ({
+      groupId: g.groupId,
+      name: g.name || "Group",
+      isAdmin: Boolean(g.isAdmin),
+      adminAddress: g.adminAddress || null,
+      adminSigningPub: g.adminSigningPub || null,
+      groupSeed: g.groupSeedHex || null,
+      groupRootEpoch: g.groupRootEpochHex || null,
+      blindingKey: g.blindingKeyHex || null,
+      currentEpoch: Number(g.currentEpoch || 0),
+      members: (g.members || []).map((m) => ({
+        address: m.address,
+        xOnlyPubKeyHex: m.xOnlyPubKeyHex || null,
+        isAdmin: Boolean(m.isAdmin),
+      })),
+      messages: (groupMessages(g.groupId) || []).map((msg) => ({
+        msgIdHex: msg.msgIdHex || null,
+        txId: msg.txId || null,
+        senderAddress: msg.senderAddress || "",
+        senderIdHex: msg.senderIdHex || null,
+        content: String(msg.text || ""),          // decrypted plaintext (cross-platform field)
+        blockTime: Number(msg.createdAt || 0),    // ms timestamp
+        isOutgoing: msg.direction === "local",
+        senderIsAdmin: Boolean(msg.senderIsAdmin),
+      })),
+    }));
+  } catch { return []; }
 }
 
 function archiveExportedAtMs(archive) {
@@ -12842,11 +12902,42 @@ function mergeChatArchives(remote, local) {
     }))
     .sort((a, b) => a.contactAddress.localeCompare(b.contactAddress));
 
+  // Groups: union both sides by groupId so the shared cloud file keeps every device's groups
+  // and the union of their message history. For a group in both, the higher currentEpoch wins
+  // the key material and messages are unioned (deduped by msgIdHex/txId). A group tombstoned
+  // (deleted) on THIS device is dropped from the merge so a delete isn't undone by the remote.
+  const mgr = getGroupManager();
+  const groupsById = new Map();
+  const absorbGroup = (g) => {
+    const id = String(g?.groupId || "").trim();
+    if (!id) return;
+    if (mgr?.isGroupTombstoned?.(id)) return;
+    const incomingEpoch = Number(g.currentEpoch || 0);
+    const existing = groupsById.get(id);
+    const msgMap = existing?.__msgMap || new Map();
+    for (const m of Array.isArray(g.messages) ? g.messages : []) {
+      const key = String(m?.msgIdHex || m?.txId || "");
+      if (key && !msgMap.has(key)) msgMap.set(key, m);
+    }
+    if (!existing || incomingEpoch >= Number(existing.currentEpoch || 0)) {
+      groupsById.set(id, { ...g, __msgMap: msgMap });
+    } else {
+      existing.__msgMap = msgMap;
+    }
+  };
+  for (const g of Array.isArray(remote?.groups) ? remote.groups : []) absorbGroup(g);
+  for (const g of Array.isArray(local?.groups) ? local.groups : []) absorbGroup(g);
+  const mergedGroups = [...groupsById.values()].map((g) => {
+    const { __msgMap, ...rest } = g;
+    return { ...rest, messages: [...__msgMap.values()] };
+  });
+
   return {
     schemaVersion: CHAT_ARCHIVE_SCHEMA_VERSION,
     exportedAt: local.exportedAt,
     walletAddress: local.walletAddress || String(remote?.walletAddress || "") || null,
     conversations,
+    ...(mergedGroups.length ? { groups: mergedGroups } : {}),
     ...(tombstones.size ? { deletedContactAddresses: [...tombstones].sort() } : {}),
   };
 }
