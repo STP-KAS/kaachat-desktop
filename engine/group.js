@@ -166,6 +166,32 @@ export function buildEpochSigningPayload({ v = 1, groupId, epoch, reason }) {
   return concatBytes(new Uint8Array([v]), utf8Bytes("gctl_epoch"), asBytes(groupId), leBytes8(epoch), utf8Bytes(reason));
 }
 
+// A self-addressed "I deleted this group" marker so a delete survives a seedless re-import
+// (the recovery invite would otherwise resurrect the group). Signed by the deleter and only
+// honored when the signature matches the reader's OWN key — nobody else can tombstone a group
+// out from under you, and it can't touch other members' copies.
+export function buildTombstoneSigningPayload({ v = 1, groupId }) {
+  return concatBytes(new Uint8Array([v]), utf8Bytes("gctl_tombstone"), asBytes(groupId));
+}
+
+export function buildSignedTombstonePayload({ groupId, signingPub, privateKey }) {
+  const sig = signBytes(buildTombstoneSigningPayload({ v: 1, groupId }), privateKey);
+  return {
+    type: "gctl_tombstone",
+    v: 1,
+    group_id: bytesToHex(asBytes(groupId)),
+    signing_pub: bytesToHex(asBytes(signingPub)),
+    sig: bytesToHex(sig),
+  };
+}
+
+export function verifyTombstonePayload(payload) {
+  try {
+    const signingPayload = buildTombstoneSigningPayload({ v: payload.v ?? 1, groupId: payload.group_id });
+    return verifyBytes(payload.sig, signingPayload, payload.signing_pub);
+  } catch { return false; }
+}
+
 // --- gcomm on-chain payload codec -------------------------------------------
 // kchat:1:gcomm:{blinded_group_id}:{epoch}:{sender_id}:{sender_pub}:{msg_id}:{ciphertext}:{signature}
 // `kchat:` migration: write the new root, still read the legacy `ciph_msg:` root (tail identical).

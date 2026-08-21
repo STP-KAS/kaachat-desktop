@@ -10,6 +10,10 @@
 import * as G from "./group.js";
 
 const GROUPS_KEY = "kachat-groups-v1";
+// Per-wallet group deletion tombstones: { [wallet]: { deleted: [groupId...], published: [groupId...] } }.
+// `deleted` blocks a group from ever being re-added by discovery/recovery; `published` tracks
+// which tombstones have been written on-chain (so the delete survives a seedless re-import).
+const GROUP_TOMBSTONES_KEY = "kachat-group-tombstones-v1";
 
 // Deep-ish clone via JSON is fine — records are plain data (hex strings, numbers).
 function loadAll() {
@@ -18,6 +22,13 @@ function loadAll() {
 }
 function saveAll(all) {
   try { localStorage.setItem(GROUPS_KEY, JSON.stringify(all)); } catch {}
+}
+function loadTombstonesAll() {
+  try { return JSON.parse(localStorage.getItem(GROUP_TOMBSTONES_KEY) || "{}") || {}; }
+  catch { return {}; }
+}
+function saveTombstonesAll(all) {
+  try { localStorage.setItem(GROUP_TOMBSTONES_KEY, JSON.stringify(all)); } catch {}
 }
 
 export class GroupManager {
@@ -61,6 +72,47 @@ export class GroupManager {
     delete bucket[groupId];
     all[this.walletAddress] = bucket;
     saveAll(all);
+    // Tombstone it so discovery/recovery never re-adds it, and publish an on-chain delete
+    // marker (best-effort now, retried by syncGroups' backfill) so the delete survives a
+    // seedless re-import too. Local intent is recorded synchronously; the chain write is async.
+    this._recordTombstone(groupId, { published: false });
+    Promise.resolve().then(() => this._publishTombstone(groupId)).catch(() => {});
+  }
+
+  // --- deletion tombstones ---
+  _tombstoneBucket() {
+    const all = loadTombstonesAll();
+    const bucket = all[this.walletAddress] || { deleted: [], published: [] };
+    bucket.deleted = Array.isArray(bucket.deleted) ? bucket.deleted : [];
+    bucket.published = Array.isArray(bucket.published) ? bucket.published : [];
+    return { all, bucket };
+  }
+  isGroupTombstoned(groupId) {
+    return this._tombstoneBucket().bucket.deleted.includes(String(groupId));
+  }
+  _recordTombstone(groupId, { published }) {
+    const id = String(groupId);
+    const { all, bucket } = this._tombstoneBucket();
+    if (!bucket.deleted.includes(id)) bucket.deleted.push(id);
+    if (published && !bucket.published.includes(id)) bucket.published.push(id);
+    all[this.walletAddress] = bucket;
+    saveTombstonesAll(all);
+  }
+  _markTombstonePublished(groupId) {
+    const id = String(groupId);
+    const { all, bucket } = this._tombstoneBucket();
+    if (!bucket.published.includes(id)) bucket.published.push(id);
+    all[this.walletAddress] = bucket;
+    saveTombstonesAll(all);
+  }
+  // Self-addressed, self-signed delete marker. Only our own key can produce one, and only our
+  // own key can read it — see verifyTombstonePayload + the signing_pub === self check on receipt.
+  async _publishTombstone(groupId) {
+    const payload = G.buildSignedTombstonePayload({ groupId, signingPub: this.selfPubHex(), privateKey: this.engine.privateKeyHex });
+    const encryptedHex = await this.engine.encryptGroupControl(this.walletAddress, JSON.stringify(payload));
+    const wire = G.buildControlPayload({ recipientXOnlyPubKey: this.selfPubHex(), encryptedHex });
+    await this.engine.sendGroupPayload(wire);
+    this._markTombstonePublished(groupId);
   }
 
   /**
@@ -373,12 +425,25 @@ export class GroupManager {
     if (payload.type === "gctl_root") return this._applyRoot(payload, senderAddress);
     // gctl_epoch is a heads-up only; the real state change lands on the matching gctl_root.
     if (payload.type === "gctl_epoch") return { kind: "epoch-notice", groupId: payload.group_id, epoch: payload.epoch };
+    // A delete marker — honor ONLY our own (signed by, and addressed to, us). Record the
+    // tombstone (already on chain, so mark it published) and drop the group if we still hold it.
+    if (payload.type === "gctl_tombstone") {
+      if (payload.signing_pub !== this.selfPubHex() || !G.verifyTombstonePayload(payload)) return null;
+      const id = String(payload.group_id);
+      const had = this.getGroup(id) != null;
+      this._recordTombstone(id, { published: true });
+      if (had) { const { all, bucket } = this._bucket(); delete bucket[id]; all[this.walletAddress] = bucket; saveAll(all); }
+      return had ? { kind: "deleted", groupId: id } : null;
+    }
     return null;
   }
 
   async _applyRoot(payload, senderAddress) {
     if (!G.verifyRootPayload(payload)) return null;
     const groupId = payload.group_id;
+    // A tombstoned group must never be re-added — this is what makes a delete survive a
+    // seedless re-import against the recovery invite.
+    if (this.isGroupTombstoned(groupId)) return null;
     const existing = this.getGroup(groupId);
     // Replay guard: never apply an epoch strictly older than what we hold.
     if (existing && payload.epoch < existing.currentEpoch) return null;
@@ -498,6 +563,16 @@ export class GroupManager {
         this._put(record);
       } catch (error) {
         this.engine.log?.(`Group self-invite backfill failed: ${error?.message || error}`);
+      }
+    }
+    // 0b. Backfill delete markers: publish the on-chain tombstone for any group deleted while
+    // offline (or whose delete-time publish failed), so the delete survives a seedless re-import.
+    {
+      const { bucket } = this._tombstoneBucket();
+      for (const id of bucket.deleted) {
+        if (bucket.published.includes(id)) continue;
+        try { await this._publishTombstone(id); }
+        catch (error) { this.engine.log?.(`Group tombstone backfill failed: ${error?.message || error}`); }
       }
     }
 
