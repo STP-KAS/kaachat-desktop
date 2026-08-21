@@ -109,41 +109,33 @@ async function sendMaxKaspaNow({ kaspa, rpc, withRpc = null, privateKey, sourceA
     if (entries.length === 0) throw new Error("The selected coins are no longer available.");
   }
   entries.sort((a, b) => BigInt(a.amount) > BigInt(b.amount) ? 1 : -1);
+  // One all-schnorr-input transaction tops out near the standard mass ceiling around ~85
+  // inputs — the generator would split into a chain, but a max send must be a single tx.
+  if (entries.length > 80) {
+    throw new Error("Too many coins for one transaction — run Compound UTXOs first, then send Max.");
+  }
   const total = entries.reduce((sum, e) => sum + BigInt(e.amount || 0), 0n);
 
-  // Pass 1: fee for a ~95% send (ample headroom the generator covers with real change).
-  const probe = await kaspa.createTransactions({
-    entries,
-    outputs: [{ address: destinationAddress, amount: total - (total / 20n) }],
-    priorityFee: 0n,
-    changeAddress: sourceAddress,
-    networkId: NETWORK_ID,
-  });
-  const baseFeeSompi = BigInt(probe.summary?.fees ?? 0n);
-  let totalFee = totalFeeSompi != null ? BigInt(totalFeeSompi) : baseFeeSompi;
-  if (totalFee < baseFeeSompi) totalFee = baseFeeSompi;
+  // Measure the exact network-floor fee for this transaction shape (all inputs, ONE output)
+  // on a draft, then build the real thing manually: outputs are exactly (total - fee), so no
+  // change output can ever exist — the generator's own change/dust handling is what kept
+  // tripping KIP-9 on near-max amounts. Mirrors the KNS reveal's manual-build approach.
+  const draft = kaspa.createTransaction(entries, [{ address: destinationAddress, amount: total - (total / 20n) }], 0n);
+  const floorFeeSompi = BigInt(kaspa.calculateTransactionFee(NETWORK_ID, draft, 1) ?? 0n);
+  let totalFee = totalFeeSompi != null ? BigInt(totalFeeSompi) : floorFeeSompi;
+  if (totalFee < floorFeeSompi) totalFee = floorFeeSompi;
   const amount = total - totalFee;
   if (amount <= 0n) throw new Error("Balance too low after network fees.");
 
-  // Pass 2: send exactly (total - totalFee) -> single output, remainder folded into fee.
-  const result = await kaspa.createTransactions({
-    entries,
-    outputs: [{ address: destinationAddress, amount }],
-    priorityFee: totalFee - baseFeeSompi,
-    changeAddress: sourceAddress,
-    networkId: NETWORK_ID,
-  });
-  const txids = [];
-  for (const pending of result.transactions) {
-    await pending.sign([privateKey]);
-    const submitSigned = (activeRpc) => pending.submit(activeRpc);
-    const txid = withRpc
-      ? await withRpc(submitSigned, { retries: 1, label: "Max send broadcast" })
-      : await submitSigned(rpc);
-    txids.push(txid);
-    log("Max send txid:", txid);
-  }
-  return { result, txids, amountSompi: amount };
+  const tx = kaspa.createTransaction(entries, [{ address: destinationAddress, amount }], 0n);
+  const signed = kaspa.signTransaction(tx, [privateKey], true);
+  const submit = (activeRpc) => activeRpc.submitTransaction({ transaction: signed, allowOrphan: false });
+  const response = withRpc
+    ? await withRpc(submit, { retries: 1, label: "Max send broadcast" })
+    : await submit(rpc);
+  const txid = response?.transactionId || signed.id;
+  log("Max send txid:", txid);
+  return { txids: [txid], amountSompi: amount };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

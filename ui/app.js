@@ -4596,6 +4596,22 @@ chatsPrivacyToggleEl?.addEventListener("change", () => {
 refreshChatsPrivacyToggle();
 
 // --- Profile card summary (active spending address + live balance) ---
+// Last-known spending balances/used-state, persisted per account — stale-while-revalidate:
+// the dropdown and Manage Addresses paint the cached numbers instantly while the live batched
+// refresh runs behind them (the same pattern cold storage uses for its account cache).
+const SPENDING_BAL_CACHE_KEY = "kachat-spending-balcache-v1"; // { [address]: { kas, used } }
+function loadSpendingBalCache() {
+  try { return JSON.parse(localStorage.getItem(accountScopedKey(SPENDING_BAL_CACHE_KEY)) || "{}") || {}; }
+  catch { return {}; }
+}
+function saveSpendingBalCacheEntries(updates) {
+  try {
+    const map = loadSpendingBalCache();
+    for (const [address, entry] of Object.entries(updates)) map[address] = entry;
+    localStorage.setItem(accountScopedKey(SPENDING_BAL_CACHE_KEY), JSON.stringify(map));
+  } catch { /* cache is best-effort */ }
+}
+
 async function refreshSpendingSummary() {
   const mnemonic = activeAccountMnemonic();
   if (!mnemonic || !engine.kaspa) {
@@ -4610,15 +4626,18 @@ async function refreshSpendingSummary() {
     return;
   }
   activeSpendingAddress = address;
-  if (spendingBalanceEl) spendingBalanceEl.textContent = "…";
+  // Paint the last-known balance immediately; the live number replaces it when it lands.
+  const cached = loadSpendingBalCache()[address];
+  if (spendingBalanceEl) spendingBalanceEl.textContent = cached?.kas != null ? `${cached.kas} KAS` : "…";
   try {
     const bal = await engine.balanceForAddress(address);
+    saveSpendingBalCacheEntries({ [address]: { ...(cached || {}), kas: String(bal.totalKas) } });
     // Guard against a stale response if the active address changed meanwhile.
     if (activeSpendingAddress === address && spendingBalanceEl) {
       spendingBalanceEl.textContent = `${bal.totalKas} KAS`;
     }
   } catch (error) {
-    if (activeSpendingAddress === address && spendingBalanceEl) {
+    if (activeSpendingAddress === address && spendingBalanceEl && cached?.kas == null) {
       spendingBalanceEl.textContent = "-- KAS";
     }
   }
@@ -4702,17 +4721,44 @@ async function renderSpendingList() {
     spendingListEl.innerHTML = '<p class="spending-address-empty">No spending addresses yet.</p>';
     return;
   }
-  // Provisional render (index order, balances pending) so the list appears at once.
-  spendingListEl.innerHTML = items.map((it) => spendingRowHtml(it.index, it.address, state, "…", null)).join("");
-  // Enrich each with balance + used-state, then order:
-  //   primary first → funded (balance>0) by index → the rest by index.
-  const enriched = await Promise.all(items.map(async (it) => {
+  // Provisional render with LAST-KNOWN balances/used-state (index order) so the list appears
+  // instantly with real numbers instead of a wall of "…" — the live refresh replaces it below.
+  const balCache = loadSpendingBalCache();
+  spendingListEl.innerHTML = items
+    .map((it) => spendingRowHtml(it.index, it.address, state, balCache[it.address]?.kas != null ? `${balCache[it.address].kas} KAS` : "…", balCache[it.address]?.used ?? null))
+    .join("");
+  // Enrich with live balance + used-state, then order: primary first → funded → rest.
+  // Balances arrive in ONE batched node call (the per-address loop this replaces fired one
+  // round trip per row); history checks run only for zero-balance rows, 4 at a time, so a
+  // long list can't burst the REST rate limiter into 429s.
+  let batched = null;
+  try { batched = await spendingBalancesBatchSompi(items.map((it) => it.address)); }
+  catch { batched = null; /* node pool unreachable — fall back below */ }
+  if (token !== spendingListToken) return;
+  const enriched = items.map((it) => {
     let kas = 0, totalKas = null;
-    try { const bal = await engine.balanceForAddress(it.address); totalKas = bal.totalKas; kas = Number(bal.totalKas) || 0; }
-    catch { /* leave balance unknown */ }
-    const used = kas > 0 ? true : await spendingAddressHasHistory(it.address);
-    return { ...it, kas, totalKas, used };
-  }));
+    if (batched) {
+      const sompi = batched.get(it.address) || 0;
+      kas = Number(sompi) / 1e8;
+      totalKas = trimKas8(kas);
+    } else if (balCache[it.address]?.kas != null) {
+      totalKas = balCache[it.address].kas;
+      kas = Number(totalKas) || 0;
+    }
+    return { ...it, kas, totalKas, used: kas > 0 ? true : (balCache[it.address]?.used ?? null) };
+  });
+  const pendingUsed = enriched.filter((e) => e.kas === 0 && e.used == null);
+  for (let base = 0; base < pendingUsed.length; base += 4) {
+    await Promise.all(pendingUsed.slice(base, base + 4).map(async (e) => {
+      e.used = await spendingAddressHasHistory(e.address);
+    }));
+    if (token !== spendingListToken) return;
+  }
+  const cacheUpdates = {};
+  for (const e of enriched) {
+    if (e.totalKas != null) cacheUpdates[e.address] = { kas: e.totalKas, used: e.used === true ? true : (balCache[e.address]?.used ?? e.used) };
+  }
+  saveSpendingBalCacheEntries(cacheUpdates);
   if (token !== spendingListToken) return;
   // Batched, cached KNS assets-by-owner lookups drive the "Contains domain"
   // tag and promote those rows into the funded group (iOS parity). The
@@ -6304,7 +6350,11 @@ function makeSendController(els, { onOpen, onClose, getSelection, resolveAmountK
       try { onSent?.({ txid, destination, amountKas }); } catch { /* chat bookkeeping must never break the send UI */ }
       refreshBalanceOnly({ quiet: true }).catch(() => {});
     } catch (error) {
-      if (els.error) { els.error.textContent = error.message || "Send failed."; els.error.hidden = false; }
+      // WASM helpers sometimes throw plain strings — surface those too, never a bare
+      // "Send failed." when the SDK actually said why.
+      const message = String(error?.message || error || "").trim() || "Send failed.";
+      if (els.error) { els.error.textContent = message; els.error.hidden = false; }
+      appendEngineLog(`Send failed: ${message}`);
       if (els.progress) els.progress.hidden = true;
     } finally {
       if (els.submit) els.submit.disabled = false;
