@@ -3115,6 +3115,17 @@ function ensureSelfConversation() {
   return { contact, conversationEntry };
 }
 
+// Keep a "Note to Self" chat present (unless the user deleted it) so it appears in the list to
+// write in, AND so the per-contact COMM sweep runs against your own address — that's what carries
+// your notes-to-self across all your devices. Idempotent; respects a prior self-chat deletion.
+function ensureSelfChatForSync() {
+  const myAddress = engine.address;
+  if (!myAddress) return;
+  if (loadDeletedContactAddresses().has(myAddress)) return; // respect deletion
+  const hasConversation = (state.conversations || []).some((cv) => contactForConversation(cv)?.address === myAddress);
+  if (!hasConversation) ensureSelfConversation();
+}
+
 async function syncStrangerPaymentsIntoSelfChat({ catchUp = false } = {}) {
   const myAddress = engine.address;
   if (!myAddress) return 0;
@@ -3207,6 +3218,7 @@ async function refreshAllConversations({ quiet = true } = {}) {
   const catchUp = pendingInitialCatchUp;
   let added = 0;
   try {
+    ensureSelfChatForSync();
     try { added += await syncIncomingHandshakeRequests({ quiet }); }
     catch (error) { appendEngineLog(`Incoming handshake sync failed: ${error.message}`); }
     try { added += await syncStrangerPaymentsIntoSelfChat({ catchUp }); }
@@ -3217,10 +3229,10 @@ async function refreshAllConversations({ quiet = true } = {}) {
     // keeps the indexer load civilised while cutting wall-clock ~4x.
     const sweepTargets = (state.conversations || []).filter((conversationEntry) => {
       const contact = contactForConversation(conversationEntry);
-      // The SELF-chat (stranger-payment collector) is fed by syncStrangerPaymentsIntoSelfChat
-      // above — running the per-contact indexer sync against your own address just burns
-      // REST quota (and helped trip api.kaspa.org's rate limiter).
-      if (contact?.address === engine.address) return false;
+      // The self-chat IS swept via the per-contact COMM sync now — that's what carries your own
+      // notes-to-self across your devices (by-sender(self) + your-key decrypt returns only self→
+      // self messages; the cursor keeps the ongoing cost tiny). Stranger PAYMENTS to your chatting
+      // address are still handled separately by syncStrangerPaymentsIntoSelfChat above.
       // Match KaChat's relationship boundary: discovering an incoming
       // handshake must not import that unknown sender's historical contextual
       // messages before the user accepts the request.

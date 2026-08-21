@@ -163,11 +163,15 @@ export async function syncConversationFromIndexer({
       if (typeof clearText !== "string" || !clearText.length) throw new Error("Decrypted message was empty.");
 
       const createdAt = blockTime > 0 ? blockTime : Date.now();
+      // Self-chat (contact IS you): every message here is one YOU sent to yourself, so it's
+      // outgoing on every device — not "incoming from a stranger". Decryption already scopes the
+      // by-sender(self) query to self→self messages (messages to others fail with your key).
+      const isSelfChat = contact.address === walletAddress;
       messages.push({
         id: `indexer-${txid}`,
         conversationId,
         contactId: contact.id,
-        direction: "incoming",
+        direction: isSelfChat ? "outgoing" : "incoming",
         text: clearText,
         sender: row.sender || contact.address,
         receiver: walletAddress,
