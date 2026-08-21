@@ -15237,6 +15237,34 @@ function appendGroupMessage(groupId, message) {
   return true;
 }
 
+// Number of OTHER members (excludes self) — the fan-out count for admin control sends.
+function groupOtherMemberCount(record) {
+  return (record?.members || []).filter((m) => m.address !== engine.address).length;
+}
+// Estimate the total on-chain network fee for a group control operation and return a short line
+// to append to a confirm() prompt so the user sees the cost before committing. Best-effort — on
+// any failure it falls back to just the transaction count and never blocks the action.
+// controlTx = number of small (root/epoch) sends; photoTx = number of (larger) gctl_photo sends.
+async function groupOpFeeHint(groupId, { controlTx = 0, photoTx = 0 }) {
+  const txCount = controlTx + photoTx;
+  const plural = txCount === 1 ? "" : "s";
+  try {
+    const record = getGroupManager()?.getGroup(groupId);
+    if (!record) return "";
+    let total = 0;
+    if (controlTx > 0) {
+      const bytes = 2 * (400 + (record.members?.length || 0) * 70);        // root/epoch payload ≈
+      total += parseFloat(await engine.estimateMessageFee(bytes) || "0") * controlTx;
+    }
+    if (photoTx > 0) {
+      const bytes = 2 * (300 + (record.photoHex || "").length);           // gctl_photo payload ≈
+      total += parseFloat(await engine.estimateMessageFee(bytes) || "0") * photoTx;
+    }
+    if (!(total > 0)) return `\n\n(${txCount} network transaction${plural}.)`;
+    return `\n\nEstimated network fee ≈ ${total.toFixed(6)} KAS across ${txCount} transaction${plural}.`;
+  } catch { return `\n\n(${txCount} network transaction${plural}.)`; }
+}
+
 // iMessage-style membership line ("X was added/removed to the group chat"). Stored as a local
 // plaintext message flagged {system:true} and rendered centered. `key` is a stable dedup id
 // (groupId+epoch+addr) so the same event never duplicates across sync passes or reloads.
@@ -16443,6 +16471,12 @@ groupCreateSubmit?.addEventListener("click", async () => {
   if (groupCreateError) groupCreateError.hidden = true;
   try {
     if (groupModalMode === "add" && groupModalTargetId) {
+      // Each added member triggers a full key rotation (epoch + root to everyone), so the cost
+      // grows with how many you add — show the estimated total before committing.
+      const rec = mgr.getGroup(groupModalTargetId);
+      const finalOthers = groupOtherMemberCount(rec) + members.length;
+      const hasPhoto = Boolean(rec?.photoHex);
+      if (!confirm(`Add ${members.length} member${members.length === 1 ? "" : "s"} to the group?${await groupOpFeeHint(groupModalTargetId, { controlTx: members.length * (2 * finalOthers + 1), photoTx: hasPhoto ? members.length * finalOthers : 0 })}`)) { updateGroupCreateSubmit(); return; }
       setStatus("Adding member(s) to the group…");
       for (const address of members) {
         await mgr.addMember(groupModalTargetId, address);
@@ -16457,6 +16491,16 @@ groupCreateSubmit?.addEventListener("click", async () => {
     } else {
       const name = String(groupNameInput?.value || "").trim();
       if (!name) { updateGroupCreateSubmit(); return; }
+      // Estimate the create cost (one invite per member + a self-recovery copy) before committing.
+      {
+        const txCount = members.length + 1;
+        let feeLine = `\n\n(${txCount} network transaction${txCount === 1 ? "" : "s"}.)`;
+        try {
+          const per = parseFloat(await engine.estimateMessageFee(2 * (400 + (members.length + 1) * 70)) || "0");
+          if (per * txCount > 0) feeLine = `\n\nEstimated network fee ≈ ${(per * txCount).toFixed(6)} KAS across ${txCount} transaction${txCount === 1 ? "" : "s"}.`;
+        } catch {}
+        if (!confirm(`Create "${name}" and invite ${members.length} member${members.length === 1 ? "" : "s"}?${feeLine}`)) { updateGroupCreateSubmit(); return; }
+      }
       setStatus("Creating group and inviting members…");
       const record = await mgr.createGroup({ name, memberAddresses: members });
       // Take the admin straight into the new group. The modal closes first, then the thread
@@ -16810,6 +16854,15 @@ groupManageBody?.addEventListener("click", async (event) => {
         // Rides on-chain to every member (hex-encoded), so keep it small.
         const compressed = await compressImageBlob(file, { targetBytes: 10 * 1024, maxDimension: 256 });
         const hex = groupPhotoHexFromDataUrl(compressed.dataUrl);
+        // Confirm with the estimated fee — a photo is the priciest control (it rides on-chain to
+        // every member), so show the cost before committing.
+        const others = groupOtherMemberCount(mgr.getGroup(gid));
+        let feeLine = `\n\n(${others} network transaction${others === 1 ? "" : "s"}.)`;
+        try {
+          const per = parseFloat(await engine.estimateMessageFee(2 * (300 + hex.length)) || "0");
+          if (per * others > 0) feeLine = `\n\nEstimated network fee ≈ ${(per * others).toFixed(6)} KAS across ${others} transaction${others === 1 ? "" : "s"}.`;
+        } catch {}
+        if (!confirm(`Set this as the group photo for everyone?${feeLine}`)) { setStatus(""); return; }
         setStatus("Updating group photo…");
         await mgr.setGroupPhoto(gid, hex);
         openGroupManage(gid);
@@ -16829,7 +16882,7 @@ groupManageBody?.addEventListener("click", async (event) => {
   if (photoRemove && activeGroupId) {
     const mgr = getGroupManager();
     if (!mgr) return;
-    if (!confirm("Remove the group photo for everyone?")) return;
+    if (!confirm(`Remove the group photo for everyone?${await groupOpFeeHint(activeGroupId, { controlTx: groupOtherMemberCount(mgr.getGroup(activeGroupId)) })}`)) return;
     try {
       setStatus("Removing group photo…");
       await mgr.setGroupPhoto(activeGroupId, "");
@@ -16856,7 +16909,7 @@ groupManageBody?.addEventListener("click", async (event) => {
     const mgr = getGroupManager();
     if (!mgr) return;
     const addr = resendOne.dataset.groupResendMember;
-    if (!confirm(`Resend the group invite to ${groupSenderLabel(addr)}?`)) return;
+    if (!confirm(`Resend the group invite to ${groupSenderLabel(addr)}?${await groupOpFeeHint(activeGroupId, { controlTx: 1 })}`)) return;
     resendOne.disabled = true;
     setStatus("Resending invite…");
     try {
@@ -16876,6 +16929,10 @@ groupManageBody?.addEventListener("click", async (event) => {
   if (resend && activeGroupId) {
     const mgr = getGroupManager();
     if (!mgr) return;
+    const rec = mgr.getGroup(activeGroupId);
+    const others = groupOtherMemberCount(rec);
+    const hasPhoto = Boolean(rec?.photoHex);
+    if (!confirm(`Resend the group invite to all members?${await groupOpFeeHint(activeGroupId, { controlTx: others + 1, photoTx: hasPhoto ? others : 0 })}`)) return;
     resend.disabled = true;
     setStatus("Resending invites…");
     try {
@@ -16897,7 +16954,10 @@ groupManageBody?.addEventListener("click", async (event) => {
   try {
     if (target.dataset.groupRemoveMember) {
       const removeAddr = target.dataset.groupRemoveMember;
-      if (!confirm(`Remove ${groupSenderLabel(removeAddr)} from the group chat? A fresh group key is issued to everyone who stays.`)) return;
+      const rec = mgr.getGroup(activeGroupId);
+      const afterN = Math.max(0, groupOtherMemberCount(rec) - 1);          // remaining others after removal
+      const hasPhoto = Boolean(rec?.photoHex);
+      if (!confirm(`Remove ${groupSenderLabel(removeAddr)} from the group chat? A fresh group key is issued to everyone who stays.${await groupOpFeeHint(activeGroupId, { controlTx: 2 * afterN + 1, photoTx: hasPhoto ? afterN : 0 })}`)) return;
       setStatus("Removing member…");
       await mgr.removeMember(activeGroupId, removeAddr);
       // iMessage-style membership line for the admin (other members get theirs on the rotation).
@@ -16911,7 +16971,9 @@ groupManageBody?.addEventListener("click", async (event) => {
     } else if (target.dataset.groupRenameSave != null) {
       const input = groupManageBody.querySelector("[data-group-rename-input]");
       const name = String(input?.value || "").trim();
-      if (!name) return;
+      if (!name || name === mgr.getGroup(activeGroupId)?.name) return;
+      const others = groupOtherMemberCount(mgr.getGroup(activeGroupId));
+      if (!confirm(`Rename the group to "${name}"? Every member is notified.${await groupOpFeeHint(activeGroupId, { controlTx: others + 1 })}`)) return;
       setStatus("Renaming group…");
       await mgr.renameGroup(activeGroupId, name);
       openGroupManage(activeGroupId);
