@@ -16348,11 +16348,19 @@ async function syncGroupsNow() {
   // emits its own lines directly in the add/remove handlers, so those dedupe via the stable key.
   for (const ev of result.controls || []) {
     if (!ev || !ev.groupId) continue;
-    // A group photo the admin changed — refresh the open header/list so it shows immediately.
+    // A group photo the admin changed — system line + refresh the open header/list.
     if (ev.kind === "photo-updated") {
+      if (ev.changed) {
+        const who = groupSenderLabel(ev.adminAddress);
+        appendGroupSystemMessage(ev.groupId, ev.cleared ? `${who} removed the group photo` : `${who} changed the group photo`, Date.now(), `sys:${ev.groupId}:photo:${ev.cleared ? "cleared" : "set"}:${ev.epoch || ""}:${Date.now()}`);
+      }
       if (ev.groupId === activeGroupId) { try { openGroupChat(activeGroupId); } catch {} }
       if (groupManageScreen && !groupManageScreen.hidden && activeGroupId === ev.groupId) { try { openGroupManage(activeGroupId); } catch {} }
       continue;
+    }
+    // A rename (admin changed the group name) — system line for members.
+    if (ev.renamedTo) {
+      appendGroupSystemMessage(ev.groupId, `${groupSenderLabel(ev.adminAddress)} changed the group name to "${ev.renamedTo}"`, Date.now(), `sys:${ev.groupId}:name:${ev.epoch}:${ev.renamedTo}`);
     }
     for (const addr of ev.added || []) {
       if (addr === engine.address) continue;
@@ -16865,6 +16873,7 @@ groupManageBody?.addEventListener("click", async (event) => {
         if (!confirm(`Set this as the group photo for everyone?${feeLine}`)) { setStatus(""); return; }
         setStatus("Updating group photo…");
         await mgr.setGroupPhoto(gid, hex);
+        appendGroupSystemMessage(gid, "You changed the group photo", Date.now(), `sys:${gid}:photo:${hex.length}:${hex.slice(0, 8)}`);
         openGroupManage(gid);
         openGroupChat(gid);
         renderGroupList();
@@ -16886,6 +16895,7 @@ groupManageBody?.addEventListener("click", async (event) => {
     try {
       setStatus("Removing group photo…");
       await mgr.setGroupPhoto(activeGroupId, "");
+      appendGroupSystemMessage(activeGroupId, "You removed the group photo", Date.now(), `sys:${activeGroupId}:photo:cleared:${Date.now()}`);
       openGroupManage(activeGroupId);
       openGroupChat(activeGroupId);
       renderGroupList();
@@ -16975,7 +16985,9 @@ groupManageBody?.addEventListener("click", async (event) => {
       const others = groupOtherMemberCount(mgr.getGroup(activeGroupId));
       if (!confirm(`Rename the group to "${name}"? Every member is notified.${await groupOpFeeHint(activeGroupId, { controlTx: others + 1 })}`)) return;
       setStatus("Renaming group…");
+      const prevName = mgr.getGroup(activeGroupId)?.name;
       await mgr.renameGroup(activeGroupId, name);
+      if (prevName !== name) appendGroupSystemMessage(activeGroupId, `You changed the group name to "${name}"`, Date.now(), `sys:${activeGroupId}:name:${name}`);
       openGroupManage(activeGroupId);
       openGroupChat(activeGroupId);
       setStatus("Group renamed");

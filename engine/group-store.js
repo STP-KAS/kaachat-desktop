@@ -468,9 +468,11 @@ export class GroupManager {
       const record = this.getGroup(payload.group_id);
       if (!record) return null;
       if (payload.signing_pub !== record.adminSigningPub || !G.verifyPhotoPayload(payload)) return null;
-      record.photoHex = String(payload.photo || "");
+      const newHex = String(payload.photo || "");
+      const changed = (record.photoHex || "") !== newHex;
+      record.photoHex = newHex;
       this._put(record);
-      return { kind: "photo-updated", groupId: record.groupId };
+      return { kind: "photo-updated", groupId: record.groupId, changed, cleared: newHex === "", adminAddress: record.adminAddress };
     }
     if (payload.type === "gctl_tombstone") {
       if (payload.signing_pub !== this.selfPubHex() || !G.verifyTombstonePayload(payload)) return null;
@@ -553,7 +555,9 @@ export class GroupManager {
       added = roster.map((m) => m.address).filter((a) => !oldAddrs.has(a));
       removed = (existing.members || []).map((m) => m.address).filter((a) => !newAddrs.has(a));
     }
-    return { kind, groupId, epoch: payload.epoch, name: record.name, added, removed };
+    // Surface a rename (name changed on an already-known group) so the UI can show a system line.
+    const renamedTo = (existing && existing.name !== record.name) ? record.name : null;
+    return { kind, groupId, epoch: payload.epoch, name: record.name, added, removed, renamedTo, adminAddress: record.adminAddress };
   }
 
   // --- process an incoming gcomm message ---
