@@ -2323,7 +2323,12 @@ function syncLabel(conversationEntry) {
 
 function lastMessageFor(conversationEntry) {
   const messages = conversationEntry.messages || [];
-  return messages.length ? messages[messages.length - 1] : null;
+  // The chat list previews the newest REAL message — cross-device placeholders are
+  // hidden everywhere (see renderMessages), so they must not claim the preview either.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.text !== "📤 Sent via another device") return messages[i];
+  }
+  return null;
 }
 
 function statusLabel(status) {
@@ -8872,7 +8877,9 @@ function createDeliveryStatusIcon(message) {
 
 function renderMessages(conversationEntry) {
   hydrateConversationMessages(conversationEntry);
-  const messages = conversationEntry.messages || [];
+  // Cross-device placeholders never render: they carry no readable content (an outgoing tx
+  // from another device whose text never synced into an archive this device has seen).
+  const messages = (conversationEntry.messages || []).filter((m) => m?.text !== "📤 Sent via another device");
   // The thread re-renders constantly (sync polls, link previews resolving,
   // reactions). Capture the scroll state BEFORE the rebuild so a user reading
   // older history isn't yanked back to the bottom by every background render:
