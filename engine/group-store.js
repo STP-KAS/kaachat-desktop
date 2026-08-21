@@ -160,6 +160,7 @@ export class GroupManager {
       msgCounter: existing && Number(existing.currentEpoch || 0) === incomingEpoch ? (existing.msgCounter || 0) : 0,
       members: members.length ? members : (existing?.members || []),
       cursors: existing?.cursors || {},
+      photoHex: g.photo ? String(g.photo) : (existing?.photoHex || null),
       updatedAt: existing?.updatedAt || 0,
     };
     if (!record.groupRootEpochHex || !record.blindingKeyHex) return false; // unusable without keys
@@ -341,6 +342,8 @@ export class GroupManager {
       await this.engine.sendGroupPayload(G.buildControlPayload({ recipientXOnlyPubKey: member.xOnlyPubKeyHex, encryptedHex }));
     }
     await this._distributeRoot(record, newEpoch);
+    // A newly-added member should also receive the current group photo (root doesn't carry it).
+    if (record.photoHex) { try { await this._distributePhoto(record); } catch {} }
     return record;
   }
 
@@ -359,6 +362,8 @@ export class GroupManager {
     await this._distributeRoot(record, record.currentEpoch);
     delete record.inviteWarning;
     this._put(record);
+    // Also re-push the group photo so anyone who missed it (or a new device) catches up.
+    if (record.photoHex) { try { await this._distributePhoto(record); } catch {} }
     return record;
   }
 
@@ -380,6 +385,34 @@ export class GroupManager {
     });
     await this._sendControlToMember(member, JSON.stringify(payload));
     return record;
+  }
+
+  // Admin: set (photoHex = hex of a compressed JPEG) or clear (photoHex = "") the group photo,
+  // then push it to every member via a signed gctl_photo control message.
+  async setGroupPhoto(groupId, photoHex) {
+    const record = this._requireAdmin(groupId);
+    record.photoHex = String(photoHex || "");
+    this._put(record);
+    await this._distributePhoto(record);
+    return record;
+  }
+
+  // Send the current group photo to every member (admin). Best-effort; throws with .failures set
+  // if any member couldn't be reached, so the caller can surface a "some didn't receive it" note.
+  async _distributePhoto(record) {
+    const payload = G.buildSignedPhotoPayload({
+      groupId: G.hexToBytes(record.groupId),
+      photoHex: record.photoHex || "",
+      signingPub: this.selfPubHex(),
+      privateKey: this.engine.privateKeyHex,
+    });
+    const json = JSON.stringify(payload);
+    let failures = 0;
+    for (const member of record.members) {
+      if (member.address === this.walletAddress) continue;
+      try { await this._sendControlToMember(member, json); } catch { failures += 1; }
+    }
+    if (failures) { const e = new Error(`${failures} member(s) may not have received the photo yet.`); e.failures = failures; throw e; }
   }
 
   // --- send a message ---
@@ -430,6 +463,15 @@ export class GroupManager {
     if (payload.type === "gctl_epoch") return { kind: "epoch-notice", groupId: payload.group_id, epoch: payload.epoch };
     // A delete marker — honor ONLY our own (signed by, and addressed to, us). Record the
     // tombstone (already on chain, so mark it published) and drop the group if we still hold it.
+    // A group photo set by the admin — apply only if signed by THIS group's known admin.
+    if (payload.type === "gctl_photo") {
+      const record = this.getGroup(payload.group_id);
+      if (!record) return null;
+      if (payload.signing_pub !== record.adminSigningPub || !G.verifyPhotoPayload(payload)) return null;
+      record.photoHex = String(payload.photo || "");
+      this._put(record);
+      return { kind: "photo-updated", groupId: record.groupId };
+    }
     if (payload.type === "gctl_tombstone") {
       if (payload.signing_pub !== this.selfPubHex() || !G.verifyTombstonePayload(payload)) return null;
       const id = String(payload.group_id);
@@ -496,6 +538,8 @@ export class GroupManager {
       cursors: existing?.cursors || {},
       // A recovered admin group already has its recovery invite on chain for this epoch.
       selfInviteEpoch: isAdminRecord ? payload.epoch : existing?.selfInviteEpoch,
+      // Group photo isn't carried in the root (separate gctl_photo control) — preserve it.
+      photoHex: existing?.photoHex || null,
       updatedAt: 0,
     };
     this._put(record);

@@ -192,6 +192,36 @@ export function verifyTombstonePayload(payload) {
   } catch { return false; }
 }
 
+// --- gctl_photo: admin-set group photo, distributed to every member ----------
+// A separate signed control type (like gctl_tombstone) so it never touches the
+// gctl_root signature — older clients simply ignore an unknown control type.
+// `photoHex` is the hex of a compressed JPEG; "" clears the photo.
+export function buildPhotoSigningPayload({ v = 1, groupId, photoHex }) {
+  return concatBytes(new Uint8Array([v]), utf8Bytes("gctl_photo"), asBytes(groupId), asBytes(photoHex || ""));
+}
+
+export function buildSignedPhotoPayload({ groupId, photoHex, signingPub, privateKey }) {
+  const photo = photoHex || "";
+  const sig = signBytes(buildPhotoSigningPayload({ v: 1, groupId, photoHex: photo }), privateKey);
+  return {
+    type: "gctl_photo",
+    v: 1,
+    group_id: bytesToHex(asBytes(groupId)),
+    photo,
+    signing_pub: bytesToHex(asBytes(signingPub)),
+    sig: bytesToHex(sig),
+  };
+}
+
+// Verifies the signature. The CALLER must additionally check that signing_pub is
+// the group's known admin before trusting the photo.
+export function verifyPhotoPayload(payload) {
+  try {
+    const signingPayload = buildPhotoSigningPayload({ v: payload.v ?? 1, groupId: payload.group_id, photoHex: payload.photo || "" });
+    return verifyBytes(payload.sig, signingPayload, payload.signing_pub);
+  } catch { return false; }
+}
+
 // --- gcomm on-chain payload codec -------------------------------------------
 // kchat:1:gcomm:{blinded_group_id}:{epoch}:{sender_id}:{sender_pub}:{msg_id}:{ciphertext}:{signature}
 // `kchat:` migration: write the new root, still read the legacy `ciph_msg:` root (tail identical).

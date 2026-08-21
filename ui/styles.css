@@ -7255,6 +7255,45 @@ body.session-logged-out [data-account-rename-modal] {
   align-items: center;
 }
 .group-manage-name-row .group-name-input { margin: 0; }
+/* Group photo (admin-set, shown to everyone) */
+.group-avatar-photo { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+.group-photo-section { align-items: center; text-align: center; gap: 6px; }
+.group-photo-avatar {
+  position: relative;
+  width: 88px; height: 88px;
+  border-radius: 50%;
+  overflow: visible;
+  display: grid;
+  place-items: center;
+}
+.group-photo-avatar .group-avatar-photo,
+.group-photo-avatar .group-avatar-fallback {
+  width: 88px; height: 88px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+.group-photo-avatar.editable { cursor: pointer; }
+.group-photo-edit-badge {
+  position: absolute;
+  right: 0; bottom: 0;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--kaspa);
+  color: #06110f;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--bg, #06110f);
+}
+.group-photo-name { font-weight: 700; font-size: 18px; margin: 8px 0 0; }
+.group-photo-count { color: var(--muted); font-size: 13px; margin: 0; }
+.group-manage-remove-photo {
+  margin-top: 4px;
+  background: transparent;
+  border: 0;
+  color: var(--danger, #ff3b30);
+  cursor: pointer;
+  font-size: 13px;
+}
 /* Collapsible members dropdown (collapsed by default) */
 .group-members-details { display: flex; flex-direction: column; gap: 8px; }
 .group-members-summary {

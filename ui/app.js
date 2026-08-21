@@ -12783,12 +12783,13 @@ function buildArchiveGroups() {
       groupRootEpoch: g.groupRootEpochHex || null,
       blindingKey: g.blindingKeyHex || null,
       currentEpoch: Number(g.currentEpoch || 0),
+      photo: g.photoHex || null,                   // hex of the group photo JPEG (cross-platform)
       members: (g.members || []).map((m) => ({
         address: m.address,
         xOnlyPubKeyHex: m.xOnlyPubKeyHex || null,
         isAdmin: Boolean(m.isAdmin),
       })),
-      messages: (groupMessages(g.groupId) || []).map((msg) => ({
+      messages: (groupMessages(g.groupId) || []).filter((msg) => !msg.system).map((msg) => ({
         msgIdHex: msg.msgIdHex || null,
         txId: msg.txId || null,
         senderAddress: msg.senderAddress || "",
@@ -15459,7 +15460,29 @@ function setChatToolRowsForGroupsTab(isGroups) {
 }
 
 const GROUP_AVATAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M2.5 19.5c.6-3.9 3-6.3 6.5-6.3s5.9 2.4 6.5 6.3"/><path d="M16.3 6.2a3.2 3.2 0 1 1 1.9 5.8"/><path d="M15.8 13.3c2.9.4 4.7 2.3 5.2 5.4"/></svg>';
-function groupAvatarHtml() { return `<span class="group-avatar-fallback">${GROUP_AVATAR_SVG}</span>`; }
+// Group photo is stored/transmitted as hex of a compressed JPEG (see gctl_photo). These convert
+// to/from a browser data URL for rendering / from the compressor's output.
+function groupPhotoDataUrl(hex) {
+  if (!hex) return "";
+  try {
+    let bin = "";
+    for (let i = 0; i < hex.length; i += 2) bin += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    return "data:image/jpeg;base64," + btoa(bin);
+  } catch { return ""; }
+}
+function groupPhotoHexFromDataUrl(dataUrl) {
+  const b64 = String(dataUrl || "").split(",")[1] || "";
+  const bin = atob(b64);
+  let hex = "";
+  for (let i = 0; i < bin.length; i += 1) hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
+  return hex;
+}
+// Photo when the group has one, else the generic group glyph.
+function groupAvatarHtml(photoHex) {
+  const url = groupPhotoDataUrl(photoHex);
+  if (url) return `<img class="group-avatar-photo" src="${url}" alt="" />`;
+  return `<span class="group-avatar-fallback">${GROUP_AVATAR_SVG}</span>`;
+}
 
 function groupPreviewText(text) {
   // Same humanizing as the 1:1 chat list: reply envelopes show their text,
@@ -15524,7 +15547,7 @@ function renderGroupList() {
       <button class="chat-row group-row${chatSelectionModeActive ? " selecting" : ""}${selected ? " selected" : ""}${g.groupId === activeGroupId ? " active" : ""}" type="button" data-group-open="${escapeHtml(g.groupId)}">
         ${chatSelectionModeActive ? `<span class="chat-row-select" aria-hidden="true"><span class="chat-row-checkbox${selected ? " checked" : ""}"></span></span>` : ``}
         <span class="chat-row-time">${escapeHtml(time)}</span>
-        <span class="chat-avatar">${groupAvatarHtml()}</span>
+        <span class="chat-avatar">${groupAvatarHtml(g.photoHex)}</span>
         <span class="chat-meta">
           <strong>${escapeHtml(g.name || "Group")}</strong>
           <span>${escapeHtml(preview)}</span>
@@ -15547,7 +15570,7 @@ function openGroupChat(groupId) {
   setGroupUnread(groupId, 0);
   if (groupChatName) groupChatName.textContent = g.name || "Group";
   if (groupChatSub) groupChatSub.textContent = `${g.members.length} member${g.members.length === 1 ? "" : "s"}`;
-  if (groupChatAvatar) groupChatAvatar.innerHTML = groupAvatarHtml();
+  if (groupChatAvatar) groupChatAvatar.innerHTML = groupAvatarHtml(g.photoHex);
   const amMember = g.members.some((m) => m.address === engine.address);
   if (groupReadonlyNote) groupReadonlyNote.hidden = amMember;
   if (groupComposer) groupComposer.hidden = !amMember;
@@ -16222,6 +16245,15 @@ function openGroupManage(groupId) {
         </div>`).join("")}
     </div>` : "";
   groupManageBody.innerHTML = `
+    <div class="group-manage-section group-photo-section">
+      <div class="group-photo-avatar${isAdmin ? " editable" : ""}"${isAdmin ? " data-group-photo-edit" : ""}${isAdmin ? ` title="Change group photo"` : ""}>
+        ${groupAvatarHtml(g.photoHex)}
+        ${isAdmin ? `<span class="group-photo-edit-badge" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span>` : ``}
+      </div>
+      <p class="group-photo-name">${escapeHtml(g.name || "Group")}</p>
+      <p class="group-photo-count">${g.members.length} member${g.members.length === 1 ? "" : "s"}</p>
+      ${isAdmin && g.photoHex ? `<button type="button" class="group-manage-remove-photo" data-group-photo-remove>Remove photo</button>` : ``}
+    </div>
     <div class="group-manage-section">
       <p class="group-manage-section-title">Name</p>
       ${nameSection}
@@ -16288,6 +16320,12 @@ async function syncGroupsNow() {
   // emits its own lines directly in the add/remove handlers, so those dedupe via the stable key.
   for (const ev of result.controls || []) {
     if (!ev || !ev.groupId) continue;
+    // A group photo the admin changed — refresh the open header/list so it shows immediately.
+    if (ev.kind === "photo-updated") {
+      if (ev.groupId === activeGroupId) { try { openGroupChat(activeGroupId); } catch {} }
+      if (groupManageScreen && !groupManageScreen.hidden && activeGroupId === ev.groupId) { try { openGroupManage(activeGroupId); } catch {} }
+      continue;
+    }
     for (const addr of ev.added || []) {
       if (addr === engine.address) continue;
       appendGroupSystemMessage(ev.groupId, `${groupSenderLabel(addr)} was added to the group chat`, Date.now(), `sys:${ev.groupId}:${ev.epoch}:add:${addr}`);
@@ -16755,6 +16793,55 @@ groupVoiceCancelBtn?.addEventListener("click", cancelGroupVoice);
 })();
 
 groupManageBody?.addEventListener("click", async (event) => {
+  // Change the group photo (admin): pick a file, compress, and push to every member.
+  const photoEdit = event.target.closest("[data-group-photo-edit]");
+  if (photoEdit && activeGroupId) {
+    const mgr = getGroupManager();
+    if (!mgr) return;
+    const gid = activeGroupId;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        setStatus("Preparing group photo…");
+        // Rides on-chain to every member (hex-encoded), so keep it small.
+        const compressed = await compressImageBlob(file, { targetBytes: 10 * 1024, maxDimension: 256 });
+        const hex = groupPhotoHexFromDataUrl(compressed.dataUrl);
+        setStatus("Updating group photo…");
+        await mgr.setGroupPhoto(gid, hex);
+        openGroupManage(gid);
+        openGroupChat(gid);
+        renderGroupList();
+        setStatus("Group photo updated");
+      } catch (error) {
+        setStatus(`Could not set group photo: ${error.message}`);
+        showCopyToast(`Could not set group photo. ${error.message}`);
+      }
+    });
+    input.click();
+    return;
+  }
+  // Remove the group photo (admin).
+  const photoRemove = event.target.closest("[data-group-photo-remove]");
+  if (photoRemove && activeGroupId) {
+    const mgr = getGroupManager();
+    if (!mgr) return;
+    if (!confirm("Remove the group photo for everyone?")) return;
+    try {
+      setStatus("Removing group photo…");
+      await mgr.setGroupPhoto(activeGroupId, "");
+      openGroupManage(activeGroupId);
+      openGroupChat(activeGroupId);
+      renderGroupList();
+      setStatus("Group photo removed");
+    } catch (error) {
+      setStatus(`Could not remove group photo: ${error.message}`);
+    }
+    return;
+  }
   // Unhide is local-only (no engine call) — handle it before the admin-action gate.
   const unhide = event.target.closest("[data-group-unhide-member]");
   if (unhide && activeGroupId) {
