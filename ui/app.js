@@ -2894,15 +2894,18 @@ function updateServiceSummary() {
   updateGlobalHealthIndicator();
 }
 
+let lastWasmError = null;
 async function ensureRuntimes({ quiet = false } = {}) {
   let failed = false;
   if (!engine.kaspa) {
     try {
       if (!quiet) setStatus("Loading Rusty Kaspa…");
       await engine.loadWasm();
+      lastWasmError = null;
       appendEngineLog(`WASM loaded ${engine.version() || ""}`);
     } catch (error) {
       failed = true;
+      lastWasmError = error;
       appendEngineLog(`WASM failed: ${error.message}`);
       setService(runtimeIndicator, runtimeStatus, "error", "Rusty Kaspa failed to load");
     }
@@ -13572,6 +13575,9 @@ generateAccountBtn?.addEventListener("click", async () => {
   if (createAccountError) createAccountError.hidden = true;
   try {
     if (!engine.kaspa) await ensureRuntimes();
+    // If the WASM genuinely failed to load, show the real reason (e.g. a fetch/HTTP error behind a
+    // proxy) instead of the opaque "Load Rusty Kaspa WASM first." from the SDK guard.
+    if (!engine.kaspa && lastWasmError) throw new Error(`Kaspa engine failed to load: ${lastWasmError.message}`);
     const phrase = engine.generateMnemonicPhrase(wordCount);
     const words = phrase.split(/\s+/).filter(Boolean);
     if (words.length !== wordCount) throw new Error(`Expected ${wordCount} words but generated ${words.length}.`);
