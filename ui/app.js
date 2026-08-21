@@ -2946,22 +2946,27 @@ async function syncOneConversation(conversationEntry, { quiet = true, catchUp = 
       added += 1;
     }
   }
-  try {
-    const paymentResult = await engine.syncIncomingPayments({
-      conversationId: conversationEntry.id,
-      contact,
-      knownTxids: (conversationEntry.messages || []).map((message) => message.txid).filter(Boolean),
-      cursor: 0,
-      limit: 100,
-    });
-    for (const incoming of paymentResult.messages || []) {
-      if ((conversationEntry.messages || []).some((message) => message.txid && message.txid === incoming.txid)) continue;
-      const message = createMessage({ ...incoming, conversationId: conversationEntry.id, contactId: contact.id });
-      applyMessagePatch(message, incoming);
-      if (appendIncomingOrReactionMessage(conversationEntry, message)) added += 1;
+  // The self-chat does NOT run the incoming-payment sync: payments to your own chatting address
+  // are already collected (with a self-send filter) by syncStrangerPaymentsIntoSelfChat. Running
+  // it here surfaced every received payment/consolidation as a "Received X KAS" bubble.
+  if (contact.address !== engine.address) {
+    try {
+      const paymentResult = await engine.syncIncomingPayments({
+        conversationId: conversationEntry.id,
+        contact,
+        knownTxids: (conversationEntry.messages || []).map((message) => message.txid).filter(Boolean),
+        cursor: 0,
+        limit: 100,
+      });
+      for (const incoming of paymentResult.messages || []) {
+        if ((conversationEntry.messages || []).some((message) => message.txid && message.txid === incoming.txid)) continue;
+        const message = createMessage({ ...incoming, conversationId: conversationEntry.id, contactId: contact.id });
+        applyMessagePatch(message, incoming);
+        if (appendIncomingOrReactionMessage(conversationEntry, message)) added += 1;
+      }
+    } catch (error) {
+      appendEngineLog(`Payment sync failed for ${contact.name}: ${error.message}`);
     }
-  } catch (error) {
-    appendEngineLog(`Payment sync failed for ${contact.name}: ${error.message}`);
   }
 
   const paymentStatusChanged = await refreshPendingPaymentStatuses(conversationEntry, contact);
