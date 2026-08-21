@@ -16254,15 +16254,11 @@ function openGroupManage(groupId) {
         ${canRemove ? `<button type="button" class="group-member-remove-btn" data-group-remove-member="${escapeHtml(m.address)}" title="Remove from group" aria-label="Remove from group"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>` : ``}
       </div>`;
   }).join("");
-  const nameSection = isAdmin
-    ? `<div class="group-manage-name-row"><input class="group-name-input" type="text" maxlength="40" value="${escapeHtml(g.name || "")}" data-group-rename-input /><button type="button" class="secondary-button" data-group-rename-save>Save</button></div>`
-    : `<div class="group-member-line"><span class="group-member-line-meta"><strong>${escapeHtml(g.name || "Group")}</strong></span></div>`;
-  // Hidden members: whose messages are filtered from your view, with an Unhide control.
+  // Hidden members: whose messages are filtered from your view, with an Unhide control. Shown as
+  // its own always-present "Hidden Users" dropdown (matching iOS), empty state included.
   const hiddenAddrs = groupHiddenMembersFor(groupId);
-  const hiddenSection = hiddenAddrs.length ? `
-    <div class="group-manage-section">
-      <p class="group-manage-section-title">Hidden members</p>
-      ${hiddenAddrs.map((addr) => `
+  const hiddenRows = hiddenAddrs.length
+    ? hiddenAddrs.map((addr) => `
         <div class="group-member-line">
           ${memberAvatarHtml(addr, "chat-avatar")}
           <span class="group-member-line-meta">
@@ -16270,8 +16266,12 @@ function openGroupManage(groupId) {
             <span>${escapeHtml(shortAddress(addr))}</span>
           </span>
           <button type="button" class="group-member-remove" data-group-unhide-member="${escapeHtml(addr)}">Unhide</button>
-        </div>`).join("")}
-    </div>` : "";
+        </div>`).join("")
+    : `<p class="group-manage-empty">No hidden users in this group.</p>`;
+  const icEye = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9 9 0 0 0 5.4-1.6"/><path d="m2 2 20 20"/></svg>`;
+  const icPencil = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+  const icResend = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg>`;
+  const icAdd = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5c.6-3.3 2.7-5 5.5-5s4.9 1.7 5.5 5"/><path d="M18 8v6M15 11h6"/></svg>`;
   groupManageBody.innerHTML = `
     <div class="group-manage-section group-photo-section">
       <div class="group-photo-avatar${isAdmin ? " editable" : ""}"${isAdmin ? " data-group-photo-edit" : ""}${isAdmin ? ` title="Change group photo"` : ""}>
@@ -16283,18 +16283,24 @@ function openGroupManage(groupId) {
       ${isAdmin && g.photoHex ? `<button type="button" class="group-manage-remove-photo" data-group-photo-remove>Remove photo</button>` : ``}
     </div>
     <div class="group-manage-section">
-      <p class="group-manage-section-title">Name</p>
-      ${nameSection}
+      <details class="group-members-details">
+        <summary class="group-manage-section-title group-members-summary">Members (${g.members.length})</summary>
+        ${memberRows}
+      </details>
     </div>
     <div class="group-manage-section">
       <details class="group-members-details">
-        <summary class="group-manage-section-title group-members-summary">${g.members.length} member${g.members.length === 1 ? "" : "s"}</summary>
-        ${memberRows}
+        <summary class="group-manage-section-title group-members-summary"><span class="group-manage-row-icon">${icEye}</span> Hidden Users</summary>
+        ${hiddenRows}
       </details>
-      ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-add-member><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add Member</button>` : ``}
-      ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-resend-invites><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg> Resend invites</button>` : ``}
     </div>
-    ${hiddenSection}
+    ${isAdmin ? `
+    <div class="group-manage-section">
+      <button type="button" class="group-manage-row" data-group-rename><span class="group-manage-row-icon">${icPencil}</span> Rename Group</button>
+      <button type="button" class="group-manage-row" data-group-resend-invites><span class="group-manage-row-icon">${icResend}</span> Resend invites to all</button>
+      <button type="button" class="group-manage-row" data-group-add-member><span class="group-manage-row-icon">${icAdd}</span> Add Members</button>
+      <p class="group-manage-footer">Resends the group invite to every member (or use a member's ↻ to resend just theirs) — use this if someone didn't receive the group. Adding members rotates the group key, so new members see messages from when they join onward.</p>
+    </div>` : ``}
     <div class="group-manage-section">
       ${isAdmin
         ? `<button type="button" class="group-manage-danger" data-group-delete>Delete Group</button>`
@@ -16957,7 +16963,7 @@ groupManageBody?.addEventListener("click", async (event) => {
     }
     return;
   }
-  const target = event.target.closest("[data-group-remove-member],[data-group-add-member],[data-group-rename-save],[data-group-delete],[data-group-leave]");
+  const target = event.target.closest("[data-group-remove-member],[data-group-add-member],[data-group-rename],[data-group-delete],[data-group-leave]");
   if (!target || !activeGroupId) return;
   const mgr = getGroupManager();
   if (!mgr) return;
@@ -16978,10 +16984,10 @@ groupManageBody?.addEventListener("click", async (event) => {
       setStatus("Member removed");
     } else if (target.dataset.groupAddMember != null) {
       openGroupAddMember(activeGroupId);
-    } else if (target.dataset.groupRenameSave != null) {
-      const input = groupManageBody.querySelector("[data-group-rename-input]");
-      const name = String(input?.value || "").trim();
-      if (!name || name === mgr.getGroup(activeGroupId)?.name) return;
+    } else if (target.dataset.groupRename != null) {
+      const current = mgr.getGroup(activeGroupId)?.name || "";
+      const name = String(window.prompt("Rename group — every member will see the new name.", current) || "").trim();
+      if (!name || name === current) return;
       const others = groupOtherMemberCount(mgr.getGroup(activeGroupId));
       if (!confirm(`Rename the group to "${name}"? Every member is notified.${await groupOpFeeHint(activeGroupId, { controlTx: others + 1 })}`)) return;
       setStatus("Renaming group…");

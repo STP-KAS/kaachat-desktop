@@ -7294,6 +7294,32 @@ body.session-logged-out [data-account-rename-modal] {
   cursor: pointer;
   font-size: 13px;
 }
+/* iOS-style admin action rows (Rename / Resend / Add Members), teal like iOS's accent buttons */
+.group-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--surface-2, rgba(255,255,255,0.04));
+  border: 0;
+  border-radius: 12px;
+  color: var(--kaspa);
+  font-size: 15px;
+  cursor: pointer;
+  text-align: left;
+}
+.group-manage-row:hover { background: var(--surface, rgba(255,255,255,0.08)); }
+.group-manage-row-icon { display: inline-flex; color: var(--kaspa); flex: 0 0 auto; }
+.group-manage-footer {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 4px 2px 0;
+}
+.group-manage-empty { color: var(--muted); font-size: 13px; padding: 8px 4px; margin: 0; }
+/* Hidden Users summary shares the members-dropdown look but with a leading icon */
+.group-members-summary .group-manage-row-icon { margin-right: 2px; }
 /* Collapsible members dropdown (collapsed by default) */
 .group-members-details { display: flex; flex-direction: column; gap: 8px; }
 .group-members-summary {
