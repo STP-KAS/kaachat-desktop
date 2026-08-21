@@ -8951,6 +8951,17 @@ function renderMessages(conversationEntry) {
 
   messageEmpty.hidden = true;
 
+  // Latest chess timestamp per game, computed ONCE per render — the per-message version
+  // re-scanned and re-parsed the whole conversation for every chess bubble (O(n²)).
+  const latestChessByGame = new Map();
+  for (const m of messages) {
+    const env = Chess.parseChessEnvelope(Chess.unwrapReplyText(m.text));
+    if (env) {
+      const at = m.createdAt || 0;
+      if (at > (latestChessByGame.get(env.gameId) ?? -1)) latestChessByGame.set(env.gameId, at);
+    }
+  }
+
   let lastDayKey = "";
   messages.forEach((message, index) => {
     // "Today"/"Yesterday"/date pill whenever the calendar day changes (iOS parity).
@@ -9019,11 +9030,7 @@ function renderMessages(conversationEntry) {
     if (chessEnv) {
       // The latest chess message of a game renders as a live board thumbnail with
       // status (so on your turn you see the position); earlier ones stay compact.
-      const isLatestChess = !(conversationEntry.messages || []).some((other) => {
-        if (other === message || (other.createdAt || 0) <= (message.createdAt || 0)) return false;
-        const oe = Chess.parseChessEnvelope(Chess.unwrapReplyText(other.text));
-        return oe && oe.gameId === chessEnv.gameId;
-      });
+      const isLatestChess = (message.createdAt || 0) >= (latestChessByGame.get(chessEnv.gameId) ?? 0);
       const contactAddr = requestContact?.address;
       const summary = (isLatestChess && contactAddr && engine.address)
         ? Chess.summarizeChessGame(chessEnv.gameId, (conversationEntry.messages || []).map((m) => ({ text: m.text, outgoing: m.direction === "outgoing", txid: m.txid || m.id, at: m.createdAt || 0 })), engine.address, contactAddr)
@@ -11934,10 +11941,29 @@ async function handleChatVoiceRecordingFinished({ blob, mimeType, cancelled }) {
 document.querySelector("[data-voice-recording-stop]")?.addEventListener("click", () => stopVoiceRecording(false));
 document.querySelector("[data-voice-recording-cancel]")?.addEventListener("click", () => stopVoiceRecording(true));
 
+// Envelope parses are memoized by content string: the thread re-renders constantly (sync
+// ticks, reactions, link previews) and re-parsing every photo/voice envelope each time was
+// pure waste — a photo envelope can be 8 MB of JSON. V8 caches a string's hash after first
+// use, so Map lookups keyed by the (already-retained) message text are cheap. Caches clear
+// wholesale past a bound so an enormous history can't grow them forever.
+const envelopeParseMemos = { image: new Map(), audio: new Map(), reply: new Map() };
+function memoizedEnvelopeParse(kind, text, parser) {
+  if (typeof text !== "string") return parser(text);
+  const memo = envelopeParseMemos[kind];
+  if (memo.has(text)) return memo.get(text);
+  const result = parser(text);
+  if (memo.size > 2000) memo.clear();
+  memo.set(text, result);
+  return result;
+}
+function parseImageEnvelope(text) { return memoizedEnvelopeParse("image", text, parseImageEnvelopeUncached); }
+function parseAudioEnvelope(text) { return memoizedEnvelopeParse("audio", text, parseAudioEnvelopeUncached); }
+function parseReplyEnvelope(text) { return memoizedEnvelopeParse("reply", text, parseReplyEnvelopeUncached); }
+
 // Receivers (including our own render path) detect an image purely by
 // sniffing decrypted content, exactly as iOS/Android do — there is no
 // wire-level flag. Guards against parsing arbitrary long text as JSON.
-function parseImageEnvelope(text) {
+function parseImageEnvelopeUncached(text) {
   const trimmed = String(text || "").trim();
   // 8MB cap: group/Nextcloud photos can far exceed the on-chain payload sizes the
   // old 200k cap assumed, and a too-small cap made big photos render as raw JSON.
@@ -11958,7 +11984,7 @@ function parseImageEnvelope(text) {
 // Matches iOS's MediaFile: photo and voice messages share this exact
 // envelope shape — only the mimeType prefix ("image/" vs "audio/")
 // distinguishes them, there's no separate wire type for audio.
-function parseAudioEnvelope(text) {
+function parseAudioEnvelopeUncached(text) {
   const trimmed = String(text || "").trim();
   // Same 8MB cap rationale as parseImageEnvelope: long voice notes exceed 200k.
   if (!trimmed.startsWith("{") || trimmed.length > 8_000_000) return null;
@@ -11978,7 +12004,7 @@ function parseAudioEnvelope(text) {
 // Matches iOS's MessageReplyContent (Models.swift): a reply is the entire
 // message content becoming this JSON envelope, not a field bolted onto a
 // normal message — the actual typed reply text lives in .text.
-function parseReplyEnvelope(text) {
+function parseReplyEnvelopeUncached(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed.startsWith("{") || trimmed.length > 200000) return null;
   try {
