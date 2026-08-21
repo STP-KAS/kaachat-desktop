@@ -877,7 +877,8 @@ function youtubeVideoId(url) {
 }
 
 // --- Open-Graph link previews (proxied HTML scrape, cached) ------------------
-const linkPreviewCache = new Map();   // url -> {title,description,image,site} | null (resolved)
+const linkPreviewCache = new Map();
+const linkPreviewFailCounts = new Map(); // url -> failed attempts this session   // url -> {title,description,image,site} | null (resolved)
 const linkPreviewPending = new Map(); // url -> Promise, so concurrent renders don't refetch
 let linkPreviewRerenderTimer = null;
 
@@ -948,9 +949,15 @@ function resolveLinkPreview(url) {
     // the same link received later (fresh fetch) shows one. Expire the negative
     // entry so a later render retries.
     if (!data) {
-      window.setTimeout(() => {
-        if (linkPreviewCache.get(url) === null) linkPreviewCache.delete(url);
-      }, 30000);
+      const attempts = (linkPreviewFailCounts.get(url) || 0) + 1;
+      linkPreviewFailCounts.set(url, attempts);
+      // Retry a transient failure a few times, then give up for the session — a permanently
+      // dead link used to re-fetch (and rebuild the whole thread) every 30 seconds forever.
+      if (attempts < 3) {
+        window.setTimeout(() => {
+          if (linkPreviewCache.get(url) === null) linkPreviewCache.delete(url);
+        }, 30000);
+      }
     }
     return data || null;
   });
@@ -2025,6 +2032,14 @@ state = buildFullyRestoredState();
 
 function hydrateConversationMessages(conversationEntry) {
   if (!conversationEntry) return conversationEntry;
+  // Hydration merges the persisted history/backup into the live entry — needed ONCE per
+  // conversation per session, not on every render. renderMessages re-runs constantly
+  // (sync polls, reactions, link previews resolving), and each hydration re-parsed the
+  // ENTIRE message history plus the full state backup out of storage synchronously —
+  // multi-MB JSON.parse passes per render on photo-heavy accounts, the single worst
+  // open-a-chat / background-rerender cost in the app.
+  if (conversationEntry.__hydrated) return conversationEntry;
+  conversationEntry.__hydrated = true;
 
   const candidates = [];
   const current = Array.isArray(conversationEntry.messages) ? conversationEntry.messages : [];
@@ -3175,19 +3190,30 @@ async function refreshAllConversations({ quiet = true } = {}) {
     catch (error) { appendEngineLog(`Incoming handshake sync failed: ${error.message}`); }
     try { added += await syncStrangerPaymentsIntoSelfChat({ catchUp }); }
     catch (error) { appendEngineLog(`Stranger payment sweep failed: ${error.message}`); }
-    for (const conversationEntry of state.conversations || []) {
+    // Per-contact sync runs 4 wide instead of strictly sequentially — with many contacts
+    // the serial loop was ~2 awaited round trips per contact and the whole sweep barely
+    // finished before the next 5s tick was due, starving the later contacts. 4 concurrent
+    // keeps the indexer load civilised while cutting wall-clock ~4x.
+    const sweepTargets = (state.conversations || []).filter((conversationEntry) => {
       const contact = contactForConversation(conversationEntry);
       // The SELF-chat (stranger-payment collector) is fed by syncStrangerPaymentsIntoSelfChat
       // above — running the per-contact indexer sync against your own address just burns
       // REST quota (and helped trip api.kaspa.org's rate limiter).
-      if (contact?.address === engine.address) continue;
+      if (contact?.address === engine.address) return false;
       // Match KaChat's relationship boundary: discovering an incoming
       // handshake must not import that unknown sender's historical contextual
       // messages before the user accepts the request.
-      if (contact?.relationshipState === "incoming-request" || contact?.relationshipState === "declined") continue;
-      try { added += await syncOneConversation(conversationEntry, { quiet, catchUp }); }
-      catch (error) { appendEngineLog(`Automatic message sync failed for ${conversationEntry.id}: ${error.message}`); }
-    }
+      if (contact?.relationshipState === "incoming-request" || contact?.relationshipState === "declined") return false;
+      return true;
+    });
+    let sweepNext = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sweepTargets.length) }, async () => {
+      while (sweepNext < sweepTargets.length) {
+        const conversationEntry = sweepTargets[sweepNext++];
+        try { added += await syncOneConversation(conversationEntry, { quiet, catchUp }); }
+        catch (error) { appendEngineLog(`Automatic message sync failed for ${conversationEntry.id}: ${error.message}`); }
+      }
+    }));
     try { added += await syncGroupsNow(); }
     catch (error) { appendEngineLog(`Group sync failed: ${error.message}`); }
     // Persist and re-render ONLY when the sweep actually changed something. state holds
@@ -10649,7 +10675,13 @@ importPayloadForm?.addEventListener("submit", (event) => {
 });
 
 
-searchInput.addEventListener("input", renderChats);
+// Debounced: each keystroke previously rebuilt the entire chat list synchronously
+// (innerHTML + per-row preview derivation), which was visible typing lag with many chats.
+let chatSearchDebounce = null;
+searchInput.addEventListener("input", () => {
+  if (chatSearchDebounce) clearTimeout(chatSearchDebounce);
+  chatSearchDebounce = window.setTimeout(() => { chatSearchDebounce = null; renderChats(); }, 120);
+});
 
 messageArea.addEventListener("click", (event) => {
   const bubble = event.target.closest("[data-message-id]");

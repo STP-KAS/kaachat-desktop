@@ -446,24 +446,36 @@ export class GroupManager {
       }
     } catch { /* indexer hiccup — try messages anyway */ }
 
-    // 2. For each known group, pull messages under every member's blinded id.
+    // 2. For each known group, pull messages under every member's blinded id — 4 scans in
+    // flight at a time. The old fully-sequential nested loop was one awaited round trip per
+    // member per group (two 8-member groups = 16 serial requests on EVERY 5s sweep).
     const messages = [];
     for (const record of this.listGroups()) {
       const blindingKey = G.hexToBytes(record.blindingKeyHex);
       record.cursors = record.cursors || {};
-      for (const member of record.members) {
-        if (!member.xOnlyPubKeyHex) continue;
-        const blindedHex = G.bytesToHex(G.deriveBlindedGroupId(blindingKey, member.xOnlyPubKeyHex));
-        let rows;
-        try { rows = await this.engine.scanGroupMessages(blindedHex, record.cursors[blindedHex] || null); }
-        catch { continue; }
+      const scans = record.members
+        .filter((member) => member.xOnlyPubKeyHex)
+        .map((member) => G.bytesToHex(G.deriveBlindedGroupId(blindingKey, member.xOnlyPubKeyHex)));
+      let next = 0;
+      const results = new Array(scans.length);
+      await Promise.all(Array.from({ length: Math.min(4, scans.length) }, async () => {
+        while (next < scans.length) {
+          const i = next++;
+          try { results[i] = await this.engine.scanGroupMessages(scans[i], record.cursors[scans[i]] || null); }
+          catch { results[i] = null; }
+        }
+      }));
+      // Decode sequentially (processMessage mutates shared group state) in member order.
+      results.forEach((rows, i) => {
+        if (!rows) return;
+        const blindedHex = scans[i];
         for (const row of rows) {
           const parsed = G.parseGroupMessagePayload(row.payloadString);
           const decoded = this.processMessage(parsed);
           if (decoded) messages.push({ ...decoded, txId: row.txId, blockTime: row.blockTime });
           if (row.cursor) record.cursors[blindedHex] = row.cursor;
         }
-      }
+      });
       this._put(record);
     }
     return { controls: events, messages };
