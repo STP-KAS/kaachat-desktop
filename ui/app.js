@@ -12733,36 +12733,13 @@ function buildLocalChatArchive() {
     exportedAt: archiveIsoTimestamp(Date.now()),
     walletAddress: myAddress || null,
     conversations,
-    groups: buildArchiveGroups(),
+    // Groups are NO LONGER backed up: both member groups (via their on-chain invite) and admin
+    // groups (via the self-addressed recovery invite added in this release) now rediscover from
+    // chain on a seedless import, so shipping their secret key material to a cloud file is
+    // unnecessary. Old archives that still carry a `groups` array are still IMPORTED (below),
+    // so nobody mid-transition loses anything.
     ...(tombstones.size ? { deletedContactAddresses: [...tombstones].sort() } : {}),
   };
-}
-
-// Full group key material for the shared backup archive, so another device of the same
-// account can recover every group - including admin groups, whose seed exists ONLY on the
-// creating device. deviceId/msgCounter are per-device and deliberately omitted (the importer
-// mints its own). Field names match the iOS/Android archive decoders.
-function buildArchiveGroups() {
-  const mgr = getGroupManager();
-  if (!mgr) return [];
-  try {
-    return mgr.listGroups().map((g) => ({
-      groupId: g.groupId,
-      name: g.name || "Group",
-      isAdmin: Boolean(g.isAdmin),
-      adminAddress: g.adminAddress || null,
-      adminSigningPub: g.adminSigningPub || null,
-      groupSeed: g.groupSeedHex || null,
-      groupRootEpoch: g.groupRootEpochHex || null,
-      blindingKey: g.blindingKeyHex || null,
-      currentEpoch: Number(g.currentEpoch || 0),
-      members: (g.members || []).map((m) => ({
-        address: m.address,
-        xOnlyPubKeyHex: m.xOnlyPubKeyHex || null,
-        isAdmin: Boolean(m.isAdmin),
-      })),
-    }));
-  } catch { return []; }
 }
 
 function archiveExportedAtMs(archive) {

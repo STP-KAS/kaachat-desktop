@@ -243,9 +243,14 @@ export function parseControlPayload(payloadString) {
 // --- gctl control payloads (JSON, signed) -----------------------------------
 // Field names are the on-the-wire snake_case keys, matching iOS's CodingKeys so
 // the JSON is identical across clients.
-export function buildSignedRootPayload({ groupId, epoch, groupRootEpoch, blindingKey, adminSigningPub, members, name, adminPrivateKey }) {
+// `groupSeed` (optional) is included ONLY in the admin's self-addressed copy, so an admin can
+// fully rebuild the group (any epoch) after a seedless re-import. It is NOT signed — instead
+// the recipient verifies it by re-deriving group_id/blinding_key from it (see the consistency
+// check in group-store._applyRoot), which cryptographically binds it to the signed fields.
+// Members' copies omit it, and it is encrypted to the admin's own key, so members never see it.
+export function buildSignedRootPayload({ groupId, epoch, groupRootEpoch, blindingKey, adminSigningPub, members, name, adminPrivateKey, groupSeed = null }) {
   const sig = signBytes(buildRootSigningPayload({ v: 1, groupId, epoch, groupRootEpoch, blindingKey, adminSigningPub }), adminPrivateKey);
-  return {
+  const payload = {
     type: "gctl_root",
     v: 1,
     group_id: bytesToHex(asBytes(groupId)),
@@ -257,6 +262,8 @@ export function buildSignedRootPayload({ groupId, epoch, groupRootEpoch, blindin
     name: String(name || ""),
     sig: bytesToHex(sig),
   };
+  if (groupSeed) payload.group_seed = bytesToHex(asBytes(groupSeed));
+  return payload;
 }
 
 export function verifyRootPayload(payload) {

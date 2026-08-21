@@ -200,6 +200,25 @@ export class GroupManager {
         failures.push({ address: member.address, message: error?.message || String(error) });
       }
     }
+    // Self-addressed copy WITH the group seed, so a seedless re-import of this wallet
+    // rediscovers and fully rebuilds the group from chain alone (no cloud backup). This is
+    // what closes the "admin groups vanish on fresh import" gap. Best-effort: a failure here
+    // never blocks member delivery, and the backfill in syncGroups retries it.
+    try {
+      const selfMember = { address: this.walletAddress, xOnlyPubKeyHex: this.selfPubHex() };
+      const selfPayload = G.buildSignedRootPayload({
+        groupId, epoch, groupRootEpoch, blindingKey,
+        adminSigningPub: record.adminSigningPub, members: memberAddresses,
+        name: record.name, adminPrivateKey: this.engine.privateKeyHex,
+        groupSeed, // the extra field ONLY the self copy carries
+      });
+      await this._sendControlToMember(selfMember, JSON.stringify(selfPayload));
+      record.selfInviteEpoch = epoch; // mark this epoch's recovery invite as published
+      this._put(record);
+    } catch (error) {
+      // Leave selfInviteEpoch unset so syncGroups' backfill retries.
+      this.engine.log?.(`Group self-invite send failed: ${error?.message || error}`);
+    }
     if (failures.length) {
       const err = new Error(`${failures.length} of ${record.members.length - 1} invite(s) could not be sent`);
       err.failures = failures;
@@ -364,6 +383,20 @@ export class GroupManager {
     // Replay guard: never apply an epoch strictly older than what we hold.
     if (existing && payload.epoch < existing.currentEpoch) return null;
 
+    // Admin self-recovery: a self-addressed root carries the group seed. Trust it only if it
+    // re-derives the SIGNED group_id + blinding_key (that binding is what authenticates the
+    // otherwise-unsigned seed). When valid, this is our own group and we rebuild it as admin.
+    let recoveredSeedHex = null;
+    if (payload.group_seed && payload.admin_signing_pub === this.selfPubHex()) {
+      try {
+        const seed = G.hexToBytes(payload.group_seed);
+        const derivedId = G.bytesToHex(G.deriveGroupId(seed));
+        const derivedBlinding = G.bytesToHex(G.deriveBlindingKey(seed, G.hexToBytes(groupId)));
+        if (derivedId === groupId && derivedBlinding === payload.blinding_key) recoveredSeedHex = G.bytesToHex(seed);
+      } catch { recoveredSeedHex = null; }
+    }
+    const isAdminRecord = recoveredSeedHex != null;
+
     // Resolve each member address to its pubkey for the local roster.
     const roster = [];
     for (const address of payload.members || []) {
@@ -371,17 +404,20 @@ export class GroupManager {
       if (!addr || roster.some((m) => m.address === addr)) continue;
       let xOnlyPubKeyHex = null;
       try { xOnlyPubKeyHex = await this.engine.xOnlyPubKeyForAddress(addr); } catch { xOnlyPubKeyHex = null; }
-      roster.push({ address: addr, xOnlyPubKeyHex, isAdmin: addr === senderAddress });
+      // For an admin record the admin is ourselves; otherwise the sender is admin.
+      const memberIsAdmin = isAdminRecord ? addr === this.walletAddress : addr === senderAddress;
+      roster.push({ address: addr, xOnlyPubKeyHex, isAdmin: memberIsAdmin });
     }
 
     const isNewEpoch = !existing || payload.epoch > existing.currentEpoch;
     const record = {
       groupId,
       name: payload.name || existing?.name || "Group",
-      isAdmin: false,
-      adminAddress: senderAddress || existing?.adminAddress || null,
+      isAdmin: isAdminRecord || existing?.isAdmin === true,
+      adminAddress: isAdminRecord ? this.walletAddress : (senderAddress || existing?.adminAddress || null),
       adminSigningPub: payload.admin_signing_pub,
-      groupSeedHex: null, // non-admins never hold the seed
+      // Keep any seed we already hold; adopt a validly-recovered one on a seedless rebuild.
+      groupSeedHex: recoveredSeedHex || existing?.groupSeedHex || null,
       groupRootEpochHex: payload.group_root_epoch,
       blindingKeyHex: payload.blinding_key,
       currentEpoch: payload.epoch,
@@ -390,10 +426,13 @@ export class GroupManager {
       msgCounter: isNewEpoch ? 0 : (existing?.msgCounter || 0),
       members: roster,
       cursors: existing?.cursors || {},
+      // A recovered admin group already has its recovery invite on chain for this epoch.
+      selfInviteEpoch: isAdminRecord ? payload.epoch : existing?.selfInviteEpoch,
       updatedAt: 0,
     };
     this._put(record);
-    return { kind: existing ? "root-updated" : "joined", groupId, epoch: payload.epoch, name: record.name };
+    const kind = existing ? "root-updated" : (isAdminRecord ? "recovered" : "joined");
+    return { kind, groupId, epoch: payload.epoch, name: record.name };
   }
 
   // --- process an incoming gcomm message ---
@@ -437,6 +476,31 @@ export class GroupManager {
   // decoded messages into its conversation state and renders control events.
   async syncGroups() {
     const events = [];
+    // 0. Backfill recovery invites: publish a self-addressed root (with the group seed) for any
+    // admin group that lacks one for its current epoch — i.e. every group created before this
+    // feature existed. One-time per group per epoch; after it lands on chain, a seedless import
+    // of this wallet rediscovers the group with no cloud backup. Best-effort, never blocks sync.
+    for (const record of this.listGroups()) {
+      if (!record.isAdmin || !record.groupSeedHex) continue;
+      if (record.selfInviteEpoch === record.currentEpoch) continue;
+      try {
+        const groupSeed = G.hexToBytes(record.groupSeedHex);
+        const groupId = G.hexToBytes(record.groupId);
+        const selfPayload = G.buildSignedRootPayload({
+          groupId, epoch: record.currentEpoch,
+          groupRootEpoch: G.hexToBytes(record.groupRootEpochHex),
+          blindingKey: G.hexToBytes(record.blindingKeyHex),
+          adminSigningPub: record.adminSigningPub, members: record.members.map((m) => m.address),
+          name: record.name, adminPrivateKey: this.engine.privateKeyHex, groupSeed,
+        });
+        await this._sendControlToMember({ address: this.walletAddress, xOnlyPubKeyHex: this.selfPubHex() }, JSON.stringify(selfPayload));
+        record.selfInviteEpoch = record.currentEpoch;
+        this._put(record);
+      } catch (error) {
+        this.engine.log?.(`Group self-invite backfill failed: ${error?.message || error}`);
+      }
+    }
+
     // 1. Discover invites / rotations addressed to us.
     try {
       const recips = await this.engine.scanGroupControlByRecipient();
