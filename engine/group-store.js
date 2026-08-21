@@ -412,6 +412,9 @@ export class GroupManager {
       if (member.address === this.walletAddress) continue;
       try { await this._sendControlToMember(member, json); } catch { failures += 1; }
     }
+    // Also send a self-addressed copy so the SAME account's OTHER devices pick up the photo change
+    // (they scan for controls addressed to their own key). Best-effort; not counted as a failure.
+    try { await this._sendControlToMember({ address: this.walletAddress, xOnlyPubKeyHex: this.selfPubHex() }, json); } catch {}
     if (failures) { const e = new Error(`${failures} member(s) may not have received the photo yet.`); e.failures = failures; throw e; }
   }
 
