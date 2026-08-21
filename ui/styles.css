@@ -7255,6 +7255,37 @@ body.session-logged-out [data-account-rename-modal] {
   align-items: center;
 }
 .group-manage-name-row .group-name-input { margin: 0; }
+/* Collapsible members dropdown (collapsed by default) */
+.group-members-details { display: flex; flex-direction: column; gap: 8px; }
+.group-members-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.group-members-summary::-webkit-details-marker { display: none; }
+.group-members-summary::after {
+  content: "";
+  width: 8px; height: 8px;
+  margin-left: 4px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform .15s ease;
+}
+.group-members-details[open] .group-members-summary::after { transform: rotate(-135deg); }
+/* iMessage-style membership system line in the group thread */
+.group-system-line {
+  align-self: center;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px auto;
+  padding: 0 24px;
+  max-width: 80%;
+}
 .group-member-line {
   display: flex;
   align-items: center;

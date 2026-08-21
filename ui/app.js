@@ -15236,6 +15236,20 @@ function appendGroupMessage(groupId, message) {
   return true;
 }
 
+// iMessage-style membership line ("X was added/removed to the group chat"). Stored as a local
+// plaintext message flagged {system:true} and rendered centered. `key` is a stable dedup id
+// (groupId+epoch+addr) so the same event never duplicates across sync passes or reloads.
+function appendGroupSystemMessage(groupId, text, createdAt, key) {
+  return appendGroupMessage(groupId, {
+    id: key || nowId(),
+    msgIdHex: key || null,
+    system: true,
+    text: String(text || ""),
+    direction: "incoming",
+    createdAt: createdAt || Date.now(),
+  });
+}
+
 // Stable per-message reaction/reply target key (prefer the on-chain txId so it matches
 // across clients; fall back to msgId/local id before the tx confirms).
 function groupMsgKey(message) { return message?.txId || message?.msgIdHex || message?.id || ""; }
@@ -15769,6 +15783,15 @@ function renderGroupMessages() {
       groupMessageArea.appendChild(sep);
     }
 
+    // iMessage-style membership line — centered, no bubble/avatar.
+    if (message.system) {
+      const sysRow = document.createElement("div");
+      sysRow.className = "group-system-line";
+      sysRow.textContent = message.text || "";
+      groupMessageArea.appendChild(sysRow);
+      return;
+    }
+
     const incoming = message.direction === "incoming";
     const row = document.createElement("div");
     row.className = `message-row ${incoming ? "incoming" : "local"}`;
@@ -16204,8 +16227,10 @@ function openGroupManage(groupId) {
       ${nameSection}
     </div>
     <div class="group-manage-section">
-      <p class="group-manage-section-title">${g.members.length} member${g.members.length === 1 ? "" : "s"}</p>
-      ${memberRows}
+      <details class="group-members-details">
+        <summary class="group-manage-section-title group-members-summary">${g.members.length} member${g.members.length === 1 ? "" : "s"}</summary>
+        ${memberRows}
+      </details>
       ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-add-member><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> Add Member</button>` : ``}
       ${isAdmin ? `<button type="button" class="group-manage-add-btn" data-group-resend-invites><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg> Resend invites</button>` : ``}
     </div>
@@ -16256,6 +16281,19 @@ async function syncGroupsNow() {
           setGroupUnread(decoded.groupId, groupUnreadFor(decoded.groupId) + 1);
         }
       }
+    }
+  }
+  // iMessage-style membership lines for members who received a key rotation: the engine reports
+  // which addresses were added/removed on each root update (see _applyRoot). The acting admin
+  // emits its own lines directly in the add/remove handlers, so those dedupe via the stable key.
+  for (const ev of result.controls || []) {
+    if (!ev || !ev.groupId) continue;
+    for (const addr of ev.added || []) {
+      if (addr === engine.address) continue;
+      appendGroupSystemMessage(ev.groupId, `${groupSenderLabel(addr)} was added to the group chat`, Date.now(), `sys:${ev.groupId}:${ev.epoch}:add:${addr}`);
+    }
+    for (const addr of ev.removed || []) {
+      appendGroupSystemMessage(ev.groupId, `${groupSenderLabel(addr)} was removed from the group chat`, Date.now(), `sys:${ev.groupId}:${ev.epoch}:rem:${addr}`);
     }
   }
   if ((result.controls || []).length) changed++;
@@ -16368,7 +16406,12 @@ groupCreateSubmit?.addEventListener("click", async () => {
   try {
     if (groupModalMode === "add" && groupModalTargetId) {
       setStatus("Adding member(s) to the group…");
-      for (const address of members) await mgr.addMember(groupModalTargetId, address);
+      for (const address of members) {
+        await mgr.addMember(groupModalTargetId, address);
+        // iMessage-style membership line for the admin (other members get theirs on the rotation).
+        const epAdd = mgr.getGroup(groupModalTargetId)?.currentEpoch;
+        appendGroupSystemMessage(groupModalTargetId, `${groupSenderLabel(address)} was added to the group chat`, Date.now(), `sys:${groupModalTargetId}:${epAdd}:add:${address}`);
+      }
       closeGroupCreate();
       if (activeGroupId === groupModalTargetId) { openGroupChat(groupModalTargetId); openGroupManage(groupModalTargetId); }
       renderGroupList();
@@ -16726,6 +16769,7 @@ groupManageBody?.addEventListener("click", async (event) => {
     const mgr = getGroupManager();
     if (!mgr) return;
     const addr = resendOne.dataset.groupResendMember;
+    if (!confirm(`Resend the group invite to ${groupSenderLabel(addr)}?`)) return;
     resendOne.disabled = true;
     setStatus("Resending invite…");
     try {
@@ -16765,9 +16809,13 @@ groupManageBody?.addEventListener("click", async (event) => {
   if (!mgr) return;
   try {
     if (target.dataset.groupRemoveMember) {
-      if (!confirm("Remove this member? A fresh group key is issued to everyone who stays.")) return;
+      const removeAddr = target.dataset.groupRemoveMember;
+      if (!confirm(`Remove ${groupSenderLabel(removeAddr)} from the group chat? A fresh group key is issued to everyone who stays.`)) return;
       setStatus("Removing member…");
-      await mgr.removeMember(activeGroupId, target.dataset.groupRemoveMember);
+      await mgr.removeMember(activeGroupId, removeAddr);
+      // iMessage-style membership line for the admin (other members get theirs on the rotation).
+      const epRem = mgr.getGroup(activeGroupId)?.currentEpoch;
+      appendGroupSystemMessage(activeGroupId, `${groupSenderLabel(removeAddr)} was removed from the group chat`, Date.now(), `sys:${activeGroupId}:${epRem}:rem:${removeAddr}`);
       openGroupManage(activeGroupId);
       openGroupChat(activeGroupId);
       setStatus("Member removed");

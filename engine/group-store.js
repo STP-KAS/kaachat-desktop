@@ -500,7 +500,16 @@ export class GroupManager {
     };
     this._put(record);
     const kind = existing ? "root-updated" : (isAdminRecord ? "recovered" : "joined");
-    return { kind, groupId, epoch: payload.epoch, name: record.name };
+    // Membership diff, so the UI can show iMessage-style "X was added/removed" lines to every
+    // member on a key rotation. Only for an already-known group (a first join has no baseline).
+    let added = [], removed = [];
+    if (existing) {
+      const oldAddrs = new Set((existing.members || []).map((m) => m.address));
+      const newAddrs = new Set(roster.map((m) => m.address));
+      added = roster.map((m) => m.address).filter((a) => !oldAddrs.has(a));
+      removed = (existing.members || []).map((m) => m.address).filter((a) => !newAddrs.has(a));
+    }
+    return { kind, groupId, epoch: payload.epoch, name: record.name, added, removed };
   }
 
   // --- process an incoming gcomm message ---
