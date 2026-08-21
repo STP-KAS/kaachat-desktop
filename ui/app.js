@@ -69,6 +69,8 @@ engine.onWalletActivity?.((event) => {
 const STORAGE_KEY = "kachat-shell-step25-state";
 const MESSAGE_HISTORY_KEY = "kachat-shell-message-history-v1";
 const STATE_BACKUP_KEY = "kachat-shell-state-backup-v1";
+const STATE_BACKUP_MIN_INTERVAL_MS = 60_000;
+let lastStateBackupWriteAt = 0;
 const ACCOUNT_DATA_PREFIX = "kachat-account-data-v1";
 const SESSION_LOGGED_OUT_KEY = "kachat-session-logged-out-v1";
 // Marks that an account is active for THIS browser session (sessionStorage:
@@ -2156,7 +2158,17 @@ function persistStateWrites({ includeBackup = true } = {}) {
   // persistState() below still handles.
   const serialized = JSON.stringify(state);
   chatStorageSetSync(accountScopedKey(STORAGE_KEY), serialized);
-  if (includeBackup) chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
+  // STATE_BACKUP_KEY holds a byte-identical copy of STORAGE_KEY, purely as a corruption-
+  // recovery snapshot (read only by hydration/restore). Writing it on EVERY persist doubled
+  // the multi-MB serialization write; throttle it to at most once a minute — a stale-by-<60s
+  // backup is exactly as useful for recovery, and the main store is always current.
+  if (includeBackup) {
+    const now = Date.now();
+    if (now - lastStateBackupWriteAt >= STATE_BACKUP_MIN_INTERVAL_MS) {
+      chatStorageSetSync(accountScopedKey(STATE_BACKUP_KEY), serialized);
+      lastStateBackupWriteAt = now;
+    }
+  }
   const history = Object.fromEntries((state.conversations || []).map((entry) => [entry.id, entry.messages || []]));
   chatStorageSetSync(accountScopedKey(MESSAGE_HISTORY_KEY), JSON.stringify(history));
   const verified = chatStorageGetSync(accountScopedKey(STORAGE_KEY));
