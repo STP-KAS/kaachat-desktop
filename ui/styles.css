@@ -6416,6 +6416,12 @@ body.session-logged-out [data-account-rename-modal] {
 .kaposts-mention { color: var(--kaspa-ink); font-weight: 600; cursor: pointer; }
 .kaposts-mention:hover { text-decoration: underline; }
 
+/* Clickable @mention inside a chat/group bubble — opens a 1:1 with that person. */
+.chat-mention { color: var(--kaspa-ink); font-weight: 600; cursor: pointer; }
+.chat-mention:hover { text-decoration: underline; }
+/* On the sender's own (teal) bubbles, keep the mention legible against the accent fill. */
+.message-bubble.local .chat-mention { color: inherit; text-decoration: underline; }
+
 /* X-style thread posting (composer) */
 .kaposts-thread-segments { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; max-height: 160px; overflow-y: auto; }
 .kaposts-thread-segment {

@@ -1037,6 +1037,56 @@ function renderTextWithLinks(container, text) {
   return urls;
 }
 
+// An on-chain @mention token: `@<kaspa address>`, optionally brace-wrapped (legacy desktop form).
+// iOS/Android encode without braces, so we accept both for cross-platform interop.
+const CHAT_MENTION_TOKEN_RE = /@\{?(kaspa(?:test)?:[a-z0-9]{20,})\}?/gi;
+
+// Display label for a mention: the person's KNS domain when known (what the user asked to see),
+// otherwise their contact name / short address. Read from the synchronous KNS cache.
+function mentionDisplayLabel(address) {
+  const info = engine.peekKnsAddressInfo?.(address);
+  const domain = info?.explicitPrimaryDomain || info?.primaryDomain || "";
+  if (domain) return domain; // includes the .kas suffix
+  if (address === engine.address) return "You";
+  const contact = (state.contacts || []).find((c) => c.address === address);
+  if (contact) return displayNameForAddress(contact);
+  return shortAddress(address);
+}
+
+// Render message text that may contain @mention tokens AND URLs into `container`. Each mention
+// becomes a clickable span showing the KNS domain (a delegated handler opens a 1:1 chat with that
+// address); non-mention runs fall through to the URL linkifier. Returns the aggregated URL list so
+// link-preview cards keep working. Mirrors KaPosts' clickable mentions, but opens a chat, not a profile.
+function renderTextWithMentions(container, rawText) {
+  const source = String(rawText ?? "");
+  CHAT_MENTION_TOKEN_RE.lastIndex = 0;
+  const urls = [];
+  const warm = [];
+  let last = 0;
+  for (const match of source.matchAll(CHAT_MENTION_TOKEN_RE)) {
+    const address = match[1];
+    if (match.index > last) urls.push(...renderTextWithLinks(container, source.slice(last, match.index)));
+    const span = document.createElement("span");
+    span.className = "chat-mention";
+    span.dataset.chatMention = address;
+    span.textContent = `@${mentionDisplayLabel(address)}`;
+    if (address !== engine.address) {
+      span.setAttribute("role", "button");
+      span.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openOrCreateOneToOne(address); // straight to a 1:1 chat with the mentioned person
+      });
+    }
+    container.append(span);
+    warm.push(address);
+    last = match.index + match[0].length;
+  }
+  if (last < source.length) urls.push(...renderTextWithLinks(container, source.slice(last)));
+  // Warm the KNS cache for any unresolved addresses so the domain fills in on the next render.
+  if (warm.length) { try { engine.refreshKnsIfNeeded?.(warm); } catch {} }
+  return urls;
+}
+
 /** Preview card for the first link in a message, or null. */
 function buildLinkPreviewCard(url) {
   const nextcloud = nextcloudShareDownloadUrl(url);
@@ -8992,7 +9042,12 @@ function renderMessages(conversationEntry) {
   hydrateConversationMessages(conversationEntry);
   // Cross-device placeholders never render: they carry no readable content (an outgoing tx
   // from another device whose text never synced into an archive this device has seen).
-  const messages = (conversationEntry.messages || []).filter((m) => m?.text !== "📤 Sent via another device");
+  const messages = (conversationEntry.messages || [])
+    .filter((m) => m?.text !== "📤 Sent via another device")
+    // Invisible control envelopes (reactions, fresh-address pool markers) are applied at ingest,
+    // never shown as bubbles. Filter them at render too, so any that slipped into storage before
+    // interception existed — or via a history restore that didn't intercept — don't leak as raw JSON.
+    .filter((m) => !parseReactionEnvelope(m?.text) && !parsePaymentPoolEnvelope(m?.text));
   // The thread re-renders constantly (sync polls, link previews resolving,
   // reactions). Capture the scroll state BEFORE the rebuild so a user reading
   // older history isn't yanked back to the bottom by every background render:
@@ -9193,7 +9248,7 @@ function renderMessages(conversationEntry) {
       const text = document.createElement("span");
       text.className = "message-text";
       const bodyText = replyEnvelope ? replyEnvelope.text : message.text;
-      const linkUrls = renderTextWithLinks(text, bodyText);
+      const linkUrls = renderTextWithMentions(text, bodyText);
       const previewable = linkUrls.find(isPreviewableUrl);
       const card = previewable ? buildLinkPreviewCard(previewable) : null;
       // A link-only message renders as just the preview card (no chat bubble, timestamp below),
@@ -12536,6 +12591,7 @@ function importPhoneChatArchive(json) {
           // Restore decrypted message history so it survives even if the indexer pruned it.
           for (const m of Array.isArray(g.messages) ? g.messages : []) {
             const content = String(m?.content ?? m?.text ?? "");  // accept legacy `text` too
+            if (parseReactionEnvelope(content)) continue; // reactions are pills, not stored bubbles
             const blockTime = Number(m?.blockTime ?? m?.createdAt ?? 0) || Date.now();
             appendGroupMessage(g.groupId, {
               id: nowId(),
@@ -15263,13 +15319,12 @@ const GROUP_MENTION_RE = /(^|[\s([{<"'])@([a-z0-9-]+(?:\.[a-z0-9-]+)*)/gi;
 // notification center (and an OS ping). Group mentions are purely client-detected — there is no
 // server round-trip, unlike KaPosts mentions.
 function maybeRecordGroupMention(groupId, senderAddress, text, id, createdAt) {
-  const domains = myKnsDomainSet();
-  if (!domains.size) return;
-  let mentioned = false;
-  for (const m of String(text || "").matchAll(GROUP_MENTION_RE)) {
-    if (domains.has(m[2].toLowerCase().replace(/\.kas$/, ""))) { mentioned = true; break; }
-  }
-  if (!mentioned) return;
+  const me = engine.address || "";
+  if (!me) return;
+  // Mentions are on-chain as @<address> (optionally brace-wrapped, legacy desktop). You were
+  // mentioned iff your own address token appears in the message.
+  const escaped = me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!new RegExp(`@\\{?${escaped}\\}?`, "i").test(String(text || ""))) return;
   const group = getGroupManager()?.getGroup(groupId);
   const groupName = group?.name || "a group";
   const contact = (state.contacts || []).find((c) => c.address === senderAddress);
@@ -15691,10 +15746,11 @@ function closeGroupChat() {
   renderGroupList();
 }
 
-// Decode @{kaspa:...} mention tokens back to @DisplayName for display (matches iOS
-// GroupMentionCodec.decodeForDisplay). Members/contacts resolve via groupSenderLabel.
+// Decode @<address> mention tokens (brace-wrapped legacy desktop form OR bare iOS/Android form)
+// back to @KNSDomain text — used for plain-text contexts like chat-list previews and reply banners.
+// The live bubble renderer uses renderTextWithMentions instead (clickable spans).
 function decodeGroupMentions(text) {
-  return String(text || "").replace(/@\{(kaspa[a-z0-9:]+)\}/gi, (_, addr) => `@${groupSenderLabel(addr)}`);
+  return String(text || "").replace(CHAT_MENTION_TOKEN_RE, (_, addr) => `@${mentionDisplayLabel(addr)}`);
 }
 
 // Day-separator label (Today / Yesterday / date) for the group timeline.
@@ -15868,9 +15924,12 @@ function deleteGroupMessageLocal(message) {
 
 function renderGroupMessages() {
   if (!activeGroupId || !groupMessageArea) return;
-  // Hidden members' messages are filtered out of the view (see the avatar menu).
+  // Hidden members' messages are filtered out of the view (see the avatar menu). Reaction
+  // envelopes are applied as pills at ingest, never shown as bubbles — filter any that reached
+  // storage (e.g. via a group-history restore that didn't intercept) so they don't leak as raw JSON.
   const msgs = groupMessages(activeGroupId).filter(
-    (m) => !(m.direction === "incoming" && isGroupMemberHidden(activeGroupId, m.senderAddress)),
+    (m) => !(m.direction === "incoming" && isGroupMemberHidden(activeGroupId, m.senderAddress))
+      && !parseReactionEnvelope(m?.text),
   );
   // Same stick-to-bottom rule as 1:1 renderMessages: background re-renders must
   // not yank a reader who scrolled up back to the bottom.
@@ -15995,8 +16054,8 @@ function renderGroupMessages() {
     } else {
       const text = document.createElement("span");
       text.className = "message-text";
-      const bodyText = decodeGroupMentions(replyEnvelope ? replyEnvelope.text : message.text);
-      const linkUrls = renderTextWithLinks(text, bodyText);
+      const bodyText = replyEnvelope ? replyEnvelope.text : message.text;
+      const linkUrls = renderTextWithMentions(text, bodyText);
       const previewable = (linkUrls || []).find(isPreviewableUrl);
       const card = previewable ? buildLinkPreviewCard(previewable) : null;
       const linkOnly = card && !replyEnvelope && linkUrls.length === 1 && String(bodyText).trim() === linkUrls[0];
@@ -16665,7 +16724,9 @@ function groupMentionCandidates(query) {
   return g.members
     .filter((m) => m.address && m.address !== engine.address)
     .map((m) => {
-      const label = groupSenderLabel(m.address);
+      // Prefer the KNS domain as the single-token handle (what the user wants shown); fall back to
+      // a space-free contact label, else the short address.
+      const label = mentionDisplayLabel(m.address);
       const handle = /\s/.test(label) ? shortAddress(m.address) : label;
       return { address: m.address, label, handle };
     })
@@ -16700,12 +16761,23 @@ function insertGroupMention(address, handle) {
   groupComposerInput.focus();
   autoGrowGroupComposer();
 }
-// Replace tracked @handle tokens with the on-chain @{address} form (matches iOS GroupMentionCodec).
+// Replace tracked @handle tokens with the on-chain @<address> form. No braces — matches iOS/Android
+// GroupMentionCodec so mentions decode cross-platform (desktop's old @{address} form did not).
 function encodeGroupMentions(text) {
   let out = String(text || "");
+  // Autocomplete-tracked handles first (exactly what the user inserted).
   for (const [handle, address] of [...groupDraftMentions.entries()].sort((a, b) => b[0].length - a[0].length)) {
-    out = out.split(handle).join(`@{${address}}`);
+    out = out.split(handle).join(`@${address}`);
   }
+  // Also catch a member's KNS domain / name typed by hand — iterate members longest-label-first,
+  // mirroring iOS/Android GroupMentionCodec so a manually-typed @alice.kas still encodes.
+  const g = getGroupManager()?.getGroup(activeGroupId);
+  const members = (g?.members || [])
+    .filter((m) => m.address && m.address !== engine.address)
+    .map((m) => ({ address: m.address, label: mentionDisplayLabel(m.address) }))
+    .filter((m) => m.label && !/\s/.test(m.label))
+    .sort((a, b) => b.label.length - a.label.length);
+  for (const m of members) out = out.split(`@${m.label}`).join(`@${m.address}`);
   return out;
 }
 
