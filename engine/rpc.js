@@ -8,6 +8,12 @@ const STANDBY_DIRECT_TIMEOUT_MS = 6000;
 const STANDBY_RESOLVER_TIMEOUT_MS = 9000;
 const MAX_FAILOVER_EVENTS = 24;
 
+// Default node for Automatic mode (no user-configured custom node): KaChat's own always-on Kaspa
+// wRPC node. Tried FIRST but NON-STRICT — if it's unreachable we fall back to last-good and then
+// the community resolver, so a node hiccup degrades gracefully instead of breaking every client.
+// (A user's explicit Custom node stays strict — see createRpc.)
+const DEFAULT_PREFERRED_NODE = "wss://restonode.duckdns.org";
+
 const CONNECTION_ERROR_PATTERNS = [
   /websocket is not connected/i,
   /websocket.*closed/i,
@@ -246,6 +252,22 @@ export async function createRpc(kaspa, log = () => {}) {
       role: "primary",
       singleShot: true,
     });
+  }
+
+  // Automatic mode: prefer KaChat's own node first (non-strict); fall through to last-good and the
+  // resolver if it's unreachable, so testers auto-recover instead of all failing on a node hiccup.
+  if (DEFAULT_PREFERRED_NODE) {
+    try {
+      return await connectCandidate(kaspa, {
+        endpoint: DEFAULT_PREFERRED_NODE,
+        timeoutMs: DIRECT_CONNECT_TIMEOUT_MS,
+        log,
+        role: "primary",
+      });
+    } catch (error) {
+      log(`Default node ${DEFAULT_PREFERRED_NODE} failed: ${error?.message || error}`);
+      log("Falling back to last-good / resolver...");
+    }
   }
 
   const lastGoodEndpoint = registry.lastGoodEndpoint;
