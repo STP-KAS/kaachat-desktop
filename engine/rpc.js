@@ -22,6 +22,21 @@ const CONNECTION_ERROR_PATTERNS = [
 
 function now() { return Date.now(); }
 
+// The WASM RPC client can reject with a bare string or a JsValue that has no `.message`, which
+// surfaced in the UI as "Could not connect: undefined". Always return a real Error with a usable
+// message so both the log and the Node Connection dialog show something actionable.
+function normalizeRpcError(error, source) {
+  if (error instanceof Error && error.message) return error;
+  let msg = "";
+  if (typeof error === "string") msg = error;
+  else if (error?.message) msg = String(error.message);
+  else if (error != null) { try { msg = String(error); } catch { msg = ""; } }
+  if (!msg || msg === "[object Object]" || msg === "undefined") {
+    try { const j = JSON.stringify(error); if (j && j !== "{}") msg = j; } catch { /* ignore */ }
+  }
+  return new Error(msg || `${source} failed — the node client returned no error detail (often a blocked wss:// connection or an unreachable resolver).`);
+}
+
 function emptyRegistry() {
   return {
     version: 2,
@@ -162,7 +177,7 @@ async function connectCandidate(kaspa, {
     const failedEndpoint = endpoint || rpc.url || `${role}-resolver`;
     if (!String(error?.message || "").includes("already in use")) recordFailure(failedEndpoint, error);
     try { await rpc.disconnect(); } catch {}
-    throw error;
+    throw normalizeRpcError(error, source);
   }
 }
 
