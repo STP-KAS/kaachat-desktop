@@ -7,18 +7,26 @@ export async function loadKasiaCipher() {
   if (cipherModule) return cipherModule;
 
   try {
-    // Keep this import runtime-only so Vite can still launch before the optional
-    // cipher build exists. setup:cipher creates /cipher/cipher.js.
-    const runtimePath = "/cipher/cipher.js";
-    cipherModule = await import(/* @vite-ignore */ runtimePath);
+    // Bundler-friendly relative import (mirrors engine/wasm-loader.js). The old absolute,
+    // @vite-ignore'd "/cipher/cipher.js" only works on the dev server: a production `vite build`
+    // never emitted it, so a statically-served build 404'd → SPA fallback served index.html →
+    // "expected a JS module but got text/html". A dynamic relative import makes rolldown bundle
+    // the cipher glue AND emit cipher_bg.wasm as a hashed asset.
+    cipherModule = await import("../cipher/cipher.js");
     if (typeof cipherModule.default === "function") {
-      await cipherModule.default();
+      // Fetch the wasm ourselves and instantiate from bytes, bypassing instantiateStreaming's
+      // application/wasm MIME requirement (a reverse proxy / static host often serves it wrong).
+      const wasmUrl = new URL("../cipher/cipher_bg.wasm", import.meta.url);
+      const response = await fetch(wasmUrl);
+      if (!response.ok) throw new Error(`Could not fetch Kasia cipher WASM (HTTP ${response.status}) from ${wasmUrl.pathname}`);
+      const bytes = await response.arrayBuffer();
+      await cipherModule.default({ module_or_path: bytes });
     }
     return cipherModule;
   } catch (error) {
     cipherModule = null;
     throw new Error(
-      `Kasia cipher runtime is not built. Run npm run setup:cipher, then refresh. (${error.message})`,
+      `Kasia cipher runtime failed to load. If this is a build, ensure npm run setup:cipher ran before it. (${error.message})`,
     );
   }
 }
