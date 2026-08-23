@@ -56,8 +56,12 @@ async function hostBlocked(hostname) {
 }
 
 async function handle(req, res) {
-  // nginx passes the full path; strip the /nc-proxy mount to mirror connect's behavior.
-  let rest = (req.url || "").replace(/^\/nc-proxy(?=\/|$)/, "");
+  // nginx passes the full (still URL-encoded) path; strip the mount prefix to mirror connect's
+  // behavior. Accept an optional /desktop prefix so the same server works whether the app is
+  // hosted at the origin root (/nc-proxy/...) or under a subpath (/desktop/nc-proxy/...). We do
+  // NOT use an nginx `rewrite` for the strip because rewrite decodes %2F and corrupts the encoded
+  // origin — nginx just proxy_pass'es the raw URI and we strip it here.
+  let rest = (req.url || "").replace(/^(?:\/desktop)?\/nc-proxy(?=\/|$)/, "");
   const match = /^\/([^/]+)(\/.*)?$/.exec(rest);
   let origin = null;
   try { origin = match ? new URL(decodeURIComponent(match[1])) : null; } catch { /* below */ }
