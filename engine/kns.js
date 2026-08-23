@@ -151,7 +151,7 @@ function apiUrl(baseUrl, path) {
   // (e.g. /domain/<id>/profile), which the browser hard-blocks when fetched directly.
   try {
     const url = new URL(base);
-    return `/nc-proxy/${encodeURIComponent(url.origin)}${url.pathname.replace(/\/+$/, "")}${path}`;
+    return `${import.meta.env.BASE_URL}nc-proxy/${encodeURIComponent(url.origin)}${url.pathname.replace(/\/+$/, "")}${path}`;
   } catch {
     return `${base}${path}`;
   }

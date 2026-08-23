@@ -77,7 +77,7 @@ function authHeader(account = nc) {
  *  missing CORS headers on WebDAV/OCS no longer matter. Public /s/TOKEN share links are NOT
  *  proxied; recipients open those on the real server. */
 function apiBase(server = nc?.server) {
-  return `/nc-proxy/${encodeURIComponent(String(server || "").replace(/\/+$/, ""))}`;
+  return `${import.meta.env.BASE_URL}nc-proxy/${encodeURIComponent(String(server || "").replace(/\/+$/, ""))}`;
 }
 
 function corsHint(error) {

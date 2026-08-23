@@ -891,7 +891,7 @@ async function proxiedFetchHtml(url) {
   try { dev = Boolean(import.meta.env.DEV); } catch { dev = false; }
   if (!dev) return null; // no proxy outside the dev server
   const parsed = new URL(url);
-  const proxied = `/nc-proxy/${encodeURIComponent(parsed.origin)}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}`;
+  const proxied = `${import.meta.env.BASE_URL}nc-proxy/${encodeURIComponent(parsed.origin)}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}`;
   const res = await fetch(proxied, { headers: { Accept: "text/html,application/xhtml+xml", "x-preview": "1" } });
   if (!res.ok) return null;
   const type = res.headers.get("content-type") || "";
@@ -930,7 +930,7 @@ async function fetchYouTubeMeta(url, id) {
   if (dev) {
     try {
       const oe = new URL(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
-      const proxied = `/nc-proxy/${encodeURIComponent(oe.origin)}${oe.pathname}${oe.search}`;
+      const proxied = `${import.meta.env.BASE_URL}nc-proxy/${encodeURIComponent(oe.origin)}${oe.pathname}${oe.search}`;
       const res = await fetch(proxied, { headers: { Accept: "application/json" } });
       if (res.ok) { const d = await res.json(); title = String(d.title || ""); }
     } catch { /* oEmbed unreachable — keep the thumbnail-only card */ }
