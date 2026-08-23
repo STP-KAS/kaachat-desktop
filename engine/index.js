@@ -4,7 +4,7 @@ import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importM
 import { getBalance, sendKaspa, sendMaxKaspa, sweepAllToSelf, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
-import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
+import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncOutgoingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
 import { KASIA_PROTOCOL, KASIA_INTEGRATION_STATUS, buildCommMessage, buildEncryptedCommMessage, makeKasiaCommPayload, parseKasiaPayloadHex, decodePayload } from "./kasia-protocol.js";
 import { loadKasiaCipher, isKasiaCipherLoaded, encryptKasiaMessage, decryptKasiaMessage, deriveKasiaAliases } from "./kasia-cipher.js";
 import { requireKaspa, NETWORK_ID } from "./utils.js";
@@ -983,6 +983,12 @@ export class KaspaEngine {
       privateKeyHex: this.privateKeyHex,
       decryptMessage: async (encryptedHex) => this.decryptKasiaMessage(encryptedHex),
     });
+  }
+
+  // Handshakes this wallet SENT — restore-parity pass, see sync.js. No cipher needed.
+  async syncOutgoingHandshakesFromIndexer(details = {}) {
+    this.requireWallet();
+    return syncOutgoingHandshakesFromIndexer({ ...details, walletAddress: this.address });
   }
 
   async syncIncomingPayments(details) {

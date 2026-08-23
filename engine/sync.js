@@ -472,6 +472,39 @@ export async function syncIncomingHandshakesFromIndexer({
   };
 }
 
+/**
+ * Handshakes THIS wallet sent (requests it initiated + acceptances of others' requests) — the
+ * restore-parity pass (matches iOS's getHandshakesBySender). After a seed import these are the
+ * only on-chain proof a conversation was mutual: your own acceptance never appears in
+ * handshakes/by-receiver. Payloads are encrypted for the recipient (undecryptable by us), so
+ * rows carry existence + peer + time only.
+ */
+export async function syncOutgoingHandshakesFromIndexer({ walletAddress, cursor = 0, limit = 50, indexerUrl } = {}) {
+  const baseUrl = normalizeBaseUrl(indexerUrl || DEFAULT_KASIA_INDEXER_URL);
+  const query = new URLSearchParams({
+    address: walletAddress,
+    block_time: String(Number(cursor || 0)),
+    limit: String(Math.max(1, Math.min(50, Number(limit) || 50))),
+  });
+  const response = await fetch(`${baseUrl}/handshakes/by-sender?${query.toString()}`, {
+    headers: { Accept: "application/json" }, cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Outgoing handshake request failed (${response.status}).`);
+  const rows = await response.json();
+  if (!Array.isArray(rows)) throw new Error("Handshake indexer returned an unexpected response.");
+  let nextCursor = Number(cursor || 0);
+  const handshakes = [];
+  for (const row of rows) {
+    const txid = String(row?.tx_id || "").trim();
+    const receiver = String(row?.receiver || "").trim();
+    const blockTime = Number(row?.block_time || 0);
+    if (blockTime > nextCursor) nextCursor = blockTime;
+    if (!txid || !receiver.startsWith("kaspa:")) continue;
+    handshakes.push({ txid, receiver, createdAt: blockTime || Date.now(), payloadHex: String(row.message_payload || "") });
+  }
+  return { handshakes, nextCursor, scannedCount: rows.length };
+}
+
 function isSelfStashPayloadHex(payloadHex) {
   const clean = String(payloadHex || "").replace(/^0x/i, "").trim().toLowerCase();
   if (!clean || clean.length % 2 !== 0 || !/^[0-9a-f]+$/.test(clean)) return false;

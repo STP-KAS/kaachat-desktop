@@ -3139,6 +3139,61 @@ async function syncIncomingHandshakeRequests({ quiet = true } = {}) {
   return added;
 }
 
+// Restore-parity pass (matches iOS): handshakes WE sent — requests we initiated and our
+// acceptances of others' requests. After a seed import these are the only on-chain proof a
+// conversation was mutual (our own acceptance never appears in handshakes/by-receiver), so
+// without this pass those threads re-surfaced as stranger requests. Creates/promotes the peer
+// as established with an outgoing "Handshake sent" row (payload is encrypted for the recipient
+// — undecryptable by design; existence is the evidence).
+async function syncOutgoingHandshakeEvidence({ quiet = true } = {}) {
+  if (!engine.address || typeof engine.syncOutgoingHandshakesFromIndexer !== "function") return 0;
+  const result = await engine.syncOutgoingHandshakesFromIndexer({
+    cursor: handshakeSyncState.outCursor || 0,
+    indexerUrl: indexerUrlInput?.value || undefined,
+  });
+  let added = 0;
+  for (const hs of result.handshakes || []) {
+    if (hs.receiver === engine.address) continue; // self-stash copies aren't a peer conversation
+    let contact = state.contacts.find((c) => c.address === hs.receiver);
+    let conversationEntry = contact ? state.conversations.find((c) => c.contactId === contact.id) : null;
+    if (!contact) {
+      const displayName = shortAddress(hs.receiver);
+      contact = {
+        id: nowId(), name: displayName, nameIsCustom: false, address: hs.receiver, avatar: initialsFor(displayName),
+        createdAt: hs.createdAt, updatedAt: hs.createdAt, relationshipState: "established",
+        handshakeTxid: hs.txid, incomingHandshakeTxid: "", peerConversationId: "",
+      };
+      state.contacts.push(contact);
+    } else if (contact.relationshipState !== "established") {
+      contact.relationshipState = "established"; // we provably handshook them — never a stranger
+      if (!contact.handshakeTxid) contact.handshakeTxid = hs.txid;
+    }
+    if (!conversationEntry) {
+      conversationEntry = createConversation({ contactId: contact.id, createdAt: hs.createdAt });
+      state.conversations.push(conversationEntry);
+    }
+    if (!(conversationEntry.messages || []).some((m) => m.txid === hs.txid)) {
+      const message = createMessage({
+        conversationId: conversationEntry.id, contactId: contact.id, direction: "outgoing",
+        text: "Handshake sent", sender: engine.address, receiver: hs.receiver,
+        status: MESSAGE_STATUSES.CONFIRMED, transport: "kasia-indexer", createdAt: hs.createdAt,
+      });
+      applyMessagePatch(message, {
+        txid: hs.txid, messageType: "handshake", protocol: "kasia", protocolVersion: 1,
+        payloadHex: hs.payloadHex || "", confirmations: 1, note: "Handshake sent",
+      });
+      conversationEntry.messages.push(message);
+      added += 1;
+    }
+  }
+  if (Number(result.nextCursor || 0) > Number(handshakeSyncState.outCursor || 0)) {
+    handshakeSyncState.outCursor = Number(result.nextCursor);
+    persistHandshakeSyncState();
+  }
+  if (added > 0) { persistState(); renderChats(); }
+  return added;
+}
+
 // ---------------------------------------------------------------------------
 // Stranger payments → the SELF-chat. A plain KAS payment from an address we have
 // no contact for must NOT open a chat with the stranger: it collects in a single
@@ -3285,6 +3340,8 @@ async function refreshAllConversations({ quiet = true } = {}) {
     ensureSelfChatForSync();
     try { added += await syncIncomingHandshakeRequests({ quiet }); }
     catch (error) { appendEngineLog(`Incoming handshake sync failed: ${error.message}`); }
+    try { added += await syncOutgoingHandshakeEvidence({ quiet }); }
+    catch (error) { appendEngineLog(`Outgoing handshake sync failed: ${error.message}`); }
     try { added += await syncStrangerPaymentsIntoSelfChat({ catchUp }); }
     catch (error) { appendEngineLog(`Stranger payment sweep failed: ${error.message}`); }
     // Per-contact sync runs 4 wide instead of strictly sequentially — with many contacts
