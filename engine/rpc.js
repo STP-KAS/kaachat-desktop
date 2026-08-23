@@ -8,6 +8,10 @@ const STANDBY_DIRECT_TIMEOUT_MS = 6000;
 const STANDBY_RESOLVER_TIMEOUT_MS = 9000;
 const MAX_FAILOVER_EVENTS = 24;
 
+// Automatic mode tries KaChat's own always-on node first (reliable; the community resolver's
+// public-node network is intermittently degraded). Single-shot + resolver fallback — see createRpc.
+const DEFAULT_PREFERRED_NODE = "wss://restonode.duckdns.org";
+
 const CONNECTION_ERROR_PATTERNS = [
   /websocket is not connected/i,
   /websocket.*closed/i,
@@ -248,11 +252,24 @@ export async function createRpc(kaspa, log = () => {}) {
     });
   }
 
-  // Automatic mode = the community Rusty-Kaspa resolver (public node network), exactly like
-  // kaspa-ng. No dependency on any single node, and it works from any network (the resolver's
-  // public nodes are reached over the internet via wss). We try last-good first as a fast
-  // optimization, but SINGLE-SHOT so an unreachable last-good fails immediately and falls through
-  // to the resolver instead of retrying the socket forever.
+  // Automatic mode: prefer KaChat's own always-on node first (reliable for external clients and
+  // faster than the resolver), then fall through to last-good and finally the community resolver.
+  // ALL attempts are SINGLE-SHOT so an unreachable node (e.g. a LAN client that can't NAT-hairpin
+  // to restonode's public IP) fails immediately and falls through — never hanging in a retry loop.
+  // The resolver is the last resort because the public node network is intermittently degraded.
+  try {
+    return await connectCandidate(kaspa, {
+      endpoint: DEFAULT_PREFERRED_NODE,
+      timeoutMs: DIRECT_CONNECT_TIMEOUT_MS,
+      log,
+      role: "primary",
+      singleShot: true,
+    });
+  } catch (error) {
+    log(`Default node ${DEFAULT_PREFERRED_NODE} unreachable: ${error?.message || error}`);
+    log("Falling back to last-good / resolver...");
+  }
+
   const lastGoodEndpoint = registry.lastGoodEndpoint;
 
   if (lastGoodEndpoint) {
