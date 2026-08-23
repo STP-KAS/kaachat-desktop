@@ -897,6 +897,10 @@ function renderThread() {
   if (threadEl) threadEl.hidden = !showThread;
   if (feedEl) feedEl.hidden = showThread || Boolean(activePanel);
   if (tabsEl) tabsEl.hidden = showThread || Boolean(activePanel);
+  // A thread opened FROM a profile/bookmarks panel takes over the viewport — without this the
+  // panel stayed visible and the two stacked in the same scroller (two back headers, split view).
+  // The panel returns when the thread stack empties (thread-back restores it via renderPanel).
+  if (panelEl && activePanel) panelEl.hidden = showThread;
   if (!showThread) clearPagerSentinel("thread");
   if (!post || !threadRootEl) return;
   if (replyTargetId && !findPost(replyTargetId)) replyTargetId = null;
@@ -2391,6 +2395,11 @@ export function initKaPosts(dependencies) {
       clearPagerSentinel("thread");
     }
     renderThread();
+    // Thread was opened from a profile/bookmarks panel: return to THAT panel, not the feed.
+    if (threadStack.length === 0 && activePanel) {
+      renderPanel();
+      return;
+    }
     renderFeed();
     restoreFeedScroll();
   });

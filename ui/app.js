@@ -4824,6 +4824,9 @@ function spendingRowHtml(index, address, state, balanceText, used, hasDomain = f
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="copy" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>Copy Address</button>`,
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="receive" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/></svg>Show QR Code</button>`,
     isActive ? "" : `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="activate" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>Set as Primary Address</button>`,
+    // Hide straight from the row (iOS parity) — same flag the Address Visibility checklist
+    // edits, with the same guards (never the primary, never a funded address) enforced on tap.
+    isActive ? "" : `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="hide" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/></svg>Hide Address</button>`,
   ].filter(Boolean).join("");
   return `
     <div class="spending-address-row${isActive ? " active" : ""}" data-spending-row="${index}">
@@ -4981,7 +4984,14 @@ async function spendingUsageFor(address) {
   if (spendingUsageCache.has(address)) return spendingUsageCache.get(address);
   let kas = 0;
   try { kas = Number((await engine.balanceForAddress(address)).totalKas) || 0; } catch { /* unknown, treat as 0 */ }
-  const used = kas > 0 ? true : await spendingAddressHasHistory(address);
+  // "Used" is monotonic (a used address can never become unused), so a persisted used=true
+  // from the Manage-list cache answers without the history round-trip — only never-used
+  // addresses still need the live probe (they can become used at any moment). Balances above
+  // are always live; this only skips the redundant history REST call.
+  const cachedEntry = loadSpendingBalCache()[address];
+  const cachedUsed = cachedEntry?.used === true;
+  const used = kas > 0 || cachedUsed ? true : await spendingAddressHasHistory(address);
+  if (used && !cachedUsed) saveSpendingBalCacheEntries({ [address]: { ...cachedEntry, used: true } });
   const result = { kas, used };
   spendingUsageCache.set(address, result);
   return result;
@@ -5159,6 +5169,20 @@ spendingListEl?.addEventListener("click", async (event) => {
       if (trimmed) labels[index] = trimmed; else { delete labels[index]; delete labels[String(index)]; }
       saveSpendingState({ labels });
       renderSpendingList();
+    } else if (action === "hide") {
+      // Same guards as the Address Visibility checklist toggle: never the primary (the menu
+      // already omits it there), never an address holding a balance — checked live.
+      if (index === state.activeIndex) { showCopyToast("The primary address is always visible."); return; }
+      const addr = deriveSpendingAddressAt(index);
+      if (!addr) { showCopyToast("Address is not ready yet."); return; }
+      let balanceSompi = 0;
+      try { balanceSompi = (await spendingBalancesBatchSompi([addr])).get(addr) || 0; } catch { balanceSompi = 0; }
+      if (balanceSompi > 0) { showCopyToast("Addresses holding a balance stay visible."); return; }
+      const hiddenSet = new Set(state.hidden || []);
+      hiddenSet.add(index);
+      saveSpendingState({ hidden: Array.from(hiddenSet) });
+      renderSpendingList();
+      showCopyToast("Address hidden. Re-enable it in Address Visibility.");
     }
     return;
   }
