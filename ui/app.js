@@ -3061,19 +3061,25 @@ async function syncIncomingHandshakeRequests({ quiet = true } = {}) {
     let contact = state.contacts.find((entry) => entry.address === request.sender);
     let conversationEntry = contact ? state.conversations.find((entry) => entry.contactId === contact.id) : null;
     let wasOutgoingRequest = false;
+    // A handshake RESPONSE is the peer accepting a request WE sent — positive on-chain proof
+    // the relationship was already mutual. Critical after a seed import (no local history):
+    // without this, every restored two-way conversation re-surfaced as a stranger request and
+    // its history stayed gated forever.
+    const isAcceptance = request.isResponse === true;
     if (!contact) {
       const createdAt = Number(request.createdAt || Date.now());
       const displayName = request.alias || shortAddress(request.sender);
       contact = {
         id: nowId(), name: displayName, nameIsCustom: false, address: request.sender, avatar: initialsFor(displayName),
-        createdAt, updatedAt: createdAt, relationshipState: "incoming-request", handshakeTxid: "",
+        createdAt, updatedAt: createdAt, relationshipState: isAcceptance ? "established" : "incoming-request", handshakeTxid: "",
         incomingHandshakeTxid: request.txid, peerConversationId: request.conversationId || "",
       };
+      if (isAcceptance) wasOutgoingRequest = true; // render "Handshake completed", not an Accept card
       conversationEntry = createConversation({ contactId: contact.id, createdAt });
       state.contacts.push(contact);
       state.conversations.push(conversationEntry);
     } else {
-      wasOutgoingRequest = contact.relationshipState === "outgoing-request";
+      wasOutgoingRequest = contact.relationshipState === "outgoing-request" || isAcceptance;
       contact.incomingHandshakeTxid = request.txid;
       contact.peerConversationId = request.conversationId || contact.peerConversationId || "";
       if (wasOutgoingRequest) {
@@ -13667,10 +13673,16 @@ async function finalizeNewAccount({ name, phrase, passphrase, wordCount }) {
   refreshSubscriptionAddresses({ restart: false });
   appendEngineLog(`Created ${wordCount}-word account ${name}: ${wallet.address}${wallet.hasPassphrase ? " (passphrase set)" : ""}`);
   renderChats();
-  void connectAndRefresh({ quiet: true }).catch((error) => {
-    appendEngineLog(`Post-create RPC startup failed: ${error.message}`);
-    setStatus(`Account created. Network connection failed: ${error.message}`);
-  });
+  void connectAndRefresh({ quiet: true })
+    .then(async () => {
+      // Same as the import path: entering the app in-place skips the startup sweep/timer.
+      await refreshAllConversations({ quiet: true });
+      startAutomaticRefresh();
+    })
+    .catch((error) => {
+      appendEngineLog(`Post-create RPC startup failed: ${error.message}`);
+      setStatus(`Account created. Network connection failed: ${error.message}`);
+    });
   return wallet;
 }
 
@@ -14499,10 +14511,18 @@ async function importAndEnterAccount({ name, recoveryPhrase, passphrase = "", fa
   refreshSubscriptionAddresses({ restart: false });
   appendEngineLog(`Imported ${words.length}-word account ${cleanName}: ${wallet.address}`);
   renderChats();
-  void connectAndRefresh({ quiet: true }).catch((error) => {
-    appendEngineLog(`Post-import RPC startup failed: ${error.message}`);
-    setStatus(`Account imported. Network connection failed: ${error.message}`);
-  });
+  void connectAndRefresh({ quiet: true })
+    .then(async () => {
+      // Import enters the app WITHOUT a page reload, so the startup block that kicks off the
+      // first conversation sweep and the 5s refresh timer never ran for this account — without
+      // these, nothing synced (no handshakes, no history) until a tab-switch or UTXO event.
+      await refreshAllConversations({ quiet: true });
+      startAutomaticRefresh();
+    })
+    .catch((error) => {
+      appendEngineLog(`Post-import RPC startup failed: ${error.message}`);
+      setStatus(`Account imported. Network connection failed: ${error.message}`);
+    });
   return wallet;
 }
 
