@@ -6,6 +6,7 @@ import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./por
 import { initColdStorage, refreshColdStorage, resetColdStorageForAccount, listColdWatchedAddresses } from "./coldstorage.js";
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia, isNextcloudConnected, syncNextcloudContacts } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
+import { sealBackupEnvelope, openBackupEnvelope } from "./backup-crypto.js";
 import { calculateMass, calculateFee, fetchQuotedFeeRateSompiPerGram } from "./kspt.js";
 import {
   initChildMode, isChildModeEnabled, CHILD_HIDDEN_TABS,
@@ -13185,6 +13186,30 @@ function buildSharedBackupPayload(existingRemoteJson = null) {
   return JSON.stringify(archive, null, 2);
 }
 
+// ---------------------------------------------------------------------------
+// Encrypted Backup Envelope (v1) — see ui/backup-crypto.js. The cloud copy of
+// `kachat-backup.json` is encrypted at rest with a key derived from the
+// identity private key (engine.privateKeyHex, the m/44'/111111'/0'/0/0 key),
+// so every device on the same seed reads/writes the same file and nothing else
+// can. The plaintext INSIDE the envelope is the unchanged ChatHistoryArchive,
+// desktopState included.
+// ---------------------------------------------------------------------------
+
+/** Writer half: encrypts a plaintext archive JSON string into the envelope. */
+async function sealSharedBackupJson(plaintextJson) {
+  const identityKeyHex = String(engine.privateKeyHex || "").trim();
+  if (!identityKeyHex) throw new Error("The wallet key is unavailable, so the backup could not be encrypted. Nothing was uploaded.");
+  return sealBackupEnvelope(plaintextJson, identityKeyHex, String(engine.address || ""));
+}
+
+/** Reader half: envelope in, plaintext archive out; legacy plaintext passes
+ *  through unchanged. Throws on a foreign walletHint or a failed decrypt, so
+ *  callers abort before uploading or importing anything. */
+async function openSharedBackupJson(json) {
+  if (json == null) return json;
+  return openBackupEnvelope(json, String(engine.privateKeyHex || "").trim(), String(engine.address || ""));
+}
+
 /** Write-through of a desktop state snapshot (from `desktopState`, or from a
  *  legacy kachat-backup-desktop.json body) into the live storage. */
 function applyDesktopStateSnapshot(snapshot) {
@@ -15295,8 +15320,17 @@ queueMicrotask(async () => {
     // and same schema iOS/Android write), merged with whatever the server already
     // holds so a desktop upload can only ever add to the shared history. The
     // desktop's own persisted state rides along in the additive `desktopState`
-    // key, which both phone decoders ignore.
-    exportBackupPayload: (existingRemoteJson = null) => buildSharedBackupPayload(existingRemoteJson),
+    // key, which both phone decoders ignore. Since envelope v1 the upload body is
+    // ENCRYPTED: decrypt what the server already has (legacy plaintext passes
+    // through), merge, then always seal the union. A failed decrypt throws here,
+    // so runBackup aborts before its PUT and the remote file is left untouched.
+    exportBackupPayload: async (existingRemoteJson = null) => {
+      const remotePlainJson = existingRemoteJson == null ? null : await openSharedBackupJson(existingRemoteJson);
+      return sealSharedBackupJson(buildSharedBackupPayload(remotePlainJson));
+    },
+    // Reader for downloaded backup files: decrypts an envelope, passes legacy
+    // plaintext through, throws (aborting the restore) when decryption fails.
+    openBackupPayload: openSharedBackupJson,
     // Legacy `kachat-backup-desktop.json` bodies only — kept so a user with an
     // old desktop-only backup can still recover from it.
     importBackupPayload: (json) => {

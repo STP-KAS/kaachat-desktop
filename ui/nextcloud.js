@@ -6,7 +6,9 @@
 // The backup is cross-platform: one `kachat-backup.json` per folder in the shared
 // ChatHistoryArchive schema, written and read by iPhone, Android and desktop alike. Every
 // upload first downloads the file already there and uploads the UNION, so restoring on one
-// device never costs another device its history.
+// device never costs another device its history. Since envelope v1 the file is encrypted at
+// rest (AES-256-GCM keyed off the identity private key — see ui/backup-crypto.js); every
+// device on the same seed derives the same key, and legacy plaintext files stay restorable.
 //
 // Browser reality: unlike the native apps, fetches here would be subject to CORS — solved by
 // routing all API traffic through vite.config.mjs's same-origin /nc-proxy passthrough (see
@@ -22,7 +24,9 @@ const NC_KEY = "kachat-nextcloud-v1"; // account-scoped: { server, username, app
 // so no device can ever delete another's history.
 const BACKUP_FILENAME = "kachat-backup.json";
 // Pre-4.0 desktop-only file. Read on restore so an old backup can still be
-// recovered; never written again.
+// recovered; never written again (so it also never gets encrypted — existing
+// copies stay plaintext-readable forever, though the restore path would open
+// an enveloped copy too).
 const LEGACY_DESKTOP_BACKUP_FILENAME = "kachat-backup-desktop.json";
 const DEFAULT_BACKUP_FOLDER = "KaChat";
 const AUTO_BACKUP_MIN_MS = 3600_000;
@@ -282,16 +286,20 @@ async function uploadBackup(payloadJson) {
 
 /**
  * One backup run: read what the server already has, hand it to the exporter so
- * the two archives are unioned, then upload the union.
+ * the two archives are unioned, then upload the union. The exporter also owns
+ * the encrypted-envelope codec: it decrypts the downloaded file when it is an
+ * envelope (legacy plaintext still merges as-is) and ALWAYS encrypts the
+ * uploaded union, so the file at rest is unreadable without this wallet's key.
  *
- * Both failure modes deliberately abort BEFORE the PUT, leaving the existing
+ * All failure modes deliberately abort BEFORE the PUT, leaving the existing
  * file untouched: a download error other than 404 throws out of
- * downloadBackupFile, and an unreadable/foreign/wrong-schema body throws out of
- * exportBackupPayload.
+ * downloadBackupFile, and an undecryptable/unreadable/foreign/wrong-schema
+ * body throws out of exportBackupPayload.
  */
 async function runBackup() {
   const existingRemoteJson = await downloadBackupFile(BACKUP_FILENAME);
-  await uploadBackup(deps.exportBackupPayload(existingRemoteJson));
+  const payload = await deps.exportBackupPayload(existingRemoteJson);
+  await uploadBackup(payload);
 }
 
 async function fetchBackupInfo() {
@@ -368,7 +376,7 @@ function renderSettings() {
       <button class="settings-list-row" type="button" data-nc-pick-backup><span class="settings-row-copy"><strong>Backup Folder</strong><small>${deps.escapeHtml(nc.backupFolder || `${DEFAULT_BACKUP_FOLDER} (default)`)}</small></span></button>
       <button class="settings-list-row" type="button" data-nc-backup-now><span class="settings-row-copy"><strong>Back Up Messages Now</strong><small data-nc-backup-status>Checking last backup…</small></span></button>
       <button class="settings-list-row" type="button" data-nc-restore><span class="settings-row-copy"><strong>Restore from Backup</strong><small>Merges ${deps.escapeHtml(BACKUP_FILENAME)} back into this device's chat history, whichever device wrote it.</small></span></button>
-      <p class="field-hint">One backup, shared across your devices: iPhone, Android and desktop all read and write <strong>${deps.escapeHtml(BACKUP_FILENAME)}</strong> in this folder, in the same format. Every backup merges with what is already there, so no device can erase another's history.</p>
+      <p class="field-hint">One backup, shared across your devices: iPhone, Android and desktop all read and write <strong>${deps.escapeHtml(BACKUP_FILENAME)}</strong> in this folder, in the same format. Every backup merges with what is already there, so no device can erase another's history. The file is encrypted; only devices signed in with this wallet's recovery phrase can read it.</p>
       <button class="settings-list-row danger-row" type="button" data-nc-disconnect><span class="settings-row-copy"><strong>Disconnect</strong><small>Removes the stored app password from this device.</small></span></button>
     </div>`;
   updateComposerButton();
@@ -661,9 +669,15 @@ function wireSettings() {
         // Primary: the shared cross-device archive. A pre-4.0 desktop-only file
         // may still be sitting next to it — read as a fallback for the desktop
         // half. A missing file (404) is fine as long as one of them exists.
-        const sharedJson = await downloadBackupFile(BACKUP_FILENAME);
-        const legacyJson = await downloadBackupFile(LEGACY_DESKTOP_BACKUP_FILENAME);
+        let sharedJson = await downloadBackupFile(BACKUP_FILENAME);
+        let legacyJson = await downloadBackupFile(LEGACY_DESKTOP_BACKUP_FILENAME);
         if (!sharedJson && !legacyJson) throw new Error("No KaChat backup was found in that folder.");
+        // Envelope v1: files written since the phones/desktop started encrypting
+        // are envelopes — decrypt before any importer sees them. Legacy plaintext
+        // passes through unchanged, and a failed decrypt throws, aborting the
+        // whole restore before anything local is touched.
+        if (sharedJson) sharedJson = await deps.openBackupPayload(sharedJson);
+        if (legacyJson) legacyJson = await deps.openBackupPayload(legacyJson);
 
         // Desktop state first (it REPLACES local state), then the archive merge
         // — that ordering is what stops the replace from wiping the freshly
