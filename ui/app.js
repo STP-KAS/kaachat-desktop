@@ -9906,8 +9906,18 @@ function renderMessages(conversationEntry) {
   messageArea.dataset.renderedConversationId = String(conversationEntry.id);
   // Sending your own message always snaps down, even from deep in history.
   const lastMessage = messages[messages.length - 1];
-  const justSentOwn = lastMessage && lastMessage.direction !== "incoming"
-    && Date.now() - Number(lastMessage.createdAt || 0) < 2500;
+  // "Sent from THIS device just now", not "recent": an optimistic local send is the only row
+  // that is outgoing, still PENDING and has no txid yet. The old 2.5s window also matched an
+  // own message mirrored in from another device (it arrives with a real txid and a recent
+  // createdAt), which yanked the viewport away from someone reading history. Matches iOS,
+  // which keys on its provisional pending_ txId for the same reason.
+  // No txid yet is the discriminator: a local send has none until it reaches the chain
+  // (it passes through draft/building/signing/broadcasting/pending on the way), while a
+  // message mirrored in from another device always arrives carrying its real txid.
+  const justSentOwn = Boolean(lastMessage)
+    && lastMessage.direction !== "incoming"
+    && lastMessage.status !== MESSAGE_STATUSES.CONFIRMED
+    && !String(lastMessage.txid || "").trim();
   if (isThreadSwitch || wasNearBottom || justSentOwn) {
     messageArea.scrollTop = messageArea.scrollHeight;
   } else {
@@ -17036,8 +17046,12 @@ function renderGroupMessages() {
   });
   groupMessageArea.dataset.renderedGroupId = String(activeGroupId);
   const lastGroupMessage = msgs[msgs.length - 1];
-  const justSentOwn = lastGroupMessage && lastGroupMessage.direction !== "incoming"
-    && Date.now() - Number(lastGroupMessage.createdAt || 0) < 2500;
+  // Same rule as 1:1 (see renderMessages): only this device's own optimistic send returns
+  // the viewport to the bottom, never an own message mirrored in from another device.
+  const justSentOwn = Boolean(lastGroupMessage)
+    && lastGroupMessage.direction !== "incoming"
+    && lastGroupMessage.status !== MESSAGE_STATUSES.CONFIRMED
+    && !String(lastGroupMessage.txid || "").trim();
   if (isThreadSwitch || wasNearBottom || justSentOwn) {
     groupMessageArea.scrollTop = groupMessageArea.scrollHeight;
   } else {
