@@ -13233,6 +13233,9 @@ function importPhoneChatArchive(json) {
     let changed = false;
 
     for (const archiveMessage of archivedMessages) {
+      // Never materialize a phantom row: it never reached the chain, so it would render as
+      // an eternal "waiting" message that no delivery can ever resolve.
+      if (isPhantomArchiveMessage(archiveMessage)) continue;
       const txid = String(archiveMessage?.txId || "").trim();
       const id = String(archiveMessage?.id || "").trim() || nowId();
       if (txid && (knownTxids.has(txid) || hidden.has(txid))) continue;
@@ -13518,6 +13521,18 @@ function archivePhotoToDataUrl(base64) {
   return s.startsWith("data:") ? s : `data:image/jpeg;base64,${s}`;
 }
 
+// A phantom archive row: one whose txId is blank or still a provisional `pending_` id, and
+// which never made it onto the chain. The shared archive spec forbids exporting these
+// (MESSAGING.md), and all three platforms scrub them on the way in as well, so one client's
+// pollution heals everywhere rather than being re-published on the next upload.
+function isPhantomArchiveMessage(message) {
+  const txId = String(message?.txId || "").trim();
+  const status = String(message?.deliveryStatus || "");
+  if (txId.startsWith("pending_")) return true;
+  if (!txId) return status === "pending" || status === "failed";
+  return false;
+}
+
 function archiveMessageKey(archiveMessage) {
   const txId = String(archiveMessage?.txId || "").trim();
   return txId ? `tx:${txId}` : `id:${String(archiveMessage?.id || "")}`;
@@ -13776,6 +13791,11 @@ function mergeChatArchives(remote, local) {
 
     for (const message of Array.isArray(conversation?.messages) ? conversation.messages : []) {
       if (!message || typeof message !== "object") continue;
+      // Phantom scrub, matching iOS and Android. A row whose txId is blank or still a
+      // provisional pending_ id never reached the chain and can never be reconciled with
+      // its delivered self, so absorbing it would re-publish rows the phones just scrubbed
+      // on this device's next upload, and render them locally as eternal "waiting" rows.
+      if (isPhantomArchiveMessage(message)) continue;
       const key = archiveMessageKey(message);
       const existing = entry.messages.get(key);
       entry.messages.set(key, existing ? preferArchiveMessage(existing, message) : message);
@@ -16162,16 +16182,37 @@ function myKnsDomainSet() {
   return set;
 }
 const GROUP_MENTION_RE = /(^|[\s([{<"'])@([a-z0-9-]+(?:\.[a-z0-9-]+)*)/gi;
+
+// TWO mention wire forms travel between platforms and both must match, or a mention is
+// silently dropped: iOS and desktop compose `@<address>` (optionally brace-wrapped on older
+// desktop builds), while Android composes a bare `@domain`. Desktop used to test only the
+// address form, so every mention an Android member typed went unnoticed here.
+// Domain comparison is case-insensitive with the `.kas` suffix optional, matching iOS.
+function textMentionsMe(text) {
+  const body = String(text || "");
+  if (!body) return false;
+  const me = engine.address || "";
+  if (me) {
+    const escaped = me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`@\\{?${escaped}\\}?`, "i").test(body)) return true;
+  }
+  const mine = myKnsDomainSet();
+  if (!mine.size) return false;
+  GROUP_MENTION_RE.lastIndex = 0;
+  let match;
+  while ((match = GROUP_MENTION_RE.exec(body)) !== null) {
+    const handle = String(match[2] || "").replace(/\.kas$/i, "").toLowerCase();
+    if (handle && mine.has(handle)) return true;
+  }
+  return false;
+}
 // When an incoming group message @mentions one of your KNS domains, surface it in the global
 // notification center (and an OS ping). Group mentions are purely client-detected — there is no
 // server round-trip, unlike KaPosts mentions.
 function maybeRecordGroupMention(groupId, senderAddress, text, id, createdAt) {
   const me = engine.address || "";
   if (!me) return;
-  // Mentions are on-chain as @<address> (optionally brace-wrapped, legacy desktop). You were
-  // mentioned iff your own address token appears in the message.
-  const escaped = me.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (!new RegExp(`@\\{?${escaped}\\}?`, "i").test(String(text || ""))) return;
+  if (!textMentionsMe(text)) return;
   const group = getGroupManager()?.getGroup(groupId);
   const groupName = group?.name || "a group";
   const contact = (state.contacts || []).find((c) => c.address === senderAddress);
