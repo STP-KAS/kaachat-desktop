@@ -3975,6 +3975,39 @@ function saveAddrActivityHandled(list) {
 // Claims a txId for a path that already told the user about it (a chat payment
 // bubble from a payment_notice), so the balance sweep doesn't announce the same
 // money a second time as a wallet notification.
+// A pool receipt is announced twice by two independent paths: this wallet-activity
+// watcher (which exists so funds are never silent, even if the payer's notice never
+// arrives) and the payer's `payment_notice`, which raises the real chat bubble and claims
+// the txId. In the common ordering the funds land seconds BEFORE the notice, so notifying
+// immediately would double-announce every private payment. Hold the wallet notification
+// for a grace window instead: if the notice claims the txId in the meantime the chat
+// bubble has already told the user, and if it never comes they still get told.
+const POOL_RECEIPT_NOTIFY_GRACE_MS = 90_000;
+const pendingPoolReceiptNotifications = new Set();
+
+function schedulePoolReceiptNotification({ txid, address, amountSompi, kind }) {
+  if (pendingPoolReceiptNotifications.has(txid)) return;
+  pendingPoolReceiptNotifications.add(txid);
+  window.setTimeout(() => {
+    pendingPoolReceiptNotifications.delete(txid);
+    // Claimed by the payment_notice while we waited: the chat bubble covered it.
+    if (loadAddrActivityHandled().includes(txid)) return;
+    markAddressActivityTxHandled(txid);
+    const title = `Received ${formatSompiForNotification(amountSompi)} KAS`;
+    const body = describeActivityAddress(kind, address);
+    postDesktopNotification({ title, body, tag: `kachat-addr-activity-${txid}`, onClick: () => {} });
+    recordGlobalNotification({
+      id: `wallet-${txid}`,
+      source: "wallet",
+      title,
+      body,
+      timestamp: Date.now(),
+      targetKind: "wallet",
+    });
+    appendEngineLog(`Address activity: pool receive ${txid.slice(0, 12)}… had no payment notice`);
+  }, POOL_RECEIPT_NOTIFY_GRACE_MS);
+}
+
 function markAddressActivityTxHandled(txid) {
   const clean = String(txid || "").trim();
   if (!clean) return;
@@ -4156,7 +4189,16 @@ async function attributeAndNotifyAddressActivity(increases) {
       handled.push(txid);
       const inputAddresses = txInputAddresses(tx);
       const isSelfSend = inputAddresses.length > 0 && inputAddresses.some((input) => own.has(input));
-      if (!isSelfSend) {
+      if (!isSelfSend && kind === "pool") {
+        // Deferred so the payer's notice can claim it first - see
+        // schedulePoolReceiptNotification. Deliberately NOT added to the handled list here;
+        // the grace timer decides who announces this txId.
+        handledSet.delete(txid);
+        const pendingIdx = handled.lastIndexOf(txid);
+        if (pendingIdx !== -1) handled.splice(pendingIdx, 1);
+        schedulePoolReceiptNotification({ txid, address, amountSompi: toAddress, kind });
+        appendEngineLog(`Address activity: pool receive ${txid.slice(0, 12)}… awaiting payment notice`);
+      } else if (!isSelfSend) {
         postDesktopNotification({
           title: `Received ${formatSompiForNotification(toAddress)} KAS`,
           body: describeActivityAddress(kind, address),
