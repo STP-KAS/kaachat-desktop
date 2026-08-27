@@ -951,7 +951,7 @@
             <div class="settings-list-card">
               <div class="settings-toggle-row"><span><strong>Show Fee Estimate</strong><small>Show an estimated transaction cost before sending.</small></span><label class="switch-control"><input type="checkbox" data-pref-estimate-fees><span></span></label></div>
               <button class="settings-list-row" type="button" data-open-quick-reactions><span class="settings-row-copy"><strong>Quick Reactions</strong><small data-quick-reactions-preview>👍 ❤️ 😂 😮 😢 🙏</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
-              <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong></span><label class="switch-control"><input type="checkbox" data-mockup-toggle checked><span></span></label></div>
+              <div class="settings-toggle-row"><span><strong>Require approval for photos from new contacts</strong><small>Photos from someone you have not added or replied to wait behind a tap. Chat Info can always show a single contact's photos.</small></span><label class="switch-control"><input type="checkbox" data-pref-photo-approval checked><span></span></label></div>
               <button class="settings-list-row" type="button" data-open-photo-quality><span class="settings-row-copy"><strong>Photo Quality</strong><small>Resolution and compression for photos you send.</small></span><svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
             </div>
             <p class="settings-group-footer">On: you receive payments on fresh private addresses shared with each contact, and payments you send are funded from your private addresses. Off: you receive on your public chatting address and send from it. Either way, payments you send arrive on a fresh address whenever the recipient shares one.</p>
@@ -1028,7 +1028,7 @@
               <div class="settings-toggle-row"><span><strong>Store encrypted messages locally</strong><small>Required for browser history and future cross-device backup.</small></span><label class="switch-control"><input type="checkbox" data-pref-store-messages checked><span></span></label></div>
               <button class="settings-list-row" type="button" data-settings-open-subscreen="retention">
                 <span class="settings-row-copy"><strong>Message retention</strong></span>
-                <span class="settings-dropdown-caption" data-retention-label>30 days</span>
+                <span class="settings-dropdown-caption" data-retention-label>Keep forever</span>
                 <svg class="settings-dropdown-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
               </button>
               <div class="settings-list-row settings-info-row"><span class="settings-row-copy"><strong>Local storage used</strong><small data-local-storage-used>Calculating…</small></span></div>
@@ -1044,11 +1044,12 @@
           <section class="settings-group" data-settings-subscreen="retention">
             <p class="settings-group-label">Message retention</p>
             <div class="settings-list-card">
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-forever">Keep forever</button>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-30">30 days</button>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-90">90 days</button>
-                  <button class="settings-dropdown-row settings-select-row" type="button" data-mockup-action="retention-365">1 year</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-retention-option="forever">Keep forever</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-retention-option="days30">30 days</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-retention-option="days90">90 days</button>
+                  <button class="settings-dropdown-row settings-select-row" type="button" data-retention-option="year1">1 year</button>
             </div>
+            <p class="settings-group-footer">Applies to this account's one-to-one chats on this device. Anything older than the window is deleted from this browser the next time KaChat cleans up, and it is not downloaded again. Handshakes are always kept, group chats are not affected, and "Keep forever" deletes nothing.</p>
           </section>
 
           <!-- Storage sub-screen (iOS Storage > Nextcloud). Excluded from the settings hub;

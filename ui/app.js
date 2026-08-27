@@ -89,13 +89,38 @@ const CONTACT_PREFS_KEY = "kachat-contact-prefs-v1";
 let contactPrefs = (() => { try { return JSON.parse(localStorage.getItem(CONTACT_PREFS_KEY) || "{}") || {}; } catch { return {}; } })();
 function saveContactPrefs() { localStorage.setItem(CONTACT_PREFS_KEY, JSON.stringify(contactPrefs)); }
 function getContactNotify(address) { return contactPrefs[address]?.notify || "enabled"; } // "enabled" | "muted"
-function getContactPhotos(address) { return contactPrefs[address]?.photos || "auto"; }     // "auto" | "manual"
+// "auto" (decide from the global photo-approval setting) | "always" (this contact is trusted,
+// always render) | "manual" (never auto-render). Mirrors iOS PhotoAutoDisplayMode
+// (.automatic / .alwaysShow / .alwaysHide); older installs only ever stored auto/manual.
+function getContactPhotos(address) { return contactPrefs[address]?.photos || "auto"; }
 function setContactPref(address, key, value) {
   if (!address) return;
   contactPrefs[address] = { ...(contactPrefs[address] || {}), [key]: value };
   saveContactPrefs();
 }
-// Photos revealed this session when a contact's Photo Display is "manual".
+
+// Per-group preferences (Group Info), keyed by group id: { [groupId]: { notify } }.
+// Same shape and storage style as contactPrefs above — one global key holding an object
+// keyed by a globally unique identity (contact address there, group id here), so no extra
+// account scoping is needed: a group id belongs to exactly one group.
+const GROUP_PREFS_KEY = "kachat-group-prefs-v1";
+let groupPrefs = (() => { try { return JSON.parse(localStorage.getItem(GROUP_PREFS_KEY) || "{}") || {}; } catch { return {}; } })();
+function saveGroupPrefs() { try { localStorage.setItem(GROUP_PREFS_KEY, JSON.stringify(groupPrefs)); } catch {} }
+// "all" | "mentions" | "muted". Default "all", matching iOS, where a group's
+// "Only Notify if I'm Mentioned" toggle starts OFF (GroupChatService.mentionsOnlyNotifications).
+const GROUP_NOTIFY_MODES = ["all", "mentions", "muted"];
+function getGroupNotify(groupId) {
+  const value = groupPrefs[groupId]?.notify;
+  return GROUP_NOTIFY_MODES.includes(value) ? value : "all";
+}
+function setGroupNotify(groupId, value) {
+  if (!groupId || !GROUP_NOTIFY_MODES.includes(value)) return;
+  groupPrefs[groupId] = { ...(groupPrefs[groupId] || {}), notify: value };
+  saveGroupPrefs();
+}
+
+// Photos revealed this session when a photo bubble is held back (per-contact "manual",
+// or the global approval gate for a contact you have not accepted yet).
 const revealedPhotoIds = new Set();
 const BALANCE_REFRESH_MS = 15000;
 const MESSAGE_REFRESH_MS = 5000;
@@ -1457,7 +1482,13 @@ chatInfoAliasSending?.addEventListener("click", async () => {
 
 function refreshChatInfoContactControls() {
   if (chatInfoNotifyToggle) chatInfoNotifyToggle.checked = getContactNotify(chatInfoContactAddress) !== "muted";
-  if (chatInfoPhotosToggle) chatInfoPhotosToggle.checked = getContactPhotos(chatInfoContactAddress) !== "manual";
+  // Shows the EFFECTIVE state: a contact left on "auto" reads as off while the global
+  // photo-approval setting is holding their photos back, so the toggle never claims photos
+  // are showing when they are not.
+  if (chatInfoPhotosToggle) {
+    const contact = (state.contacts || []).find((entry) => entry.address === chatInfoContactAddress);
+    chatInfoPhotosToggle.checked = shouldAutoDisplayPhotosFrom(contact || { address: chatInfoContactAddress });
+  }
 }
 chatInfoNotifyToggle?.addEventListener("change", async () => {
   if (!chatInfoContactAddress) return;
@@ -1469,7 +1500,10 @@ chatInfoNotifyToggle?.addEventListener("change", async () => {
 });
 chatInfoPhotosToggle?.addEventListener("change", () => {
   if (!chatInfoContactAddress) return;
-  setContactPref(chatInfoContactAddress, "photos", chatInfoPhotosToggle.checked ? "auto" : "manual");
+  // Turning it ON is an explicit "I trust this contact's photos" ("always"), which also
+  // overrides the global approval gate for them — the same role iOS's .alwaysShow override
+  // plays. Turning it OFF is "never auto-render" ("manual"), as before.
+  setContactPref(chatInfoContactAddress, "photos", chatInfoPhotosToggle.checked ? "always" : "manual");
   const conv = state.conversations.find((entry) => entry.id === activeConversationId);
   if (conv && contactForConversation(conv)?.address === chatInfoContactAddress) renderMessages(conv);
 });
@@ -1910,6 +1944,33 @@ function normalizeMessage(message, conversationId) {
 
 function contactForConversation(conversationEntry) {
   return state.contacts.find((contact) => contact.id === conversationEntry?.contactId) || null;
+}
+
+/** The accepted/established-contact predicate behind the stranger-gating features, mirroring
+ *  iOS ContactsManager.isAcceptedContact: true for contacts you added yourself and for anyone
+ *  you have ever sent a message to (accepting a communication request IS an outgoing message,
+ *  and it also flips the relationship to "established"). The only contacts desktop ever
+ *  auto-adds without your say-so are the ones an incoming handshake created, so those are the
+ *  "new contacts" the photo-approval setting is about. */
+function isAcceptedContact(contact, conversationEntry = null) {
+  if (!contact) return false;
+  const relationship = String(contact.relationshipState || "");
+  if (relationship !== "incoming-request" && relationship !== "declined") return true;
+  const entry = conversationEntry || (state.conversations || []).find((e) => e.contactId === contact.id);
+  return (entry?.messages || []).some((message) => message?.direction === "outgoing" && message?.messageType !== "handshake");
+}
+
+/** Whether an incoming photo from this contact renders inline or waits behind a "Tap to view
+ *  photo" placeholder. Mirrors iOS ContactsManager.shouldAutoDisplayPhotos: the per-contact
+ *  Chat Info override wins outright, and otherwise Settings > Chats > "Require approval for
+ *  photos from new contacts" (default ON) holds back photos from contacts you have not
+ *  accepted yet. Revealing one is per session (revealedPhotoIds), never persisted. */
+function shouldAutoDisplayPhotosFrom(contact, conversationEntry = null) {
+  const override = getContactPhotos(contact?.address);
+  if (override === "manual") return false;
+  if (override === "always") return true;
+  if ((accountShellPrefs.photoApprovalForNewContacts ?? true) === false) return true;
+  return isAcceptedContact(contact, conversationEntry);
 }
 
 function promoteRelationshipFromIncomingEvidence(contact, conversationEntry, { persist = true } = {}) {
@@ -2364,6 +2425,10 @@ function activateWalletDataScope(address, { migrateLegacy = true } = {}) {
   // Per-account Chats Payment Privacy: switching accounts applies that
   // account's stored value immediately (Settings toggle included).
   try { refreshChatsPrivacyToggle(); } catch { /* not yet wired during early init */ }
+  // Per-account message retention: show this account's window and clean up its stored history
+  // (a no-op on the default "Keep forever").
+  try { refreshRetentionSelectionUi(); } catch { /* not yet wired during early init */ }
+  try { startMessageRetentionSweeps(); } catch { /* not yet wired during early init */ }
   return state;
 }
 
@@ -3004,12 +3069,23 @@ async function syncOneConversation(conversationEntry, { quiet = true, catchUp = 
   if (!contact || !engine.address || !engine.isKasiaCipherLoaded?.()) return 0;
   const knownTxids = (conversationEntry.messages || []).map((message) => message.txid).filter(Boolean);
   const indexerUrl = indexerUrlInput?.value?.trim() || getEndpoint("kasiaIndexer");
+  // Message retention also raises the IMPORT floor (mirrors iOS ChatService's retention-aware
+  // fetch cursor): without it the payment scan below, which re-reads the last 100 transactions
+  // from scratch every sweep, would re-add the very payments the last retention pass deleted,
+  // over and over. null on the default "Keep forever" — nothing is filtered then.
+  const retentionFloor = messageRetentionCutoffMs();
+  const olderThanRetention = (incoming) => {
+    if (!retentionFloor) return false;
+    const createdAt = Number(incoming?.createdAt || 0);
+    return Number.isFinite(createdAt) && createdAt > 0 && createdAt < retentionFloor;
+  };
   const result = await engine.syncConversationFromIndexer({
     conversationId: conversationEntry.id, contact, knownTxids,
     cursor: conversationEntry.sync?.cursor || 0, indexerUrl,
   });
   let added = 0;
   for (const incoming of result.messages || []) {
+    if (olderThanRetention(incoming)) continue;
     const hiddenKeys = new Set((conversationEntry.hiddenMessageKeys || []).map(String));
     if ((incoming.txid && hiddenKeys.has(String(incoming.txid))) || (incoming.id && hiddenKeys.has(String(incoming.id)))) continue;
     if ((conversationEntry.messages || []).some((m) => m.txid && m.txid === incoming.txid)) continue;
@@ -3037,6 +3113,7 @@ async function syncOneConversation(conversationEntry, { quiet = true, catchUp = 
         limit: 100,
       });
       for (const incoming of paymentResult.messages || []) {
+        if (olderThanRetention(incoming)) continue;
         if ((conversationEntry.messages || []).some((message) => message.txid && message.txid === incoming.txid)) continue;
         const message = createMessage({ ...incoming, conversationId: conversationEntry.id, contactId: contact.id });
         applyMessagePatch(message, incoming);
@@ -3393,7 +3470,7 @@ async function refreshAllConversations({ quiet = true } = {}) {
         catch (error) { appendEngineLog(`Automatic message sync failed for ${conversationEntry.id}: ${error.message}`); }
       }
     }));
-    try { added += await syncGroupsNow(); }
+    try { added += await syncGroupsNow({ catchUp }); }
     catch (error) { appendEngineLog(`Group sync failed: ${error.message}`); }
     // Persist and re-render ONLY when the sweep actually changed something. state holds
     // every inline base64 photo/voice message, so the unconditional persist here was two
@@ -8179,9 +8256,6 @@ document.querySelectorAll("[data-profile-dropdown], [data-settings-dropdown]").f
   });
 });
 
-document.querySelectorAll("[data-mockup-action]").forEach((button) => {
-  button.addEventListener("click", () => showCopyToast("Coming soon"));
-});
 
 // Kaspa Explorer selector (Settings > Connectivity). Persists the chosen
 // explorer, reflects it in the dropdown's current-value label + checkmark, and
@@ -8212,13 +8286,139 @@ explorerOptionButtons.forEach((button) => {
 });
 refreshExplorerSelectionUi();
 
-document.querySelectorAll("[data-mockup-toggle]").forEach((input) => {
-  input.addEventListener("change", () => {
-    const previous = !input.checked;
-    showCopyToast("Coming soon");
-    input.checked = previous;
+// ---------------------------------------------------------------------------
+// Message retention (Settings > Storage > Message retention) — port of iOS
+// AppSettings.messageRetention + MessageStore.applyRetention. The window is stored PER
+// ACCOUNT (accountScopedKey), because it governs that account's stored chat history.
+// "Keep forever" is the default and the only value an installation can have without the
+// user choosing it, and it prunes nothing at all.
+//
+// What pruning deletes: one-to-one chat messages older than the window, for the signed-in
+// account only. Deliberately never deleted:
+//   - handshake messages (protocol-critical; iOS excludes them from its batch delete too),
+//   - messages still in flight (draft/building/signing/broadcasting/pending),
+//   - messages with no usable timestamp (unknown age is not old age),
+//   - group chats (iOS's retention covers the 1:1 message store only; group history is a
+//     separate store on both platforms).
+// This is local cleanup: nothing is removed from the chain, from a Nextcloud backup, or
+// from any other device.
+// ---------------------------------------------------------------------------
+const MESSAGE_RETENTION_KEY = "kachat-message-retention-v1";
+const MESSAGE_RETENTION_OPTIONS = [
+  { key: "forever", days: null, label: "Keep forever" },
+  { key: "days30", days: 30, label: "30 days" },
+  { key: "days90", days: 90, label: "90 days" },
+  { key: "year1", days: 365, label: "1 year" },
+];
+const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // periodic pass, on top of the one at load
+let retentionSweepTimer = null;
+
+function messageRetentionKeyValue() {
+  try {
+    const stored = String(localStorage.getItem(accountScopedKey(MESSAGE_RETENTION_KEY)) || "");
+    return MESSAGE_RETENTION_OPTIONS.some((option) => option.key === stored) ? stored : "forever";
+  } catch { return "forever"; }
+}
+function messageRetentionOption() {
+  const key = messageRetentionKeyValue();
+  return MESSAGE_RETENTION_OPTIONS.find((option) => option.key === key) || MESSAGE_RETENTION_OPTIONS[0];
+}
+/** Oldest timestamp that survives, or null for "Keep forever" (no cutoff, no pruning). */
+function messageRetentionCutoffMs() {
+  const days = messageRetentionOption().days;
+  return days ? Date.now() - days * 86400000 : null;
+}
+
+function isMessageRetentionExpired(message, cutoff) {
+  if (!message || !cutoff) return false;
+  if (message.messageType === "handshake") return false;
+  const status = String(message.status || "");
+  if (status === MESSAGE_STATUSES.DRAFT || status === MESSAGE_STATUSES.BUILDING
+    || status === MESSAGE_STATUSES.SIGNING || status === MESSAGE_STATUSES.BROADCASTING
+    || status === MESSAGE_STATUSES.PENDING) return false;
+  const createdAt = Number(message.createdAt || 0);
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return false;
+  return createdAt < cutoff;
+}
+
+/** Counts what the current window would delete right now, without touching anything. */
+function countMessagesOutsideRetention(cutoff) {
+  if (!cutoff) return 0;
+  let total = 0;
+  for (const entry of state.conversations || []) {
+    for (const message of entry.messages || []) if (isMessageRetentionExpired(message, cutoff)) total += 1;
+  }
+  return total;
+}
+
+/** Deletes everything outside the window from this browser and returns how many went. */
+function applyMessageRetention() {
+  if (!engine.address) return 0;
+  const cutoff = messageRetentionCutoffMs();
+  if (!cutoff) return 0;
+  let removed = 0;
+  for (const entry of state.conversations || []) {
+    const messages = entry.messages || [];
+    if (!messages.length) continue;
+    const kept = messages.filter((message) => !isMessageRetentionExpired(message, cutoff));
+    if (kept.length === messages.length) continue;
+    removed += messages.length - kept.length;
+    entry.messages = kept;
+    const last = lastMessageFor(entry);
+    entry.lastActivityAt = last?.createdAt || entry.lastActivityAt || entry.createdAt;
+    entry.updatedAt = Date.now();
+  }
+  if (!removed) return 0;
+  // Force the corruption-recovery snapshot to be rewritten in the same pass: it is normally
+  // throttled to once a minute, and hydration merges it back into a conversation — a stale
+  // copy would resurrect the messages just deleted on the next reload.
+  lastStateBackupWriteAt = 0;
+  persistState();
+  const open = (state.conversations || []).find((entry) => entry.id === activeConversationId);
+  if (open) renderMessages(open);
+  renderChats();
+  appendEngineLog(`Message retention (${messageRetentionOption().label}) removed ${removed} stored message${removed === 1 ? "" : "s"}.`);
+  return removed;
+}
+
+/** Load-time + periodic pass. Safe to call whenever; a no-op on "Keep forever". */
+function startMessageRetentionSweeps() {
+  try { applyMessageRetention(); } catch (error) { appendEngineLog(`Message retention pass failed: ${error.message}`); }
+  if (retentionSweepTimer) return;
+  retentionSweepTimer = window.setInterval(() => {
+    try { applyMessageRetention(); } catch { /* next sweep retries */ }
+  }, RETENTION_SWEEP_INTERVAL_MS);
+}
+
+const retentionLabelEl = document.querySelector("[data-retention-label]");
+const retentionOptionButtons = document.querySelectorAll("[data-retention-option]");
+function refreshRetentionSelectionUi() {
+  const current = messageRetentionKeyValue();
+  if (retentionLabelEl) retentionLabelEl.textContent = messageRetentionOption().label;
+  retentionOptionButtons.forEach((button) => {
+    button.classList.toggle("selected", button.dataset.retentionOption === current);
+  });
+}
+retentionOptionButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const key = button.dataset.retentionOption;
+    const option = MESSAGE_RETENTION_OPTIONS.find((entry) => entry.key === key);
+    if (!option || key === messageRetentionKeyValue()) return;
+    if (!engine.address) { showCopyToast("Sign in to change message retention."); return; }
+    // Shortening the window deletes history, so say exactly how much before doing it.
+    if (option.days) {
+      const doomed = countMessagesOutsideRetention(Date.now() - option.days * 86400000);
+      if (doomed > 0 && !confirm(`Keep only the last ${option.label.toLowerCase()} of messages?\n\n${doomed} older message${doomed === 1 ? "" : "s"} will be deleted from this browser. This cannot be undone here, and they will not be downloaded again.`)) return;
+    }
+    try { localStorage.setItem(accountScopedKey(MESSAGE_RETENTION_KEY), key); } catch {}
+    refreshRetentionSelectionUi();
+    const removed = applyMessageRetention();
+    showCopyToast(option.days
+      ? `Keeping the last ${option.label.toLowerCase()}${removed ? `. Removed ${removed} older message${removed === 1 ? "" : "s"}` : ""}.`
+      : "Keeping messages forever.");
   });
 });
+refreshRetentionSelectionUi();
 
 document.querySelectorAll(".settings-segmented-option:not([data-theme-option])").forEach((option) => {
   option.addEventListener("click", () => {
@@ -9802,10 +10002,10 @@ function renderMessages(conversationEntry) {
     }
 
     if (imageEnvelope) {
-      const manualPhoto = message.direction === "incoming"
-        && getContactPhotos(requestContact?.address) === "manual"
+      const heldBackPhoto = message.direction === "incoming"
+        && !shouldAutoDisplayPhotosFrom(requestContact, conversationEntry)
         && !revealedPhotoIds.has(message.id);
-      if (manualPhoto) {
+      if (heldBackPhoto) {
         const reveal = document.createElement("button");
         reveal.type = "button";
         reveal.className = "message-photo-hidden";
@@ -10848,6 +11048,8 @@ function showSettingsSubscreen(name, parentIndex) {
   if (!target) return;
   // The Child Mode page is stateful (set-up vs. manage) — re-render fresh on every visit.
   if (name === "child-mode") renderChildModeSettingsPage();
+  // The retention window is per account, so the checkmark is only right once the page opens.
+  if (name === "retention") refreshRetentionSelectionUi();
   settingsSubscreenParentIndex = Number.isInteger(parentIndex) && parentIndex >= 0 ? parentIndex : null;
   settingsHubEl.hidden = true;
   settingsGroupsEls.forEach((group) => { group.hidden = group !== target; });
@@ -13902,6 +14104,9 @@ function buildDesktopStateSnapshot() {
     // Per-contact prefs (mute + photo-display toggle) live in a separate global key,
     // so they must be carried explicitly or a restore would lose them.
     contactPrefs: (() => { try { return JSON.parse(localStorage.getItem(CONTACT_PREFS_KEY) || "{}") || {}; } catch { return {}; } })(),
+    // Per-group notification mode (Group Info > Notifications) lives in its own global key
+    // for the same reason, so it rides along too.
+    groupPrefs: (() => { try { return JSON.parse(localStorage.getItem(GROUP_PREFS_KEY) || "{}") || {}; } catch { return {}; } })(),
   };
 }
 
@@ -13961,6 +14166,14 @@ function applyDesktopStateSnapshot(snapshot) {
       const current = JSON.parse(localStorage.getItem(CONTACT_PREFS_KEY) || "{}") || {};
       contactPrefs = { ...current, ...snapshot.contactPrefs };
       localStorage.setItem(CONTACT_PREFS_KEY, JSON.stringify(contactPrefs));
+    } catch { /* leave existing prefs untouched on parse failure */ }
+  }
+  // Same merge rule for the per-group notification modes.
+  if (snapshot.groupPrefs && typeof snapshot.groupPrefs === "object") {
+    try {
+      const current = JSON.parse(localStorage.getItem(GROUP_PREFS_KEY) || "{}") || {};
+      groupPrefs = { ...current, ...snapshot.groupPrefs };
+      localStorage.setItem(GROUP_PREFS_KEY, JSON.stringify(groupPrefs));
     } catch { /* leave existing prefs untouched on parse failure */ }
   }
   reloadStateFromBrowserStorage();
@@ -15715,6 +15928,9 @@ const prefBindings = [
   ["[data-pref-show-contact-balance]", "showContactBalance", true],
   ["[data-pref-store-messages]", "storeMessages", true],
   ["[data-pref-show-setup-guides]", "showSetupGuides", true],
+  // Settings > Chats: hold back inline photos from contacts you haven't accepted yet
+  // (iOS AppSettings.requirePhotoApprovalForNewContacts, default ON).
+  ["[data-pref-photo-approval]", "photoApprovalForNewContacts", true],
   // Settings > Notifications (iOS NotificationsHubPage port): Chats / Wallet /
   // KaPosts pages, all default ON.
   ["[data-pref-chat-notifications]", "chatNotifications", true],
@@ -15735,6 +15951,12 @@ prefBindings.forEach(([selector, key, fallback]) => {
     persistAccountShellPreferences();
     if (key === "estimateFees") scheduleFeeEstimate();
     if (key === "showSetupGuides") refreshSetupGuideRow();
+    if (key === "photoApprovalForNewContacts") {
+      // Apply to the open thread immediately, and re-sync the Chat Info toggle that mirrors it.
+      const conv = (state.conversations || []).find((entry) => entry.id === activeConversationId);
+      if (conv) renderMessages(conv);
+      try { refreshChatInfoContactControls(); } catch { /* Chat Info not open */ }
+    }
     if ((key === "chatNotifications" || key === "addressActivityNotifications") && input.checked) {
       ensureNotificationPermission().then((granted) => {
         if (!granted) showCopyToast("Allow notifications in your browser to receive them.");
@@ -16247,19 +16469,74 @@ function textMentionsMe(text) {
   }
   return false;
 }
+// A group message that is personal to you even in a mentions-only group: it @mentions you, or
+// it is a reply to one of YOUR messages. Mirrors iOS GroupChatService.isPersonalGroupMessage
+// (reply-to-me OR mention). Reactions are not covered here: desktop never notifies for group
+// reactions on any path, so there is nothing to gate.
+function isReplyToMyGroupMessage(text) {
+  const me = engine.address || "";
+  if (!me) return false;
+  const reply = parseReplyEnvelope(text);
+  return Boolean(reply && reply.replyToSender && reply.replyToSender === me);
+}
+
+// Shared gate for every OS-level group ping: the Settings > Notifications > Chats master
+// toggle (default ON, same check maybeNotifyIncoming makes for 1:1), and never ping for the
+// group you are already looking at in a focused window. Child Mode is deliberately NOT a gate
+// here: it hides Swaps/KaPosts/Broadcasts only, and chats plus group chats stay fully
+// available while it is on, exactly as the existing 1:1 and mention paths behave.
+function groupOsPingAllowed(groupId) {
+  if ((accountShellPrefs.chatNotifications ?? true) === false) return false;
+  if (activeGroupId === groupId && !document.hidden) return false;
+  return true;
+}
+
+function groupNotificationSenderName(senderAddress) {
+  const contact = (state.contacts || []).find((c) => c.address === senderAddress);
+  return (contact?.name || "").trim()
+    || engine.peekKnsAddressInfo?.(senderAddress)?.primaryDomain
+    || shortAddress(senderAddress);
+}
+
+// Single entry point for "an incoming group message just landed" — applies this group's
+// notification mode (Group Info > Notifications): "all" pings for every message, "mentions"
+// only for messages that @mention you or reply to you, "muted" never pings. Mirrors iOS,
+// where GroupChatService.maybePostGroupLocalNotification drops non-personal messages in a
+// mentions-only group and posts a banner otherwise.
+function maybeNotifyGroupIncoming(groupId, senderAddress, text, id, createdAt) {
+  const me = engine.address || "";
+  if (!me || senderAddress === me) return;
+  const mode = getGroupNotify(groupId);
+  if (mode === "muted") return;
+  // A hidden member's messages are filtered out of the thread; they must not ping either.
+  if (isGroupMemberHidden(groupId, senderAddress)) return;
+  if (textMentionsMe(text)) { maybeRecordGroupMention(groupId, senderAddress, text, id, createdAt); return; }
+  if (mode !== "all" && !isReplyToMyGroupMessage(text)) return;
+  if (!groupOsPingAllowed(groupId)) return;
+  // Ordinary group traffic is higher volume than a mention, so it uses the same rule as the
+  // 1:1 path: a real OS notification or nothing. (postDesktopNotification would otherwise fall
+  // back to an in-app toast per message when browser notifications are denied.)
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  const group = getGroupManager()?.getGroup(groupId);
+  postDesktopNotification({
+    title: group?.name || "Group",
+    body: `${groupNotificationSenderName(senderAddress)}: ${groupPreviewText(text) || "New message"}`,
+    tag: `kachat-group-${groupId}`,
+    onClick: () => { setActiveAppTab("chats"); try { openGroupChat(groupId); } catch {} },
+  });
+}
+
 // When an incoming group message @mentions one of your KNS domains, surface it in the global
 // notification center (and an OS ping). Group mentions are purely client-detected — there is no
-// server round-trip, unlike KaPosts mentions.
+// server round-trip, unlike KaPosts mentions. Reached through maybeNotifyGroupIncoming, which
+// has already applied the group's mode (a muted group never gets here).
 function maybeRecordGroupMention(groupId, senderAddress, text, id, createdAt) {
   const me = engine.address || "";
   if (!me) return;
   if (!textMentionsMe(text)) return;
   const group = getGroupManager()?.getGroup(groupId);
   const groupName = group?.name || "a group";
-  const contact = (state.contacts || []).find((c) => c.address === senderAddress);
-  const senderName = (contact?.name || "").trim()
-    || engine.peekKnsAddressInfo?.(senderAddress)?.primaryDomain
-    || shortAddress(senderAddress);
+  const senderName = groupNotificationSenderName(senderAddress);
   recordGlobalNotification({
     source: "group",
     id: `group-mention-${id}`,
@@ -16269,6 +16546,7 @@ function maybeRecordGroupMention(groupId, senderAddress, text, id, createdAt) {
     targetKind: "group",
     targetId: groupId,
   });
+  if (!groupOsPingAllowed(groupId)) return;
   postDesktopNotification({
     title: "Group mention",
     body: `${senderName} mentioned you in ${groupName}`,
@@ -17330,6 +17608,19 @@ function openGroupManage(groupId) {
   const icPencil = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
   const icResend = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg>`;
   const icAdd = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5c.6-3.3 2.7-5 5.5-5s4.9 1.7 5.5 5"/><path d="M18 8v6M15 11h6"/></svg>`;
+  const icBell = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 6-2.5 7-2.5 7h17S18 14 18 8"/><path d="M13.7 20a2 2 0 0 1-3.4 0"/></svg>`;
+  // Per-group notification mode (iOS Group Info > "Only Notify if I'm Mentioned", widened to the
+  // same three choices the 1:1 Chat Info offers plus mentions). Sits on the group's info screen,
+  // where the 1:1 notification toggle lives for a contact.
+  const notifyMode = getGroupNotify(groupId);
+  const notifyRows = [
+    ["all", "All messages"],
+    ["mentions", "Only when I'm mentioned"],
+    ["muted", "Mute this group"],
+  ].map(([value, label]) => `
+      <button type="button" class="group-manage-row" data-group-notify-mode="${value}" aria-pressed="${notifyMode === value ? "true" : "false"}">
+        <span class="group-manage-row-icon">${notifyMode === value ? "✓" : "&nbsp;"}</span> ${escapeHtml(label)}
+      </button>`).join("");
   groupManageBody.innerHTML = `
     <div class="group-manage-section group-photo-section">
       <div class="group-photo-avatar${isAdmin ? " editable" : ""}"${isAdmin ? " data-group-photo-edit" : ""}${isAdmin ? ` title="Change group photo"` : ""}>
@@ -17352,6 +17643,13 @@ function openGroupManage(groupId) {
         ${hiddenRows}
       </details>
     </div>
+    <div class="group-manage-section">
+      <details class="group-members-details">
+        <summary class="group-manage-section-title group-members-summary"><span class="group-manage-row-icon">${icBell}</span> Notifications</summary>
+        ${notifyRows}
+        <p class="group-manage-footer">Only when I'm mentioned: you are notified about messages that @mention you and replies to your own messages. Everything else arrives in the chat silently. Mute this group: no notifications at all. Unread counts still update either way.</p>
+      </details>
+    </div>
     ${isAdmin ? `
     <div class="group-manage-section">
       <button type="button" class="group-manage-row" data-group-rename><span class="group-manage-row-icon">${icPencil}</span> Rename Group</button>
@@ -17369,7 +17667,7 @@ function openGroupManage(groupId) {
 function closeGroupManage() { if (groupManageScreen) groupManageScreen.hidden = true; }
 
 // --- background sync: pull invites + new messages into the store ---
-async function syncGroupsNow() {
+async function syncGroupsNow({ catchUp = false } = {}) {
   const mgr = getGroupManager();
   if (!mgr || !engine.isKasiaCipherLoaded?.()) return 0;
   let result;
@@ -17400,7 +17698,13 @@ async function syncGroupsNow() {
     if (added) {
       changed++;
       if (direction === "incoming") {
-        maybeRecordGroupMention(decoded.groupId, decoded.senderAddress, decoded.plaintext, decoded.txId || decoded.msgIdHex || nowId(), createdAt);
+        // The first sweep after a load/switch/restore backfills history from the indexer, so it
+        // is not new mail: it adds silently, exactly like the 1:1 path (pendingInitialCatchUp)
+        // and like iOS's backfill floor for groups. Without this, an "all messages" group would
+        // fire a banner for every historical message on the first sync.
+        if (!catchUp) {
+          maybeNotifyGroupIncoming(decoded.groupId, decoded.senderAddress, decoded.plaintext, decoded.txId || decoded.msgIdHex || nowId(), createdAt);
+        }
         if (decoded.groupId !== activeGroupId) {
           setGroupUnread(decoded.groupId, groupUnreadFor(decoded.groupId) + 1);
         }
@@ -17922,6 +18226,28 @@ groupVoiceCancelBtn?.addEventListener("click", cancelGroupVoice);
 })();
 
 groupManageBody?.addEventListener("click", async (event) => {
+  // Per-group notification mode: all messages / mentions only / muted.
+  const notifyRow = event.target.closest("[data-group-notify-mode]");
+  if (notifyRow && activeGroupId) {
+    const mode = notifyRow.dataset.groupNotifyMode;
+    setGroupNotify(activeGroupId, mode);
+    // Move the checkmark in place rather than re-rendering the screen, so the open
+    // Notifications dropdown (a <details>) does not snap shut on every choice.
+    groupManageBody.querySelectorAll("[data-group-notify-mode]").forEach((row) => {
+      const selected = row.dataset.groupNotifyMode === mode;
+      row.setAttribute("aria-pressed", selected ? "true" : "false");
+      const icon = row.querySelector(".group-manage-row-icon");
+      if (icon) icon.innerHTML = selected ? "✓" : "&nbsp;";
+    });
+    if (mode === "muted") {
+      showCopyToast("Muted. This group will not notify you.");
+    } else {
+      const granted = await ensureNotificationPermission();
+      if (!granted) showCopyToast("Allow notifications in your browser to receive them.");
+      else showCopyToast(mode === "all" ? "Notifying for all messages in this group." : "Notifying only for mentions and replies to you.");
+    }
+    return;
+  }
   // Change the group photo (admin): pick a file, compress, and push to every member.
   const photoEdit = event.target.closest("[data-group-photo-edit]");
   if (photoEdit && activeGroupId) {
