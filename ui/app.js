@@ -1699,6 +1699,23 @@ function initialsFor(name) {
     .join("") || "?";
 }
 
+// Copy-toast form of an address, matching iOS exactly: the "kaspa:"/"kaspatest:" prefix, then
+// the first 4 payload characters, 4 from the exact middle, and the last 4, joined with "...".
+// Three visible segments make a lookalike-address swap much harder to miss than a single
+// head-and-tail ellipsis. Short or unusual values are shown as-is.
+function addressCopiedToastText(address) {
+  const trimmed = String(address || "").trim();
+  const colon = trimmed.indexOf(":");
+  const prefix = colon === -1 ? "" : trimmed.slice(0, colon + 1);
+  const payload = colon === -1 ? trimmed : trimmed.slice(colon + 1);
+  if (payload.length < 24) return `Address ${trimmed} copied`;
+  const first = payload.slice(0, 4);
+  const midStart = Math.floor(payload.length / 2) - 2;
+  const middle = payload.slice(midStart, midStart + 4);
+  const last = payload.slice(-4);
+  return `Address ${prefix}${first}...${middle}...${last} copied`;
+}
+
 function shortAddress(address) {
   if (!address) return "";
   if (address.length <= 20) return address;
@@ -8525,7 +8542,7 @@ function renderSavedNodes() {
     copyBtn.className = "saved-node-btn";
     copyBtn.textContent = "Copy";
     copyBtn.addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(entry.address); showCopyToast("Address copied"); }
+      try { await navigator.clipboard.writeText(entry.address); showCopyToast(addressCopiedToastText(entry.address)); }
       catch { showCopyToast("Copy failed"); }
     });
 
@@ -10222,7 +10239,7 @@ document.querySelector("[data-chat-info-copy-address]")?.addEventListener("click
   if (!contact) return;
   try {
     await copyTextToClipboard(contact.address);
-    showCopyToast("Address copied");
+    showCopyToast(addressCopiedToastText(contact.address));
   } catch (error) {
     showCopyToast("Copy failed");
   }
@@ -15798,7 +15815,7 @@ document.querySelectorAll("[data-copy-engine-address]").forEach((button) => {
     try {
       await copyTextToClipboard(target);
       appendEngineLog("Copied address.");
-      showCopyToast("Address copied");
+      showCopyToast(addressCopiedToastText(target));
     } catch (error) {
       appendEngineLog(`Copy failed: ${error.message}`);
       showCopyToast("Copy failed");
@@ -16432,7 +16449,7 @@ function openGroupMemberMenu(address, x, y) {
   };
   if (address !== engine.address) {
     add("Message", () => openOrCreateOneToOne(address));
-    add("Copy Address", () => copyTextToClipboard(address).then(() => showCopyToast("Address copied")).catch(() => {}));
+    add("Copy Address", () => copyTextToClipboard(address).then(() => showCopyToast(addressCopiedToastText(address))).catch(() => {}));
     const hidden = activeGroupId && isGroupMemberHidden(activeGroupId, address);
     add(hidden ? "Unhide messages" : "Hide messages", () => {
       if (!activeGroupId) return;
@@ -16440,7 +16457,7 @@ function openGroupMemberMenu(address, x, y) {
       renderGroupMessages();
     }, !hidden);
   } else {
-    add("Copy Address", () => copyTextToClipboard(address).then(() => showCopyToast("Address copied")).catch(() => {}));
+    add("Copy Address", () => copyTextToClipboard(address).then(() => showCopyToast(addressCopiedToastText(address))).catch(() => {}));
   }
   document.body.append(menu);
   const vw = window.innerWidth, vh = window.innerHeight;
