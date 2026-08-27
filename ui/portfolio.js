@@ -20,6 +20,7 @@ import {
 import { getEndpoint } from "../engine/endpoints.js";
 import { validateMainnetAddress } from "../engine/utils.js";
 import { looksLikeDomain, resolveDomain } from "../engine/kns.js";
+import { closeActiveScanner, scanKaspaAddress } from "./qr-scan.js";
 
 const PORTFOLIO_KEY = "kachat-portfolios-v1"; // account-scoped: { activeId, portfolios: [{id, name, transactions: [...] }] }
 const MAX_PORTFOLIOS = 5;
@@ -907,9 +908,11 @@ function syncImportModal() {
   if (!modalsEl) return;
   const startBtn = modalsEl.querySelector("[data-portfolio-import-start]");
   const pasteBtn = modalsEl.querySelector("[data-portfolio-import-paste]");
+  const scanBtn = modalsEl.querySelector("[data-portfolio-import-scan]");
   const status = modalsEl.querySelector("[data-portfolio-import-status]");
   if (startBtn) startBtn.disabled = !canImportAddress();
   if (pasteBtn) pasteBtn.disabled = Boolean(addressImport?.busy);
+  if (scanBtn) scanBtn.disabled = Boolean(addressImport?.busy);
   if (!status) return;
 
   const input = addressImport?.input || "";
@@ -967,6 +970,30 @@ async function pasteIntoImportField() {
   // Strip URI query params (kaspa:addr?amount=...) so only the address itself lands in the
   // field — same normalization iOS's scan/paste handler applies.
   if (looksLikeRawAddress(text)) text = text.split("?")[0];
+  fillImportField(text);
+}
+
+/** Camera scan for the address field, the desktop equivalent of iOS's Scan button
+ *  (PortfolioTransactionsView's `showQRScanner` / `handleScannedQRCode`). The scanner
+ *  already strips a `kaspa:addr?amount=...` query, and the result is fed through the
+ *  SAME path the Paste button uses, so KNS resolution and validation still run. */
+async function scanIntoImportField() {
+  if (!addressImport || addressImport.busy) return;
+  let scanned = null;
+  try {
+    scanned = await scanKaspaAddress();
+  } catch {
+    setImportProgress("The QR scanner could not be opened. Paste or type the address instead.");
+    return;
+  }
+  // The sheet may have been closed while the scanner was up.
+  if (!scanned || !addressImport || addressImport.busy) return;
+  fillImportField(scanned);
+}
+
+/** Programmatic field fill: setting `value` fires no `input` event, so the change is fed
+ *  through by hand (mirroring iOS, where assigning `addressText` triggers `handleInputChange`). */
+function fillImportField(text) {
   const field = modalsEl.querySelector("[data-portfolio-import-address]");
   if (field) field.value = text;
   setImportProgress("");
@@ -1266,6 +1293,7 @@ function buildModals() {
           <p class="portfolio-editor-hint" data-portfolio-import-status></p>
           <div class="portfolio-tx-header-actions">
             <button class="cold-inline-link" type="button" data-portfolio-import-paste>Paste</button>
+            <button class="cold-inline-link" type="button" data-portfolio-import-scan>Scan QR</button>
           </div>
           <p class="portfolio-import-progress" data-portfolio-import-progress></p>
         </div>
@@ -1295,12 +1323,17 @@ function buildModals() {
       if (!addressImport?.busy) {
         addressImport = null;
         knsResolveSeq += 1; // any in-flight KNS lookup belongs to a sheet that's gone
+        closeActiveScanner(); // and so does any camera it opened
         modalsEl.querySelector("[data-portfolio-import-modal]").hidden = true;
       }
       return;
     }
     if (event.target.closest("[data-portfolio-import-paste]")) {
       pasteIntoImportField();
+      return;
+    }
+    if (event.target.closest("[data-portfolio-import-scan]")) {
+      scanIntoImportField();
       return;
     }
     if (event.target.closest("[data-portfolio-import-start]")) {
@@ -1432,6 +1465,7 @@ export function refreshPortfolio() {
 }
 
 export function resetPortfolioForAccount() {
+  closeActiveScanner(); // an account switch must never leave a camera running
   loadState();
   ensureDefaultPortfolio();
   render();

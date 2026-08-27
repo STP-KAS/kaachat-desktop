@@ -18,6 +18,7 @@ import {
   buildUnsignedTransaction, previewAutomaticSelection, estimateMaxAmount,
   compoundInputs, unsignedToKsptBytes, broadcastSigned, isValidKaspaAddress,
 } from "./kspt.js";
+import { closeActiveScanner, scanKaspaAddress, scanQrCode } from "./qr-scan.js";
 
 const COLD_ACCOUNTS_KEY = "kachat-cold-accounts-v1"; // account-scoped: [{ id, label, kpub, addedAt, maxIndex, labels, hidden }]
 const COLD_UTXO_LABELS_KEY = "kachat-cold-utxo-labels-v1"; // account-scoped: { [address]: { [outpointKey]: label } }
@@ -40,7 +41,6 @@ let detailLoading = false;
 let detailBusy = null;        // "generate" | "discover" | "refresh" | null
 let detailToken = 0;
 let balanceCache = new Map(); // address -> sompi, per opened account
-let scanStream = null;
 
 // Per-address screen (iOS ColdStorageAddressTransactionHistoryView)
 let activeAddressIndex = null; // non-null = address screen within the open account
@@ -910,6 +910,7 @@ async function openSendFlow({ compound = false } = {}) {
 function closeSendFlow() {
   stopSendFrameTimer();
   stopSendScan();
+  closeActiveScanner(); // a recipient scan opened from this sheet must not outlive it
   if (sendPreviewTimer) { clearTimeout(sendPreviewTimer); sendPreviewTimer = null; }
   send = null;
   const modal = modalsEl?.querySelector("[data-cold-send-modal]");
@@ -1237,7 +1238,10 @@ function renderSendFlow() {
                value="${deps.escapeHtml(send.toInput)}" />
            </label>
            <div data-cold-send-recipient-status>${sendRecipientStatusHtml()}</div>
-           <button class="cold-inline-link" type="button" data-cold-send-paste>Paste</button>`}
+           <div style="display:flex; align-items:center; gap:16px;">
+             <button class="cold-inline-link" type="button" data-cold-send-paste>Paste</button>
+             <button class="cold-inline-link" type="button" data-cold-send-scan>Scan QR</button>
+           </div>`}
       <span class="field-label">Amount (${send.amountUnit === "kas" ? "KAS" : deps.currencyCode?.() || "USD"})</span>
       <div class="send-amount-field">
         <button type="button" class="send-amount-unit" data-cold-send-unit title="Tap to switch between KAS and fiat">
@@ -1434,16 +1438,7 @@ function buildModals() {
     <div class="modal-backdrop" data-cold-send-modal hidden>
       <div class="contact-modal cold-send-modal" role="dialog" aria-modal="true" aria-label="Cold Storage send" data-cold-send-body></div>
     </div>
-    <div class="cold-scan-modal" data-cold-scan-modal hidden>
-      <div class="cold-scan-frame">
-        <video data-cold-scan-video autoplay playsinline muted></video>
-        <div class="cold-scan-target" aria-hidden="true">
-          <span></span><span></span><span></span><span></span>
-        </div>
-      </div>
-      <p class="cold-scan-hint">Line the kpub QR code up inside the square</p>
-      <button class="secondary-button" type="button" data-cold-scan-cancel>Cancel</button>
-    </div>`;
+`;
   document.body.appendChild(modalsEl);
 
   const inputModal = modalsEl.querySelector("[data-cold-input-modal]");
@@ -1476,8 +1471,6 @@ function buildModals() {
     deps.showToast?.("Address copied to clipboard.");
   });
 
-  modalsEl.querySelector("[data-cold-scan-cancel]").addEventListener("click", stopScan);
-
   // --- KSPT send flow (delegated — the body re-renders per step) ---
   const sendBody = modalsEl.querySelector("[data-cold-send-body]");
   sendBody.addEventListener("click", async (event) => {
@@ -1492,6 +1485,24 @@ function buildModals() {
           handleSendRecipientInput(text);
         }
       } catch { deps.showToast?.("Clipboard unavailable — paste into the field directly."); }
+      return;
+    }
+    // Camera scan for the recipient, matching iOS ColdStorageView's "Scan QR" button. The
+    // scanner strips a `kaspa:addr?amount=...` query, and the result goes through the same
+    // handler the field and Paste use, so KNS resolution and validation still run.
+    if (event.target.closest("[data-cold-send-scan]")) {
+      let scanned = null;
+      try {
+        scanned = await scanKaspaAddress();
+      } catch {
+        deps.showToast?.("The QR scanner could not be opened. Paste or type the address instead.");
+        return;
+      }
+      // The send sheet may have closed or moved on while the scanner was up.
+      if (!scanned || !send || send.step !== "form") return;
+      const input = sendBody.querySelector("[data-cold-send-recipient]");
+      if (input) input.value = scanned;
+      handleSendRecipientInput(scanned);
       return;
     }
     if (event.target.closest("[data-cold-send-max]")) { sendSetMax(); return; }
@@ -1573,7 +1584,8 @@ function buildModals() {
     if (!qrModal.hidden) { closeQrModal(); return; }
     if (!inputModal.hidden) { finishInputModal(null); return; }
     if (!confirmModal.hidden) { finishConfirmModal(false); return; }
-    if (scanStream) stopScan();
+    // The shared QR scanner handles its own Escape (in the capture phase, so this
+    // listener never even sees it while the viewfinder is up).
   });
 }
 
@@ -1854,50 +1866,26 @@ async function pasteImport() {
   if (input) beginImport(input);
 }
 
-// --- QR scanning (jsQR frame decode — works in EVERY browser) ---------------
-// BarcodeDetector is missing from Chromium on Linux (Chrome/Brave) and from
-// Firefox entirely, so it must never be a requirement; jsQR is already bundled
-// for the signed-response scan and decodes plain-string QRs just as well.
+// --- kpub QR scanning -------------------------------------------------------
+// Runs on the shared scanner in ui/qr-scan.js (jsQR frame decode, so it works in
+// every browser, and it degrades to a typed kpub where the camera is unavailable).
+// `validate` here means a QR that isn't a kpub keeps the viewfinder scanning instead
+// of closing the scanner on the wrong code.
 
 async function startScan() {
-  const modal = modalsEl.querySelector("[data-cold-scan-modal]");
-  const video = modalsEl.querySelector("[data-cold-scan-video]");
-  if (!modal || !video) return;
-  try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-  } catch {
-    deps.showToast?.("Camera unavailable — use Paste kpub.");
-    return;
-  }
-  video.srcObject = scanStream;
-  modal.hidden = false;
-  const grab = document.createElement("canvas");
-  const ctx = grab.getContext("2d", { willReadFrequently: true });
-  const tick = () => {
-    if (!scanStream) return;
-    if (video.readyState >= 2 && video.videoWidth > 0) {
-      grab.width = video.videoWidth;
-      grab.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-      const image = ctx.getImageData(0, 0, grab.width, grab.height);
-      const code = jsQR(image.data, image.width, image.height, { inversionAttempts: "dontInvert" });
-      const value = code?.data?.trim();
-      if (value) {
-        stopScan();
-        beginImport(value);
-        return;
-      }
-    }
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
-
-function stopScan() {
-  scanStream?.getTracks().forEach((track) => track.stop());
-  scanStream = null;
-  const modal = modalsEl?.querySelector("[data-cold-scan-modal]");
-  if (modal) modal.hidden = true;
+  const value = await scanQrCode({
+    title: "Scan a kpub",
+    hint: "Line the kpub QR code up inside the square",
+    manualTitle: "Enter the kpub",
+    manualLabel: "kpub",
+    manualPlaceholder: "kpub...",
+    manualHint: "Paste the kpub exported from your KasSigner device. This contains no private key material.",
+    mono: true,
+    validate: (candidate) => (validateKpub(candidate)
+      ? null
+      : "That is not a valid Kaspa extended public key (kpub)."),
+  });
+  if (value) beginImport(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -2043,7 +2031,7 @@ export function refreshColdStorage() {
 }
 
 export function resetColdStorageForAccount() {
-  stopScan();
+  closeActiveScanner();
   closeSendFlow();
   finishInputModal(null);
   finishConfirmModal(false);
