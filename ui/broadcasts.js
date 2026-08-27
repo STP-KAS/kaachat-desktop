@@ -1094,6 +1094,8 @@ export function initBroadcasts(dependencies) {
   // The in-room retention banner was removed for iOS parity (the room reads clean; the 30-day
   // rule is stated beside the Popular header instead). Its markup still lives in index.html —
   // drop the node so it can never render. Safe to delete the element from index.html later.
+  // The banner markup is gone from index.html, but this is a PWA: a service-worker-cached
+  // old shell can still carry it, so strip it at runtime too.
   document.querySelector("[data-broadcast-room-banner]")?.remove();
   composerInput = document.querySelector("[data-broadcast-input]");
   sendBtn = document.querySelector("[data-broadcast-send]");
