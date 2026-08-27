@@ -4,6 +4,7 @@ import { initKaPosts, refreshKaPostsFeed, resetKaPostsForAccount, openKaPostFrom
 import { initBroadcasts, refreshBroadcasts, resetBroadcastsForAccount, stopBroadcastPolling, openBroadcastChannelFromNotification } from "./broadcasts.js";
 import { initPortfolio, refreshPortfolio, resetPortfolioForAccount } from "./portfolio.js";
 import { initColdStorage, refreshColdStorage, resetColdStorageForAccount, listColdWatchedAddresses } from "./coldstorage.js";
+import { scanKaspaAddress } from "./qr-scan.js";
 import { initNextcloud, resetNextcloudForAccount, isNextcloudMediaSendActive, uploadNextcloudMedia, isNextcloudConnected, syncNextcloudContacts } from "./nextcloud.js";
 import { initSwaps, refreshSwaps, resetSwapsForAccount } from "./swaps.js";
 import { sealBackupEnvelope, openBackupEnvelope } from "./backup-crypto.js";
@@ -7489,6 +7490,19 @@ sendKaspaPasteButton?.addEventListener("click", async () => {
   } catch { showCopyToast("Clipboard unavailable — paste manually."); }
 });
 
+const sendKaspaScanButton = document.querySelector("[data-send-kaspa-scan]");
+sendKaspaScanButton?.addEventListener("click", async () => {
+  const scanned = await scanKaspaAddress({
+    title: "Scan a recipient code",
+    hint: "Point the camera at the address QR code you want to send to.",
+  });
+  const recipient = document.querySelector("[data-send-kaspa-recipient]");
+  if (!scanned || !recipient) return;
+  // Same event the paste path fires, so the address check and fee preview both update.
+  recipient.value = scanned;
+  recipient.dispatchEvent(new Event("input"));
+});
+
 // Reset the extra controls and (re)load price + balance/UTXOs each time the modal opens.
 function resetSendKaspaExtras() {
   sendKaspaUnit = "kas";
@@ -11173,8 +11187,16 @@ contactImportFile?.addEventListener("change", async () => {
   }
 });
 
-contactScanButton?.addEventListener("click", () => {
-  setCreateChatError("QR scanning will be added in a later step.");
+contactScanButton?.addEventListener("click", async () => {
+  const scanned = await scanKaspaAddress({
+    title: "Scan a contact code",
+    hint: "Point the camera at a KaChat address QR code.",
+  });
+  if (!scanned || !contactAddressInput) return;
+  contactAddressInput.value = scanned;
+  // Same path typing takes, so KNS resolution and validation still run.
+  contactAddressInput.dispatchEvent(new Event("input", { bubbles: true }));
+  contactAddressInput.focus();
 });
 
 contactForm.addEventListener("submit", async (event) => {
@@ -17798,9 +17820,15 @@ groupAddressImportFile?.addEventListener("change", async () => {
     setGroupAddressStatus(`<span class="create-chat-status-bad">✕ ${escapeHtml(error?.message || "Could not read that file")}</span>`);
   }
 });
-groupAddressScanButton?.addEventListener("click", () => {
-  // Matches the 1:1 create-chat flow: camera QR scanning is not wired on desktop yet.
-  setGroupAddressStatus('<span class="create-chat-status-muted">QR scanning is available on the mobile apps.</span>');
+groupAddressScanButton?.addEventListener("click", async () => {
+  const scanned = await scanKaspaAddress({
+    title: "Scan a member's code",
+    hint: "Point the camera at the address QR code of the person you want to add.",
+  });
+  if (!scanned || !groupAddressInput) return;
+  groupAddressInput.value = scanned;
+  groupAddressInput.dispatchEvent(new Event("input", { bubbles: true }));
+  groupAddressInput.focus();
 });
 // Collapsible section toggles.
 groupMembersToggle?.addEventListener("click", () => {
