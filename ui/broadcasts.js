@@ -12,6 +12,7 @@ import {
   LANGUAGE_BROADCAST_CHANNELS,
   broadcastLanguageDisplayName,
   fetchBroadcastHistory,
+  hasBroadcastIndexer,
   isIndexedBroadcastChannel,
   isValidBroadcastChannel,
   normalizeBroadcastChannel,
@@ -21,6 +22,7 @@ import {
 const CHANNELS_KEY = "kachat-broadcast-channels-v1";        // account-scoped: ["name", ...]
 const HIDDEN_KEY = "kachat-broadcast-hidden-v1";            // account-scoped: { [channel]: [address, ...] }
 const NOTIFY_KEY = "kachat-broadcast-notify-v1";            // account-scoped: { [channel]: true } — the bell
+const LISTEN_KEY = "kachat-broadcast-listen-v1";            // account-scoped: { [channel]: true } — always-listen
 const RETENTION_KEY = "kachat-broadcast-retention-v1";      // account-scoped: { [channel]: days } (0/absent = forever, own channels only)
 const CACHE_KEY = "kachat-broadcast-messages-cache-v1";     // GLOBAL: public chain data, account-agnostic
 const REACTIONS_KEY = "kachat-broadcast-reactions-cache-v1"; // GLOBAL: public chain data, account-agnostic
@@ -36,6 +38,13 @@ let joinedChannels = [];
 let hiddenByRoom = {};
 let notifyByChannel = {};    // { [channel]: true } — the bell: OS pings for new messages
 let retentionByChannel = {}; // { [channel]: days } — own channels only; indexed rooms are fixed 30-day
+// { [channel]: true } — always-listen, own channels only. Keeps a custom room's live block
+// scan running while its screen is closed (iOS BroadcastChannel.alwaysListen). Curated rooms
+// deliberately have no toggle: they are indexer-backed, so there is nothing to keep alive.
+let listenByChannel = {};
+// True while the Broadcasts tab is the visible tab. An open room only counts as "wanted"
+// (and only polls) while its screen is actually on screen.
+let tabVisible = false;
 // "Other Languages" disclosure under Popular. Collapsed by default: eleven language rooms
 // would bury the two Popular rooms and the user's own channels under a wall of list.
 let languagesExpanded = false;
@@ -68,6 +77,9 @@ function loadState() {
   try {
     retentionByChannel = JSON.parse(localStorage.getItem(deps.accountScopedKey(RETENTION_KEY)) || "{}") || {};
   } catch { retentionByChannel = {}; }
+  try {
+    listenByChannel = JSON.parse(localStorage.getItem(deps.accountScopedKey(LISTEN_KEY)) || "{}") || {};
+  } catch { listenByChannel = {}; }
   try {
     messageCache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}") || {};
   } catch { messageCache = {}; }
@@ -118,6 +130,81 @@ function saveNotify() {
 
 function saveRetention() {
   localStorage.setItem(deps.accountScopedKey(RETENTION_KEY), JSON.stringify(retentionByChannel));
+}
+
+function saveListen() {
+  localStorage.setItem(deps.accountScopedKey(LISTEN_KEY), JSON.stringify(listenByChannel));
+}
+
+// ---------------------------------------------------------------------------
+// Live block scanning (custom rooms)
+//
+// The broadcast indexer only tracks the curated rooms, so a user-created room has no
+// history anywhere: its only delivery path is watching the chain live. The engine
+// subscribes to the node's block-added notifications and hands back rows in the exact
+// shape `fetchBroadcastHistory` returns, so both paths land in `mergeMessages` and dedupe
+// by txId against the same cache. Live only, by construction - nothing backfills.
+// ---------------------------------------------------------------------------
+
+/** True for a room the user asked to keep listening to with its screen closed. */
+function alwaysListening(channel) {
+  return Boolean(listenByChannel[channel]) && !isIndexedBroadcastChannel(channel);
+}
+
+/**
+ * The rooms that justify the block stream right now - iOS `BroadcastService.wantedChannels`:
+ * the room whose screen is open, plus every always-listen room. Nothing else, so an idle app
+ * does no block work at all.
+ *
+ * Indexer-backed rooms are then dropped, because they already have a service watching the
+ * chain 24/7 plus an 8s poll while open: streaming every block for them would be pure
+ * duplicate cost. If the user clears the broadcast indexer, they stay in - then the block
+ * stream is their only live path too.
+ */
+function scanWantedChannels() {
+  const wanted = new Set();
+  if (tabVisible && activeChannel) wanted.add(activeChannel);
+  for (const channel of Object.keys(listenByChannel)) {
+    if (alwaysListening(channel) && joinedChannels.includes(channel)) wanted.add(channel);
+  }
+  if (hasBroadcastIndexer()) {
+    for (const channel of [...wanted]) {
+      if (isIndexedBroadcastChannel(channel)) wanted.delete(channel);
+    }
+  }
+  return [...wanted];
+}
+
+/** Pushes the wanted set to the engine. Idempotent - the engine only starts/stops the
+ *  subscription when the set actually changes between empty and non-empty. */
+function syncScanWanted() {
+  if (!deps?.engine?.setBroadcastScanChannels) return;
+  try { deps.engine.setBroadcastScanChannels(scanWantedChannels()); }
+  catch (error) { deps.appendEngineLog?.(`Broadcast live scan update failed: ${error.message}`); }
+}
+
+/** Live hits from the block stream, already filtered to the wanted rooms by the engine.
+ *  Straight into `mergeMessages` — same store, same txId dedupe, same retention, same
+ *  render as the indexer rows. */
+function handleBroadcastBlockHits(hits) {
+  const byChannel = new Map();
+  for (const hit of hits || []) {
+    const channel = normalizeBroadcastChannel(hit?.channel);
+    if (!channel || !hit?.txId) continue;
+    // Deliberately NOT filtering hidden senders here: the indexer path stores them and
+    // filters at render time, so unhiding a user brings their messages back. Both paths must
+    // leave the store in the same state, so this one stores them too.
+    if (!byChannel.has(channel)) byChannel.set(channel, []);
+    byChannel.get(channel).push(hit);
+  }
+  let touched = false;
+  for (const [channel, rows] of byChannel) {
+    if (mergeMessages(channel, rows) > 0) {
+      touched = true;
+      if (activeChannel === channel) renderRoom();
+    }
+  }
+  if (touched) renderChannelList();
 }
 
 /** Effective retention cutoff for a channel: every indexer-backed room (featured + the curated
@@ -242,6 +329,24 @@ function mergeMessages(channel, rows) {
     if (reaction) {
       if (recordReaction(channel, row.txId, reaction, row.senderAddress || "", blockTime)) reactionsChanged = true;
       continue;
+    }
+    // Our own just-sent message can come back from the chain BEFORE `sendBroadcastText`
+    // rewrites its optimistic bubble from `pending-...` to the real txid — the live block
+    // scan is fast enough to win that race where the 8s indexer poll never did. Resolve the
+    // pending bubble in place instead of adding a second row for the same message (the later
+    // rewrite then finds no pending row and is a no-op).
+    if ((row.senderAddress || "") === deps.engine.address) {
+      const pending = existing.find((m) =>
+        m.status === "pending"
+        && m.senderAddress === deps.engine.address
+        && m.content === (row.content ?? ""));
+      if (pending) {
+        pending.txId = row.txId;
+        pending.blockTime = blockTime;
+        delete pending.status;
+        added += 1;
+        continue;
+      }
     }
     existing.push({
       txId: row.txId,
@@ -408,6 +513,20 @@ function bellButtonHtml(name) {
   return `<button class="broadcast-card-icon${on ? " active" : ""}" type="button" data-broadcast-notify="${deps.escapeHtml(name)}" title="${on ? "Notifications on" : "Notifications off"}" aria-label="Toggle notifications">${on ? BELL_ON_SVG : BELL_OFF_SVG}</button>`;
 }
 
+// Always-listen (own channels only): a broadcast antenna, filled with accent when on.
+// Curated rooms get no such control - they are indexer-backed, so there is nothing to keep
+// alive (same split iOS uses to hide the toggle for its indexed channels).
+const LISTEN_ON_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="11" r="2.4" fill="currentColor" stroke="none"/><path d="M8.5 7.5a5 5 0 0 0 0 7"/><path d="M15.5 7.5a5 5 0 0 1 0 7"/><path d="M5.8 4.8a9 9 0 0 0 0 12.4"/><path d="M18.2 4.8a9 9 0 0 1 0 12.4"/><path d="M12 13.4V21"/></svg>`;
+const LISTEN_OFF_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="11" r="2.4"/><path d="M8.5 7.5a5 5 0 0 0 0 7"/><path d="M15.5 7.5a5 5 0 0 1 0 7"/><path d="M12 13.4V21"/></svg>`;
+
+function listenButtonHtml(name) {
+  const on = alwaysListening(name);
+  const title = on
+    ? "Always listening. New messages arrive even with this room closed."
+    : "Listen in the background. Off means this room only receives while it is open.";
+  return `<button class="broadcast-card-icon${on ? " active" : ""}" type="button" data-broadcast-listen="${deps.escapeHtml(name)}" title="${title}" aria-label="Toggle background listening">${on ? LISTEN_ON_SVG : LISTEN_OFF_SVG}</button>`;
+}
+
 const GLOBE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"/></svg>`;
 const CHEVRON_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
 
@@ -421,6 +540,7 @@ function channelCardHtml(name, { indexed }) {
         <strong>#${deps.escapeHtml(name)}</strong>
       </button>
       ${bellButtonHtml(name)}
+      ${indexed ? "" : listenButtonHtml(name)}
       ${indexed ? "" : `<button class="broadcast-card-icon" type="button" data-broadcast-retention="${deps.escapeHtml(name)}" title="Message retention" aria-label="Message retention">${GEAR_SVG}</button>`}
       ${indexed ? "" : `<button class="broadcast-card-leave" type="button" data-broadcast-leave="${deps.escapeHtml(name)}">Leave</button>`}
     </div>`;
@@ -466,7 +586,10 @@ function renderChannelList() {
     ${languagesExpanded ? LANGUAGE_BROADCAST_CHANNELS.map((name) => languageCardHtml(name)).join("") : ""}
     <div class="broadcast-section-header broadcast-section-your">
       <span>Your Channels</span>
-      <button class="broadcast-join-toggle" type="button" data-broadcast-join-toggle aria-label="Join or create a channel">+</button>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span class="broadcast-section-note">Live only, while open or listening</span>
+        <button class="broadcast-join-toggle" type="button" data-broadcast-join-toggle aria-label="Join or create a channel">+</button>
+      </span>
     </div>
     ${own.length
       ? own.map((name) => channelCardHtml(name, { indexed: false })).join("")
@@ -731,7 +854,12 @@ function renderRoom() {
     if (messages.length === 0) {
       const empty = document.createElement("div");
       empty.className = "no-results-card";
-      empty.innerHTML = `<strong>No messages yet</strong><span>Be the first to post in #${deps.escapeHtml(activeChannel)}.</span>`;
+      // A custom room has no history service anywhere, so "empty" here means "nothing has
+      // been posted while you were watching" — say that plainly instead of leaving the room
+      // looking broken or as if history were still loading.
+      empty.innerHTML = isIndexedBroadcastChannel(activeChannel)
+        ? `<strong>No messages yet</strong><span>Be the first to post in #${deps.escapeHtml(activeChannel)}.</span>`
+        : `<strong>Listening for new messages</strong><span>#${deps.escapeHtml(activeChannel)} is a live room: messages appear here as they land on chain while it is open, or any time when background listening is on. There is no history to load.</span>`;
       roomBodyEl.append(empty);
     } else {
       // "Today"/"Yesterday"/date pill whenever the calendar day changes (iOS parity;
@@ -861,8 +989,16 @@ function openRoom(channel) {
   cancelBroadcastReply(); // a reply drafted in another room must not leak across
   renderRoom();
   updateConnectionDot();
-  backfillChannel(activeChannel, { quiet: true });
-  startPolling(activeChannel);
+  // Only the curated rooms have an indexer behind them. A custom room must never call it:
+  // it serves nothing for that channel, so the request is pure noise and a failure there
+  // would log a scary "backfill failed" for a room that was never meant to backfill.
+  if (isIndexedBroadcastChannel(activeChannel)) {
+    backfillChannel(activeChannel, { quiet: true });
+    startPolling(activeChannel);
+  } else {
+    stopPolling();
+  }
+  syncScanWanted();
 }
 
 function closeRoom() {
@@ -870,6 +1006,7 @@ function closeRoom() {
   cancelBroadcastReply();
   activeChannel = null;
   stopPolling();
+  syncScanWanted();
   renderRoom();
   renderChannelList();
 }
@@ -901,7 +1038,10 @@ function leaveChannel(name) {
   saveCache();
   delete reactionsCache[name];
   saveReactions();
+  delete listenByChannel[name];
+  saveListen();
   if (activeChannel === name) closeRoom();
+  syncScanWanted();
   renderChannelList();
 }
 
@@ -1057,9 +1197,11 @@ function renderHiddenUsersPanel() {
 // ---------------------------------------------------------------------------
 
 export function refreshBroadcasts() {
+  tabVisible = true;
   loadState();
   renderChannelList();
   if (activeChannel) renderRoom();
+  syncScanWanted();
 }
 
 export function resetBroadcastsForAccount() {
@@ -1067,12 +1209,18 @@ export function resetBroadcastsForAccount() {
   stopPolling();
   activeChannel = null;
   loadState();
+  syncScanWanted();
   renderChannelList();
   renderRoom();
 }
 
+/** Called when the Broadcasts tab stops being the visible tab. The open room stops
+ *  polling AND stops counting as wanted; always-listen rooms keep their block scan. */
 export function stopBroadcastPolling() {
   stopPolling();
+  if (!deps) return;
+  tabVisible = false;
+  syncScanWanted();
 }
 
 /** Deep-open a channel's room from OUTSIDE this module (the global bell center). */
@@ -1110,6 +1258,11 @@ export function initBroadcasts(dependencies) {
   updateVoiceButtonVisibility();
 
   deps.engine.onConnectionState?.(() => updateConnectionDot());
+  // Live block scanning: rows arrive in the indexer's row shape and go through the same
+  // mergeMessages dedupe/retention/render path, so a message seen by both paths is stored once.
+  deps.engine.onBroadcastBlockHits?.(handleBroadcastBlockHits);
+  // Always-listen rooms must start scanning at launch, before the tab is ever opened.
+  syncScanWanted();
 
   document.querySelector("[data-broadcast-join]")?.addEventListener("click", () => {
     joinChannel(joinInput?.value || "");
@@ -1184,6 +1337,25 @@ export function initBroadcasts(dependencies) {
         deps.showToast?.(`Notifications on for #${name}. You will be notified of every new message.`);
       }
       saveNotify();
+      renderChannelList();
+      return;
+    }
+
+    // Always-listen (own channels): keep this room's live block scan running with its screen
+    // closed. Off, a custom room only receives while you are looking at it.
+    const listen = event.target.closest("[data-broadcast-listen]");
+    if (listen) {
+      event.stopPropagation();
+      const name = listen.dataset.broadcastListen;
+      if (listenByChannel[name]) {
+        delete listenByChannel[name];
+        deps.showToast?.(`#${name} now receives only while the room is open.`);
+      } else {
+        listenByChannel[name] = true;
+        deps.showToast?.(`Listening to #${name} in the background. New messages arrive with the room closed.`);
+      }
+      saveListen();
+      syncScanWanted();
       renderChannelList();
       return;
     }

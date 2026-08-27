@@ -10,6 +10,7 @@ import { loadKasiaCipher, isKasiaCipherLoaded, encryptKasiaMessage, decryptKasia
 import { requireKaspa, NETWORK_ID } from "./utils.js";
 import { getEndpoint } from "./endpoints.js";
 import { queryGroupMessages, queryGroupControlByRecipient, queryGroupControlBySender } from "./group-indexer.js";
+import { extractBroadcastHitsFromBlock, normalizeBroadcastChannel } from "./broadcasts.js";
 import {
   KNS_DEFAULT_MAINNET_URL,
   normalizeDomainName as knsNormalizeDomainName,
@@ -86,6 +87,218 @@ export class KaspaEngine {
       lastError: "",
       updatedAt: Date.now(),
     };
+    // Live broadcast block scanning (see the block-scan section below). Empty wanted set =
+    // no subscription at all, so an idle app does zero block work.
+    this.blockScanChannels = new Set();
+    this.blockScanListeners = new Set();
+    this.blockScanRpc = null;
+    this.blockScanHandler = null;
+    this.blockScanReconnectHandler = null;
+    this.blockScanStartPromise = null;
+    this.blockScanUnusableLogged = false;
+    this.blockScanState = {
+      status: "idle",   // idle | starting | scanning | error | unsupported
+      channels: [],
+      endpoint: "",
+      lastBlockAt: 0,
+      lastHitAt: 0,
+      lastError: "",
+      updatedAt: Date.now(),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Live broadcast block scanning
+  //
+  // The broadcast indexer only serves the curated rooms. A user-created room has no
+  // history service anywhere, so its only delivery path is the chain itself: subscribe to
+  // the node's block-added notifications and pick broadcast payloads out of the blocks as
+  // they land (iOS BroadcastService does exactly this). LIVE ONLY by construction - the
+  // stream carries what is being mined now, never history.
+  //
+  // Gated by a wanted set the UI owns (`setBroadcastScanChannels`): rooms whose screen is
+  // open plus rooms with always-listen on. Empty set => unsubscribed and detached.
+  // -------------------------------------------------------------------------
+
+  /** Subscribe to live broadcast hits. The listener gets an array of rows shaped exactly
+   *  like the indexer's (`{ txId, channel, senderAddress, content, blockTime }`), already
+   *  filtered to the wanted channels. Returns an unsubscribe function. */
+  onBroadcastBlockHits(listener) {
+    if (typeof listener !== "function") return () => {};
+    this.blockScanListeners.add(listener);
+    return () => this.blockScanListeners.delete(listener);
+  }
+
+  broadcastScanSnapshot() {
+    return { ...this.blockScanState, active: Boolean(this.blockScanHandler && this.blockScanRpc) };
+  }
+
+  setBroadcastScanState(patch = {}) {
+    this.blockScanState = { ...this.blockScanState, ...patch, updatedAt: Date.now() };
+  }
+
+  /** True when this WASM build can stream blocks at all. Checked before promising the UI
+   *  anything: a build without block-added notifications simply cannot do live rooms. */
+  supportsBroadcastBlockScan() {
+    const rpc = this.rpc;
+    if (!rpc) return typeof this.kaspa?.RpcClient?.prototype?.subscribeBlockAdded === "function";
+    return typeof rpc.subscribeBlockAdded === "function" && typeof rpc.addEventListener === "function";
+  }
+
+  /** Replaces the wanted set. Starts the subscription when it becomes non-empty and tears it
+   *  down when it becomes empty. Idempotent - safe to call on every UI state change. */
+  setBroadcastScanChannels(channels = []) {
+    const next = new Set((Array.isArray(channels) ? channels : [])
+      .map((name) => normalizeBroadcastChannel(name))
+      .filter(Boolean));
+    const same = next.size === this.blockScanChannels.size
+      && [...next].every((name) => this.blockScanChannels.has(name));
+    this.blockScanChannels = next;
+    this.setBroadcastScanState({ channels: [...next] });
+    if (same) return this.broadcastScanSnapshot();
+    if (next.size === 0) {
+      queueMicrotask(() => { this.detachBroadcastBlockScan().catch(() => {}); });
+    } else if (!this.blockScanHandler || this.blockScanRpc !== this.rpc) {
+      queueMicrotask(() => { this.startBroadcastBlockScan().catch(() => {}); });
+    }
+    return this.broadcastScanSnapshot();
+  }
+
+  /** A block carried a broadcast payload we could not turn into a message row. That is the
+   *  one way live rooms can fail silently, so say it out loud - once per session, since it
+   *  would otherwise repeat on every block. */
+  reportUnusableBroadcastPayload(reason) {
+    if (this.blockScanUnusableLogged) return;
+    this.blockScanUnusableLogged = true;
+    const message = `Live broadcast scan read a broadcast payload it could not use: ${reason}.`;
+    this.log(message);
+    this.setBroadcastScanState({ lastError: message });
+  }
+
+  /** Off the hot path: one block in, zero or more hits out, fanned out to the listeners.
+   *  Almost every block has no broadcast payload, so this returns after a cheap prefix scan. */
+  handleBlockAddedEvent(event) {
+    if (this.blockScanChannels.size === 0) return;
+    this.blockScanState.lastBlockAt = Date.now();
+    let hits = [];
+    try {
+      hits = extractBroadcastHitsFromBlock(this.kaspa, event, {
+        networkId: NETWORK_ID,
+        onUnusable: (reason) => this.reportUnusableBroadcastPayload(reason),
+      });
+    } catch (error) {
+      this.setBroadcastScanState({ lastError: error?.message || String(error) });
+      return;
+    }
+    if (hits.length === 0) return;
+    const wanted = hits.filter((hit) => this.blockScanChannels.has(hit.channel));
+    if (wanted.length === 0) return;
+    this.setBroadcastScanState({ status: "scanning", lastHitAt: Date.now(), lastError: "" });
+    for (const listener of this.blockScanListeners) {
+      try { listener(wanted); } catch { /* a bad listener must not kill the stream */ }
+    }
+  }
+
+  async startBroadcastBlockScan() {
+    if (this.blockScanChannels.size === 0) return null;
+    if (!this.kaspa) return null;
+    if (this.blockScanStartPromise) return this.blockScanStartPromise;
+
+    this.blockScanStartPromise = (async () => {
+      // Never reject: this runs from microtasks and lifecycle hooks, and the node being
+      // momentarily unreachable is normal (the heartbeat backstop retries).
+      let rpc = null;
+      try { rpc = await this.connect(); }
+      catch (error) {
+        this.setBroadcastScanState({ status: "error", lastError: error?.message || String(error) });
+        return null;
+      }
+      if (typeof rpc?.subscribeBlockAdded !== "function" || typeof rpc?.addEventListener !== "function") {
+        this.setBroadcastScanState({
+          status: "unsupported",
+          lastError: "This Rusty Kaspa WASM build has no block-added notifications, so live-only rooms cannot receive messages.",
+        });
+        this.log("Broadcast live scan unavailable: this WASM build exposes no block-added subscription.");
+        return null;
+      }
+      // Same node, listeners still attached: just make sure the node-side subscription is
+      // live (re-sending it is harmless and covers a socket that reconnected under us).
+      if (this.blockScanRpc === rpc && this.blockScanHandler) {
+        try { await rpc.subscribeBlockAdded(); this.setBroadcastScanState({ status: "scanning", lastError: "" }); }
+        catch (error) { this.setBroadcastScanState({ status: "error", lastError: error?.message || String(error) }); }
+        return rpc;
+      }
+
+      await this.detachBroadcastBlockScan({ keepStatus: true });
+      this.setBroadcastScanState({ status: "starting", endpoint: rpc.url || "", lastError: "" });
+      const handler = (event) => this.handleBlockAddedEvent(event);
+      // The WASM client can reconnect its own socket without this.rpc ever changing, which
+      // silently drops the node-side subscription. Re-send it whenever the socket comes up.
+      const reconnectHandler = () => {
+        if (this.blockScanChannels.size === 0) return;
+        Promise.resolve()
+          .then(() => rpc.subscribeBlockAdded())
+          .then(() => this.setBroadcastScanState({ status: "scanning", lastError: "" }))
+          .catch((error) => this.setBroadcastScanState({ status: "error", lastError: error?.message || String(error) }));
+      };
+      try {
+        rpc.addEventListener("block-added", handler);
+        rpc.addEventListener("connect", reconnectHandler);
+        this.blockScanRpc = rpc;
+        this.blockScanHandler = handler;
+        this.blockScanReconnectHandler = reconnectHandler;
+        await rpc.subscribeBlockAdded();
+        this.setBroadcastScanState({ status: "scanning", endpoint: rpc.url || "", lastError: "" });
+        this.log(`Live broadcast scan on for ${this.blockScanChannels.size} room(s) via ${rpc.url || "the connected node"}`);
+        return rpc;
+      } catch (error) {
+        await this.detachBroadcastBlockScan({ keepStatus: true });
+        this.setBroadcastScanState({ status: "error", lastError: error?.message || String(error) });
+        this.log("Live broadcast scan failed to start:", error?.message || error);
+        return null;
+      }
+    })();
+
+    try { return await this.blockScanStartPromise; }
+    finally { this.blockScanStartPromise = null; }
+  }
+
+  /** Removes the listeners and unsubscribes on the node. Keeps the wanted set, so a
+   *  reconnect can bring the scan straight back. */
+  async detachBroadcastBlockScan({ keepStatus = false } = {}) {
+    const rpc = this.blockScanRpc;
+    const handler = this.blockScanHandler;
+    const reconnectHandler = this.blockScanReconnectHandler;
+    this.blockScanRpc = null;
+    this.blockScanHandler = null;
+    this.blockScanReconnectHandler = null;
+    if (rpc && handler) {
+      try { rpc.removeEventListener("block-added", handler); } catch { /* rpc already freed */ }
+      try { if (reconnectHandler) rpc.removeEventListener("connect", reconnectHandler); } catch { /* ignore */ }
+      try { await rpc.unsubscribeBlockAdded(); } catch { /* node already gone */ }
+    }
+    if (!keepStatus) this.setBroadcastScanState({ status: "idle", endpoint: "" });
+  }
+
+  /** Re-attaches the scan to whatever node is primary now. Called after every reconnect and
+   *  failover, plus as a heartbeat backstop. */
+  async rebuildBroadcastBlockScan() {
+    if (this.blockScanChannels.size === 0) {
+      await this.detachBroadcastBlockScan();
+      return null;
+    }
+    if (this.blockScanRpc && this.blockScanRpc !== this.rpc) {
+      await this.detachBroadcastBlockScan({ keepStatus: true });
+    }
+    try { return await this.startBroadcastBlockScan(); }
+    catch (error) { this.log("Live broadcast scan rebuild failed:", error?.message || error); return null; }
+  }
+
+  /** Clears the wanted set and tears the subscription down. */
+  async stopBroadcastBlockScan() {
+    this.blockScanChannels = new Set();
+    this.setBroadcastScanState({ channels: [] });
+    await this.detachBroadcastBlockScan();
   }
 
 
@@ -297,6 +510,7 @@ export class KaspaEngine {
         });
         queueMicrotask(() => this.ensureStandby());
         queueMicrotask(() => this.rebuildWalletSubscription());
+        queueMicrotask(() => { this.rebuildBroadcastBlockScan().catch(() => {}); });
         return this.rpc;
       }
 
@@ -308,6 +522,7 @@ export class KaspaEngine {
       try {
         const rpc = await this.connect({ force: false });
         await this.rebuildWalletSubscription();
+        await this.rebuildBroadcastBlockScan();
         recordFailover({ from: failedEndpoint, to: rpc?.url || "", success: true });
         return rpc;
       } catch (error) {
@@ -459,9 +674,18 @@ export class KaspaEngine {
         // backup to promote). Keep trying to reconnect so we recover automatically the
         // moment a healthy node is reachable again, instead of staying dark.
         if (!this.address) return;
-        try { await this.connect({ force: true }); await this.rebuildWalletSubscription(); }
-        catch { /* still unreachable; retry on the next tick */ }
+        try {
+          await this.connect({ force: true });
+          await this.rebuildWalletSubscription();
+          await this.rebuildBroadcastBlockScan();
+        } catch { /* still unreachable; retry on the next tick */ }
         return;
+      }
+      // Backstop for the live broadcast scan: any path that swapped the primary out from
+      // under us (or a start that failed while the node was down) is caught here, so a
+      // wanted room can never be left silently unwatched.
+      if (this.blockScanChannels.size > 0 && this.blockScanRpc !== this.rpc && !this.blockScanStartPromise) {
+        queueMicrotask(() => { this.rebuildBroadcastBlockScan().catch(() => {}); });
       }
       const [primaryHealthy, standbyHealthy] = await Promise.all([
         probeRpc(this.rpc),
@@ -530,6 +754,9 @@ export class KaspaEngine {
       this.immediateFailoverTimer = null;
     }
     await this.stopWalletSubscription();
+    // Detach only: the wanted set survives so a later reconnect brings the scan back
+    // without the UI having to re-declare it.
+    await this.detachBroadcastBlockScan();
     await disconnectRpc(this.rpc);
     await disconnectRpc(this.standbyRpc);
     this.rpc = null;
