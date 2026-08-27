@@ -72,9 +72,9 @@ let view = "main";         // "main" | "price" | "value" — which portfolio scr
 // ---------------------------------------------------------------------------
 // The preference itself lives in ui/app.js (Settings > Customization > Currency), which owns the
 // picker, persists the choice under this key and fires `kachat:currency-changed` on every change.
-// Portfolio isn't handed a currency accessor in its deps (unlike Cold Storage, which gets
-// `currencyCode`/`currencySymbol`), so it reads the same key directly and prefers a deps accessor
-// if one is ever added. Symbols mirror app.js's CURRENCIES table, which isn't exported.
+// Portfolio is handed `currencyCode`/`currencySymbol` accessors and prefers them; the direct
+// key read and the symbol table below stay as the fallback for wiring that predates them
+// (app.js's own CURRENCIES table is not exported).
 const CURRENCY_PREF_KEY = "kachat-currency-v1";
 const CURRENCY_SYMBOLS = {
   usd: "$", eur: "€", gbp: "£", jpy: "¥", cny: "CN¥", aud: "A$", cad: "C$", chf: "CHF ",

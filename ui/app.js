@@ -16013,7 +16013,13 @@ queueMicrotask(async () => {
     },
   });
 
-  initPortfolio({ engine, escapeHtml, accountScopedKey, showToast: showCopyToast });
+  initPortfolio({
+    engine, escapeHtml, accountScopedKey, showToast: showCopyToast,
+    // Read straight from the live selection so portfolio does not duplicate the
+    // currency table (it falls back to the stored key when these are absent).
+    currencyCode: () => selectedCurrency.toUpperCase(),
+    currencySymbol: () => String(currencyMeta().symbol || "").trim(),
+  });
   initColdStorage({
     engine, escapeHtml, shortAddress, accountScopedKey,
     showToast: showCopyToast, appendEngineLog,
@@ -16031,6 +16037,13 @@ queueMicrotask(async () => {
     accountScopedKey, escapeHtml, appendEngineLog,
     showToast: showCopyToast,
     getActiveConversationId: () => activeConversationId,
+    // A real re-render for the open thread. Without this the module falls back to
+    // dispatching synthetic clicks at the sidebar row, which also clears composer state.
+    refreshActiveConversationView: () => {
+      if (!activeConversationId) return;
+      const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
+      if (conversationEntry) renderMessages(conversationEntry);
+    },
     queueConversationMessage,
     // "Send from Nextcloud" staging: the picked file's share link lands in the composer for
     // review instead of auto-sending — the user presses send themselves.

@@ -590,8 +590,18 @@ function noteLocalActivity() {
   armSyncDebounce(currentSyncDebounceMs());
 }
 
+// Explicit signal from the host app for every message that lands, the desktop equivalent of
+// iOS's noteMessageActivity. Exact, unlike the DOM fingerprint below.
+export function noteMessageActivity() {
+  noteLocalActivity();
+}
+
 function startActivityWatch() {
   if (activityObserver) return;
+  // With a real signal wired up, the DOM fingerprint is redundant - and it is the weaker
+  // detector (it can miss the same text sent twice in a chat that is not open, and can fire
+  // on an unrelated list re-render), so prefer the signal alone.
+  if (deps?.hasMessageActivitySignal) return;
   const chatList = document.querySelector("[data-chat-list]");
   const messageArea = document.querySelector("[data-message-area]");
   if (!chatList && !messageArea) return;
@@ -748,6 +758,12 @@ async function checkForRemoteChangeAndImport() {
  * natural render.
  */
 function refreshOpenConversationView() {
+  // The host app can re-render the open thread directly; that is exact and side-effect free.
+  // The synthetic-click path below is the fallback for wiring that predates the dep.
+  if (typeof deps?.refreshActiveConversationView === "function") {
+    deps.refreshActiveConversationView();
+    return;
+  }
   const activeId = deps?.getActiveConversationId?.();
   if (!activeId) return;
   const selector = `[data-chat-list] [data-conversation-id="${CSS.escape(String(activeId))}"]`;
