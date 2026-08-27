@@ -3972,6 +3972,18 @@ function saveAddrActivityHandled(list) {
   } catch {}
 }
 
+// Claims a txId for a path that already told the user about it (a chat payment
+// bubble from a payment_notice), so the balance sweep doesn't announce the same
+// money a second time as a wallet notification.
+function markAddressActivityTxHandled(txid) {
+  const clean = String(txid || "").trim();
+  if (!clean) return;
+  const handled = loadAddrActivityHandled();
+  if (handled.includes(clean)) return;
+  handled.push(clean);
+  saveAddrActivityHandled(handled);
+}
+
 // Every revealed spending-chain address (0...maxIndex) for the active account.
 function spendingWatchedAddressList() {
   if (!engine.address || !activeAccountMnemonic() || !engine.kaspa) return [];
@@ -3986,9 +3998,11 @@ function spendingWatchedAddressList() {
 
 // Addresses whose receives should NOTIFY, mapped to a wording kind: watched
 // spending + cold addresses, minus the chatting address (its receives are chat
-// classified) and minus currently offered payment-pool reservation addresses
-// (payments to those render as chat bubbles via payment_notice — notifying
-// here too would double up).
+// classified). Payment-pool reservation addresses STAY in the map, re-tagged so
+// the notification names them for what they are: a payment into one of them is
+// only ever announced by the payer's payment_notice, and that envelope can fail
+// to arrive (payer's send failed, older client, raced a revoke) — dropping these
+// from the watch too would leave funds nobody ever hears about.
 function addressActivityWatchedMap() {
   const map = new Map();
   for (const address of spendingWatchedAddressList()) map.set(address, "spending");
@@ -3996,7 +4010,9 @@ function addressActivityWatchedMap() {
     if (!map.has(entry.address)) map.set(entry.address, `cold:${entry.label}`);
   }
   map.delete(engine.address || "");
-  for (const offered of paymentPoolOfferedAddresses()) map.delete(offered);
+  for (const offered of paymentPoolOfferedAddresses()) {
+    if (offered && offered !== engine.address) map.set(offered, "pool");
+  }
   return map;
 }
 
@@ -4012,9 +4028,9 @@ function ownInputAddressSet() {
 
 function describeActivityAddress(kind, address) {
   const shortA = shortAddress(address);
-  return String(kind || "").startsWith("cold:")
-    ? `Cold storage (${String(kind).slice(5)}) ${shortA}`
-    : `Spending address ${shortA}`;
+  if (String(kind || "").startsWith("cold:")) return `Cold storage (${String(kind).slice(5)}) ${shortA}`;
+  if (kind === "pool") return `Chat privacy address ${shortA}`;
+  return `Spending address ${shortA}`;
 }
 
 function formatSompiForNotification(sompi) {
@@ -4082,8 +4098,18 @@ async function runAddressActivityCheck() {
     const isFirstRun = Object.keys(baselines).length === 0;
     let changed = false;
     const increases = [];
+    // Funded-reservation detection (iOS handlePoolReservationUtxoAdditions, which
+    // rides the utxosChanged stream — this batched balance read is the desktop
+    // equivalent). Deliberately absolute (balance > 0) rather than baseline-diffed
+    // and deliberately outside the notification feature flag: a reservation holding
+    // money is funded whether or not a diff caught the moment it arrived, whether or
+    // not the payer's payment_notice ever lands, and whether or not Address Activity
+    // notifications are switched on.
+    const offeredPoolAddresses = new Set(paymentPoolOfferedAddresses());
+    const fundedPoolAddresses = [];
     for (const [address, balance] of balances) {
       const balanceText = balance.toString();
+      if (balance > 0n && offeredPoolAddresses.has(address)) fundedPoolAddresses.push(address);
       const previous = baselines[address];
       if (previous === undefined) {
         // Never-tracked address (feature install, newly revealed slot, fresh
@@ -4101,6 +4127,7 @@ async function runAddressActivityCheck() {
       baselines[address] = balanceText;
     }
     if (changed) saveAddrActivityBaselines(baselines);
+    for (const address of fundedPoolAddresses) notePoolReservationFundedOnChain(address);
     if (increases.length) await attributeAndNotifyAddressActivity(increases);
   } finally {
     addressActivityRunning = false;
@@ -4192,8 +4219,15 @@ window.setInterval(() => scheduleAddressActivityCheck(0), 180_000);
 
 const PAYMENT_POOL_STATE_KEY = "kachat-payment-pool-state-v1";
 const CHATS_PRIVACY_KEY = "kachat-chats-privacy-v1"; // per-account: "1"/"0", default ON
-const POOL_OFFER_BATCH_SIZE = 5;
-const POOL_LOW_WATER_MARK = 2;
+// How many fresh addresses each addr_pool offer carries — also the target the
+// auto-replenish keeps live per contact (iOS PaymentPoolStore.offerBatchSize).
+// Deliberately small: every reservation burns an index against the 50-per-contact
+// lifetime cap.
+const POOL_OFFER_BATCH_SIZE = 2;
+// Ask for more once the unused remainder of a contact's pool drops to this or
+// lower. With a pool of 2 the request is a backstop for a lost replenish top-up,
+// so it fires only after a consumption actually leaves a single unused address.
+const POOL_LOW_WATER_MARK = 1;
 const POOL_MAX_STORED = 20;
 const POOL_MAX_HANDLED_TXIDS = 500;
 const POOL_REQUEST_THROTTLE_MS = 10 * 60 * 1000;
@@ -4207,7 +4241,7 @@ function loadPoolState() {
   try {
     const raw = JSON.parse(localStorage.getItem(accountScopedKey(PAYMENT_POOL_STATE_KEY)) || "{}") || {};
     return {
-      // contactAddress -> [{ address, index, offered, funded }] — MY reserved
+      // contactAddress -> [{ address, index, offered, funded, activeOffer }] — MY reserved
       // spending addresses offered to that contact. CRITICAL INVARIANT: an
       // address reserved for contact X is never offered to any other contact
       // and never re-offered; reserveFreshSpendingAddresses only hands out
@@ -4220,9 +4254,15 @@ function loadPoolState() {
       lastPoolRequestAt: raw.lastPoolRequestAt && typeof raw.lastPoolRequestAt === "object" ? raw.lastPoolRequestAt : {},
       lastPoolServeAt: raw.lastPoolServeAt && typeof raw.lastPoolServeAt === "object" ? raw.lastPoolServeAt : {},
       revokedContacts: Array.isArray(raw.revokedContacts) ? raw.revokedContacts.map(String) : [],
+      // Contacts who revoked OUR pool at THEM (incoming empty replace:true — their
+      // Chats Privacy went off). While set we never proactively offer or replenish:
+      // their active count is 0 by revocation, not by consumption. Cleared when they
+      // show renewed interest (addr_pool_request, a non-empty pool of theirs, or any
+      // successful offer of ours).
+      contactsRevokedAtUs: Array.isArray(raw.contactsRevokedAtUs) ? raw.contactsRevokedAtUs.map(String) : [],
     };
   } catch {
-    return { myReservations: {}, theirPools: {}, offeredContacts: [], handledEnvelopeTxIds: [], lastPoolRequestAt: {}, lastPoolServeAt: {}, revokedContacts: [] };
+    return { myReservations: {}, theirPools: {}, offeredContacts: [], handledEnvelopeTxIds: [], lastPoolRequestAt: {}, lastPoolServeAt: {}, revokedContacts: [], contactsRevokedAtUs: [] };
   }
 }
 
@@ -4260,6 +4300,80 @@ function isReservedPoolAddress(poolState, address) {
     if ((entries || []).some((entry) => entry.address === address)) return true;
   }
   return false;
+}
+
+// ACTIVE (as opposed to the HISTORICAL `offered` flag above): the reservation is
+// part of a contact's CURRENT live pool. That narrower set drives the Address
+// Visibility lock and the row-menu Hide refusal — an address a contact may pay
+// into at any moment must stay visible to its owner. An entry leaves the set when
+// we revoke (Chats Privacy off), the contact revokes at us, a replace:true
+// re-offer supersedes it, or it gets funded; the row is an ordinary address again
+// from then on. `activeOffer` is optional for state written before this split:
+// nil means offered && never funded && contact not revoked by us, which is exactly
+// what "active" meant then (iOS PaymentPoolStore.activeOfferedReservationAddresses).
+function isActivePoolReservation(entry, contactAddress, poolState) {
+  if (entry?.activeOffer === true) return true;
+  if (entry?.activeOffer === false) return false;
+  return entry?.offered === true
+    && entry?.funded !== true
+    && !(poolState.revokedContacts || []).includes(contactAddress);
+}
+
+// [{ address, index, contactAddress }] for every reservation currently in a live pool.
+function activePoolReservationEntries() {
+  try {
+    const poolState = loadPoolState();
+    const list = [];
+    for (const [contactAddress, entries] of Object.entries(poolState.myReservations || {})) {
+      for (const entry of entries || []) {
+        if (isActivePoolReservation(entry, contactAddress, poolState)) {
+          list.push({ address: entry.address, index: entry.index, contactAddress });
+        }
+      }
+    }
+    return list;
+  } catch { return []; }
+}
+
+function activePoolReservationAddressSet() {
+  return new Set(activePoolReservationEntries().map((entry) => entry.address));
+}
+
+function activePoolReservationIndexSet() {
+  return new Set(activePoolReservationEntries()
+    .map((entry) => entry.index)
+    .filter((index) => Number.isInteger(index)));
+}
+
+// The contact a reservation belongs to, by address — routes a reservation funded
+// through the UTXO/balance watch back to the contact whose pool it came from.
+function poolReservationOwnerContact(address) {
+  const poolState = loadPoolState();
+  for (const [contactAddress, entries] of Object.entries(poolState.myReservations || {})) {
+    if ((entries || []).some((entry) => entry.address === address)) return contactAddress;
+  }
+  return null;
+}
+
+// Repair for reservations recorded under the old born-hidden design (and for any
+// index a user hid before it was offered): an address in an ACTIVE live pool can
+// never be hidden, so it leaves the hidden set. Scoped to the active set on
+// purpose — a reverted reservation (revoked, superseded, funded) is a normal
+// address again and stays however the user left it. Cheap; safe to call on every
+// address-screen render and after every offer.
+function unhideActivePoolReservations() {
+  try {
+    const active = activePoolReservationIndexSet();
+    if (!active.size) return false;
+    const spendingState = getSpendingState();
+    const hiddenSet = new Set(spendingState.hidden);
+    let unhidden = 0;
+    for (const index of active) if (hiddenSet.delete(index)) unhidden += 1;
+    if (!unhidden) return false;
+    saveSpendingState({ hidden: [...hiddenSet] });
+    appendEngineLog(`Un-hid ${unhidden} actively offered payment-pool address(es).`);
+    return true;
+  } catch { return false; }
 }
 
 // Wire parser for the three pool envelope types (PaymentPoolCodec.parse).
@@ -4386,27 +4500,47 @@ function enqueuePoolOperation(operation) {
 // (offered=false) before revealing new indices; replace:true offers may re-send
 // previously offered but never-funded reservations (post-revoke re-offer —
 // the recipient discarded them, re-sending creates no reuse and doesn't burn
-// five new indices per toggle cycle). All gates re-checked here, inside the
-// serialized operation, not just at call sites.
-async function reserveAndSendAddressPool(contact, { replace, toggleTransition = false } = {}) {
+// a fresh batch of indices per toggle cycle). All gates re-checked here, inside
+// the serialized operation, not just at call sites.
+//
+// `replenish: true` marks an automatic top-up triggered by a reservation getting
+// funded: it shares the toggle broadcasts' throttle exemption (60s gap instead of
+// the 10-minute throttle, reservation caps in full) and sends only the SHORTFALL
+// back up to POOL_OFFER_BATCH_SIZE fresh active addresses, recomputed here inside
+// the serialized operation so stacked triggers for the same funding collapse into
+// one send (or none).
+async function reserveAndSendAddressPool(contact, { replace, toggleTransition = false, replenish = false } = {}) {
   if (!engine.address || !contact?.address) return;
   if (!chatsPrivacyEnabled()) return;
   const contactAddress = contact.address;
   let poolState = loadPoolState();
+  // No offer of any kind to a contact who revoked our pool at them until they
+  // re-engage. The re-engagement lanes (their addr_pool_request, a non-empty pool
+  // of theirs) clear the marker before enqueueing, so they pass; everything else —
+  // lazy offers, toggle-on re-offers, replenishes — is blocked, including a revoke
+  // of theirs that lands between enqueue and execution.
+  if ((poolState.contactsRevokedAtUs || []).includes(contactAddress)) return;
   if (replace && poolState.offeredContacts.includes(contactAddress)) return;
-  if (!canServePoolOffer(contactAddress, { toggleTransition })) {
+  if (!canServePoolOffer(contactAddress, { toggleTransition: toggleTransition || replenish })) {
     appendEngineLog(`Pool offer to ${shortAddress(contactAddress)} suppressed by serve throttle/caps.`);
     return;
+  }
+
+  // Replenish sends only the shortfall; everything else sends a full batch.
+  let batchLimit = POOL_OFFER_BATCH_SIZE;
+  if (replenish) {
+    batchLimit = POOL_OFFER_BATCH_SIZE - activeFreshReservationCount(contactAddress);
+    if (batchLimit <= 0) return;
   }
 
   const reservations = poolState.myReservations[contactAddress] || [];
   let pending = replace
     ? reservations.filter((r) => r.funded !== true)
     : reservations.filter((r) => !r.offered);
-  if (pending.length > POOL_OFFER_BATCH_SIZE) pending = pending.slice(0, POOL_OFFER_BATCH_SIZE);
+  if (pending.length > batchLimit) pending = pending.slice(0, batchLimit);
 
   const lifetimeHeadroom = POOL_MAX_LIFETIME_RESERVATIONS - reservations.length;
-  const missing = Math.min(POOL_OFFER_BATCH_SIZE - pending.length, lifetimeHeadroom);
+  const missing = Math.min(batchLimit - pending.length, lifetimeHeadroom);
   if (missing > 0) {
     const fresh = reserveFreshSpendingAddresses(missing);
     if (!fresh.length && !pending.length) {
@@ -4414,14 +4548,14 @@ async function reserveAndSendAddressPool(contact, { replace, toggleTransition = 
       return;
     }
     if (fresh.length) {
-      // Pool reservations are internal plumbing: born HIDDEN so each offer batch doesn't
-      // flood the Manage Addresses list with 5 fresh "Unused" rows. markReservationFunded
-      // unhides one the moment it actually holds money.
-      const spendingState = getSpendingState();
-      const hiddenSet = new Set(spendingState.hidden);
-      for (const { index } of fresh) hiddenSet.add(index);
-      saveSpendingState({ hidden: [...hiddenSet] });
-      const entries = fresh.map(({ address, index }) => ({ address, index, offered: false, funded: false }));
+      // Pool reservations are born VISIBLE: they appear in Manage Addresses right
+      // away so the user can see exactly which of their addresses are held ready for
+      // a contact to pay into. Hiding them (the old design) meant a payment whose
+      // payment_notice never arrived landed on an address the user could not see
+      // anywhere. Fresh indices are past the revealed bound, so they are never in
+      // the hidden set to begin with; reservations recorded under the old design
+      // are repaired by unhideActivePoolReservations() once the send succeeds.
+      const entries = fresh.map(({ address, index }) => ({ address, index, offered: false, funded: false, activeOffer: false }));
       poolState = loadPoolState();
       const list = poolState.myReservations[contactAddress] || [];
       const known = new Set(list.map((r) => r.address));
@@ -4440,13 +4574,27 @@ async function reserveAndSendAddressPool(contact, { replace, toggleTransition = 
   poolState = loadPoolState();
   const list = poolState.myReservations[contactAddress] || [];
   const offeredNow = new Set(pending.map((r) => r.address));
-  for (const entry of list) if (offeredNow.has(entry.address)) entry.offered = true;
+  for (const entry of list) {
+    if (offeredNow.has(entry.address)) {
+      entry.offered = true;   // HISTORICAL, never cleared: stays watched and notice-renderable.
+      entry.activeOffer = true;
+    } else if (replace) {
+      // A replace batch IS the contact's whole live pool now — any other reservation
+      // still flagged active is superseded and reverts to an ordinary address row.
+      entry.activeOffer = false;
+    }
+  }
   poolState.myReservations[contactAddress] = list;
   if (!poolState.offeredContacts.includes(contactAddress)) poolState.offeredContacts.push(contactAddress);
   poolState.lastPoolServeAt[contactAddress] = Date.now();
   poolState.revokedContacts = poolState.revokedContacts.filter((a) => a !== contactAddress);
+  // A successful offer supersedes a standing revoked-at-us marker: the contact holds
+  // live addresses of ours again, so replenishes are meaningful again.
+  poolState.contactsRevokedAtUs = (poolState.contactsRevokedAtUs || []).filter((a) => a !== contactAddress);
   savePoolState(poolState);
-  appendEngineLog(`Offered ${pending.length} fresh pool addresses to ${shortAddress(contactAddress)} (replace=${replace === true}).`);
+  // Actively offered addresses are always visible in Manage Addresses.
+  unhideActivePoolReservations();
+  appendEngineLog(`Offered ${pending.length} fresh pool addresses to ${shortAddress(contactAddress)} (replace=${replace === true}, replenish=${replenish === true}).`);
 
   // The just-offered reserved addresses join the UTXO watched set.
   refreshSubscriptionAddresses({ restart: true });
@@ -4460,10 +4608,52 @@ function offerAddressPoolIfNeeded(contact, conversationEntry) {
   if (!chatsPrivacyEnabled()) return;
   const poolState = loadPoolState();
   if (poolState.offeredContacts.includes(contact.address)) return;
+  // A contact who revoked our pool at them gets no unsolicited offers until they
+  // re-engage (the re-engagement lanes clear the marker before routing here).
+  if ((poolState.contactsRevokedAtUs || []).includes(contact.address)) return;
   if (!canServePoolOffer(contact.address)) return;
   if (!isPoolEstablishedConversation(conversationEntry)) return;
   enqueuePoolOperation(() => reserveAndSendAddressPool(contact, { replace: true }))
     .catch((error) => appendEngineLog(`Pool offer failed: ${error.message}`));
+}
+
+// How many of our reservations for `contactAddress` are currently live-and-fresh:
+// part of the contact's ACTIVE pool and never funded. This is the count the
+// auto-replenish compares against POOL_OFFER_BATCH_SIZE — the contact should
+// always hold that many fresh addresses to pay us at.
+function activeFreshReservationCount(contactAddress) {
+  const poolState = loadPoolState();
+  return (poolState.myReservations[contactAddress] || [])
+    .filter((entry) => entry.funded !== true && isActivePoolReservation(entry, contactAddress, poolState))
+    .length;
+}
+
+// Keeps a contact who holds a live pool of ours topped up to POOL_OFFER_BATCH_SIZE
+// fresh addresses (iOS replenishPoolIfNeeded). Fired whenever one of their
+// reservations is detected funded — a payment_notice naming it, or the balance
+// watch seeing funds arrive on it — and re-checked on every conversation open, so
+// a top-up whose send failed earlier gets retried. Sends an ADDITIVE addr_pool
+// (replace:false) carrying only the shortfall.
+function replenishPoolIfNeeded(contactAddress) {
+  if (!engine.address || !contactAddress) return;
+  if (!chatsPrivacyEnabled()) return;
+  const poolState = loadPoolState();
+  // Only contacts currently holding a live pool of ours get proactive top-ups — a
+  // never-offered contact goes through the normal initial offer, a revoked one
+  // through the toggle-on re-offer.
+  if (!poolState.offeredContacts.includes(contactAddress)) return;
+  if ((poolState.revokedContacts || []).includes(contactAddress)) return;
+  // A contact who revoked at us zeroed their active count deliberately — that's
+  // disinterest, not consumption; never replenish until they re-engage.
+  if ((poolState.contactsRevokedAtUs || []).includes(contactAddress)) return;
+  if (activeFreshReservationCount(contactAddress) >= POOL_OFFER_BATCH_SIZE) return;
+  const conversationEntry = (state.conversations || [])
+    .find((entry) => contactForConversation(entry)?.address === contactAddress);
+  if (!isPoolEstablishedConversation(conversationEntry)) return;
+  const contact = contactForConversation(conversationEntry);
+  if (!contact) return;
+  enqueuePoolOperation(() => reserveAndSendAddressPool(contact, { replace: false, replenish: true }))
+    .catch((error) => appendEngineLog(`Pool replenish failed: ${error.message}`));
 }
 
 // Sends addr_pool_request when the stored pool for `contact` has run low
@@ -4523,6 +4713,9 @@ function handlePaymentPoolEnvelope(envelope, conversationEntry, message) {
     // Chats Privacy OFF: silently ignore (same no-error semantics as the rate limits).
     if (!chatsPrivacyEnabled()) return;
     if (!isPoolEstablishedConversation(conversationEntry)) return;
+    // An explicit request is renewed interest — a standing revoked-at-us marker
+    // (they once revoked our pool) no longer applies, so offers/replenishes resume.
+    clearContactRevokedAtUs(contactAddress);
     if (!canServePoolOffer(contactAddress)) {
       appendEngineLog(`Ignoring addr_pool_request from ${shortAddress(contactAddress)} — serve throttle/caps.`);
       return;
@@ -4567,6 +4760,17 @@ function acceptIncomingAddressPool(envelope, contact, conversationEntry) {
   // immediately. No reciprocity on a revoke.
   if (envelope.replace && accepted.length === 0) {
     poolState.theirPools[contactAddress] = [];
+    // The contact signalled pool disinterest (Chats Privacy off on their side): our
+    // offers to them leave the ACTIVE set too — their Manage Addresses rows revert to
+    // normal, hideable addresses. Protocol state (offered marker, watch set,
+    // payment_notice rendering) is untouched: a payment racing this revoke, or a
+    // straggler send into the old pool, still lands and renders. The marker also keeps
+    // the auto-replenish from reading the zeroed active count as a shortfall and
+    // pushing fresh addresses at someone who just signalled disinterest.
+    if (!(poolState.contactsRevokedAtUs || []).includes(contactAddress)) {
+      poolState.contactsRevokedAtUs = [...(poolState.contactsRevokedAtUs || []), contactAddress];
+    }
+    for (const entry of poolState.myReservations[contactAddress] || []) entry.activeOffer = false;
     savePoolState(poolState);
     appendEngineLog(`Pool REVOKED by ${shortAddress(contactAddress)} — cleared stored pool.`);
     refreshComposerAvailableBalance();
@@ -4587,6 +4791,9 @@ function acceptIncomingAddressPool(envelope, contact, conversationEntry) {
   }
   if (merged.length > POOL_MAX_STORED) merged = merged.slice(0, POOL_MAX_STORED);
   poolState.theirPools[contactAddress] = merged;
+  // A non-empty pool offer means the contact participates in the feature again —
+  // any standing revoked-at-us marker from an earlier revoke of theirs is stale.
+  poolState.contactsRevokedAtUs = (poolState.contactsRevokedAtUs || []).filter((a) => a !== contactAddress);
   savePoolState(poolState);
   appendEngineLog(`Stored ${accepted.length} pool addresses for ${shortAddress(contactAddress)} (replace=${envelope.replace}).`);
   refreshComposerAvailableBalance();
@@ -4597,22 +4804,56 @@ function acceptIncomingAddressPool(envelope, contact, conversationEntry) {
   }
 }
 
-// Marks one of our reservations funded — a payment_notice from the contact
-// named it as the payment destination. Feeds the outstanding-unfunded cap.
+// Marks one of our reservations funded — a payment_notice from the contact named
+// it as the payment destination, or the balance watch saw funds land on it.
+// Feeds the outstanding-unfunded cap. Returns true ONLY when this call actually
+// transitioned the reservation, so repeated notifications for the same funding
+// never queue duplicate replenishes.
 function markReservationFunded(address, contactAddress) {
   const poolState = loadPoolState();
   const entries = poolState.myReservations[contactAddress];
-  if (!entries) return;
+  if (!entries) return false;
   const entry = entries.find((r) => r.address === address);
-  if (!entry || entry.funded === true) return;
+  if (!entry || entry.funded === true) return false;
   entry.funded = true;
+  // Consumed: the address leaves the ACTIVE offered set — from here its row is
+  // governed by the funded rule (kept visible by its balance, no longer locked as
+  // a live offer).
+  entry.activeOffer = false;
   savePoolState(poolState);
   // The reserved address now holds money — funded addresses are always visible.
+  // Reservations are born visible now, so this normally no-ops; it still repairs
+  // state left hidden by the old born-hidden design.
   if (Number.isInteger(entry.index)) {
     const spendingState = getSpendingState();
     const hiddenSet = new Set(spendingState.hidden);
     if (hiddenSet.delete(entry.index)) saveSpendingState({ hidden: [...hiddenSet] });
   }
+  return true;
+}
+
+// Funded detection that does NOT depend on the payer's payment_notice: the offered
+// reservation addresses are in the UTXO watched set and in the Address Activity
+// balance sweep, so money landing on one is observed directly (iOS does the same
+// from its utxosChanged stream in handlePoolReservationUtxoAdditions). Marks the
+// reservation funded, keeps its row visible, and tops the contact's pool back up.
+function notePoolReservationFundedOnChain(address) {
+  try {
+    const contactAddress = poolReservationOwnerContact(address);
+    if (!contactAddress) return;
+    if (!markReservationFunded(address, contactAddress)) return;
+    appendEngineLog(`Pool reservation ${shortAddress(address)} funded (observed on chain) for ${shortAddress(contactAddress)} — replenishing.`);
+    replenishPoolIfNeeded(contactAddress);
+  } catch (error) {
+    appendEngineLog(`Pool reservation funding check failed: ${error.message}`);
+  }
+}
+
+function clearContactRevokedAtUs(contactAddress) {
+  const poolState = loadPoolState();
+  if (!(poolState.contactsRevokedAtUs || []).includes(contactAddress)) return;
+  poolState.contactsRevokedAtUs = poolState.contactsRevokedAtUs.filter((a) => a !== contactAddress);
+  savePoolState(poolState);
 }
 
 // Renders a received payment_notice as a normal incoming payment bubble,
@@ -4622,9 +4863,16 @@ function markReservationFunded(address, contactAddress) {
 // disagrees and downgrades the bubble if the tx pays nothing to the claimed
 // address.
 function createPaymentBubbleFromNotice(envelope, conversationEntry, contact, sourceMessage) {
-  markReservationFunded(envelope.address, contact.address);
+  // An actual funded transition tops the contact back up to a full fresh pool.
+  if (markReservationFunded(envelope.address, contact.address)) {
+    replenishPoolIfNeeded(contact.address);
+  }
 
   const txId = envelope.txId;
+  // The chat bubble below is this payment's notification — claim the txId so the
+  // Address Activity balance sweep (pool addresses are watched there now) doesn't
+  // announce the same receive again as a wallet notification.
+  markAddressActivityTxHandled(txId);
   const exists = (conversationEntry.messages || []).some((m) => String(m.txid || "").toLowerCase() === txId);
   if (exists) return;
 
@@ -4688,22 +4936,67 @@ async function verifyPaymentNoticeAgainstChain(conversationEntry, bubble, envelo
   if (activeConversationId === conversationEntry.id) renderMessages(conversationEntry);
 }
 
-// The destination for a Send KAS to `contact`: an unused address from their
-// stored pool (consumed immediately and persisted — burning an address is
-// safe, reusing one is not), else the chatting address — exact pre-pool
-// behavior. Deliberately NOT gated on the sender's privacy toggle: the
-// RECIPIENT'S privacy governs the destination — if they shared fresh
-// addresses, money arrives on one no matter the sender's setting. The
-// sender's toggle only governs the funding side.
-function consumePoolPaymentDestination(contact) {
+// Consumes a pool address immediately and persistently — burning an address is
+// safe, reusing one is not, so this is written before the payment is even built.
+function markPoolAddressUsed(address, contactAddress) {
   const poolState = loadPoolState();
-  const pool = poolState.theirPools[contact.address] || [];
-  const next = pool.find((entry) => !entry.used);
-  if (!next || !isValidKaspaAddressString(next.address)) return contact.address;
-  next.used = true;
+  const pool = poolState.theirPools[contactAddress] || [];
+  const entry = pool.find((item) => item.address === address);
+  if (!entry || entry.used === true) return false;
+  entry.used = true;
   savePoolState(poolState);
-  appendEngineLog(`Payment to ${shortAddress(contact.address)} will use fresh pool address …${next.address.slice(-10)}.`);
-  return next.address;
+  return true;
+}
+
+// The destination for a Send KAS to `contact`: an unused address from their
+// stored pool, else the chatting address — exact pre-pool behavior.
+// Deliberately NOT gated on the sender's privacy toggle: the RECIPIENT'S
+// privacy governs the destination — if they shared fresh addresses, money
+// arrives on one no matter the sender's setting. The sender's toggle only
+// governs the funding side.
+//
+// CROSS-DEVICE DOUBLE-PAY PROTECTION: the `used` flags are device-local, so with
+// the same seed on two clients a payment sent from one never marks the address
+// used on the other — the second payment would land on the very address the pool
+// exists to keep fresh, linking both payments on chain. Before consuming a
+// candidate this probes its on-chain history (uncached, deliberately bypassing
+// spendingUsageCache / the batched balance reader — both can be stale or absent
+// exactly when it matters); an address with ANY history is marked used locally
+// (the skip persists) and the walk moves on. A probe that cannot answer (network
+// error) consumes the candidate anyway: a rare reuse beats failing the payment or
+// silently leaking it to the chatting address. The walk is bounded by the stored
+// pool (at most POOL_MAX_STORED entries), each probe a one-row body with a
+// timeout. If every pool address turns out used, the payment falls back to the
+// chatting address and the low-water addr_pool_request asks for more.
+async function consumePoolPaymentDestination(contact) {
+  let skippedUsedElsewhere = 0;
+  try {
+    // Each iteration either consumes the head unused address (returns) or marks it
+    // used (persisted) and re-reads, so the loop is bounded by the stored pool size.
+    for (;;) {
+      const pool = loadPoolState().theirPools[contact.address] || [];
+      const next = pool.find((entry) => !entry.used);
+      if (!next) return contact.address;
+      if (!isValidKaspaAddressString(next.address)) return contact.address;
+      if (await spendingAddressHasHistory(next.address, { timeoutMs: 8000 })) {
+        // Another device (or a straggler payment) already used this one — burn it
+        // locally so no future send here picks it either, and walk on. A consume
+        // that somehow didn't stick would loop forever, so bail to the chatting
+        // address instead.
+        if (!markPoolAddressUsed(next.address, contact.address)) return contact.address;
+        skippedUsedElsewhere += 1;
+        appendEngineLog(`Pool address …${next.address.slice(-10)} for ${shortAddress(contact.address)} already has chain history (used by another device?) — skipping.`);
+        continue;
+      }
+      markPoolAddressUsed(next.address, contact.address);
+      appendEngineLog(`Payment to ${shortAddress(contact.address)} will use fresh pool address …${next.address.slice(-10)}.`);
+      return next.address;
+    }
+  } finally {
+    // Addresses another device already paid: the pool may have silently run low, and
+    // the normal post-send request never fires for a chatting-address fallback.
+    if (skippedUsedElsewhere > 0) maybeRequestMorePoolAddresses(contact);
+  }
 }
 
 // True when the NEXT payment to this contact would go to a fresh pool address —
@@ -4752,65 +5045,135 @@ function handleChatsPrivacyToggleChanged(enabled) {
   refreshComposerAvailableBalance();
 }
 
+// Toggle-ON targets are the union of two lanes:
+//
+// - POOL HISTORY (persisted state): every contact who previously HELD a live pool
+//   of ours — at least one reservation historically flagged offered — and doesn't
+//   hold one now (offered marker unset: our revoke landed). This lane reaches
+//   contacts whose CONVERSATION was deleted since the offer, which the
+//   conversation-derived lane below cannot see. They proved establishment when
+//   first offered, so no conversation re-check.
+// - NEVER-OFFERED ESTABLISHED CONVERSATIONS: the toggle is the switch, so contacts
+//   the lazy offer hasn't reached yet get theirs now instead of on next open.
+//
+// Both lanes skip contacts currently holding a live pool (nothing to resend) and
+// contacts who revoked our pool at them (nothing until they re-engage). A contact
+// whose row no longer exists in the address book is skipped — an offer needs a
+// contact to route to, unlike a revoke.
+function reofferPoolCandidateContacts(poolState) {
+  const revokedAtUs = poolState.contactsRevokedAtUs || [];
+  return Object.entries(poolState.myReservations || {})
+    .filter(([contactAddress, entries]) => !poolState.offeredContacts.includes(contactAddress)
+      && !revokedAtUs.includes(contactAddress)
+      && (entries || []).some((r) => r.offered))
+    .map(([contactAddress]) => contactAddress)
+    .sort();
+}
+
 function reofferPoolsForChatsPrivacyOn() {
   const poolState = loadPoolState();
-  const targets = (state.conversations || [])
+  const revokedAtUs = poolState.contactsRevokedAtUs || [];
+  const conversationTargets = (state.conversations || [])
     .map((entry) => ({ entry, contact: contactForConversation(entry) }))
     .filter(({ entry, contact }) => contact?.address
       && isPoolEstablishedConversation(entry)
-      && !poolState.offeredContacts.includes(contact.address));
+      && !poolState.offeredContacts.includes(contact.address)
+      && !revokedAtUs.includes(contact.address))
+    .map(({ contact }) => contact.address);
+  const seen = new Set();
+  const targets = [...reofferPoolCandidateContacts(poolState), ...conversationTargets]
+    .filter((address) => !seen.has(address) && seen.add(address));
   if (!targets.length) return;
   appendEngineLog(`Chats Payment Privacy on — re-offering pools to ${targets.length} contact(s).`);
   enqueuePoolOperation(async () => {
-    for (const { contact } of targets) {
+    for (const contactAddress of targets) {
       if (!chatsPrivacyEnabled()) return; // flipped back OFF mid-broadcast
+      const contact = state.contacts.find((entry) => entry.address === contactAddress);
+      if (!contact) continue; // deleted contact: nothing to offer to
       try {
         await reserveAndSendAddressPool(contact, { replace: true, toggleTransition: true });
       } catch (error) {
-        appendEngineLog(`Toggle-on pool offer to ${shortAddress(contact.address)} failed (lazy offer remains): ${error.message}`);
+        appendEngineLog(`Toggle-on pool offer to ${shortAddress(contactAddress)} failed (lazy offer remains): ${error.message}`);
       }
     }
   });
 }
 
-// One revoke per contact currently holding our pool, per PERSISTED state: the
-// offered-marker set unioned with contacts holding offered-flagged
-// reservations, minus already-revoked. Revokes bypass the reservation caps (a
-// revoke must always be allowed out) but honor the 60s transition gap.
-// Failures are non-fatal — that contact simply drains the residual pool and
-// stays eligible for a retry on a later toggle-off.
-function revokeOfferedPoolsForChatsPrivacyOff() {
-  const poolState = loadPoolState();
+// Contacts currently holding a live pool of OUR addresses — the target list for
+// the toggle-off revoke broadcast. Derived from PERSISTED state two ways and
+// unioned, so a contact can never dodge a revoke through marker drift: the
+// offered-marker set AND every contact with at least one reservation actually
+// flagged offered. Minus already-revoked contacts.
+function contactsHoldingOurPool(poolState = loadPoolState()) {
   const holders = new Set(poolState.offeredContacts);
   for (const [contactAddress, entries] of Object.entries(poolState.myReservations || {})) {
     if ((entries || []).some((r) => r.offered)) holders.add(contactAddress);
   }
-  const targets = [...holders].filter((address) => !poolState.revokedContacts.includes(address)).sort();
+  return [...holders].filter((address) => !(poolState.revokedContacts || []).includes(address)).sort();
+}
+
+// How many follow-up sweeps a single toggle-off runs to reach gap-deferred or
+// send-failed contacts before giving up until the next toggle-off.
+const POOL_MAX_REVOKE_RETRY_PASSES = 3;
+
+// One revoke per contact currently holding our pool, per PERSISTED state.
+// Revokes bypass the reservation caps (a revoke must always be allowed out) but
+// honor the 60s transition gap. A contact DELETED from the address book still
+// gets its revoke — it may well still believe our pool is live, and the envelope
+// only needs the address, so a placeholder contact stands in. A pass that leaves
+// stragglers (gap-deferred, or whose send failed) schedules itself again once the
+// gap has certainly expired, up to POOL_MAX_REVOKE_RETRY_PASSES passes, so a
+// single toggle-off converges to "no contact holds a live pool" without the user
+// flipping again. Contacts still unreached after the last pass keep their markers,
+// stay eligible on the next toggle-off, and drain their residual pool meanwhile.
+function revokeOfferedPoolsForChatsPrivacyOff(retryPass = 0) {
+  const walletAtStart = engine.address;
+  const targets = contactsHoldingOurPool();
   if (!targets.length) return;
-  appendEngineLog(`Chats Payment Privacy off — revoking offered pools at ${targets.length} contact(s).`);
+  appendEngineLog(`Chats Payment Privacy off — revoking offered pools at ${targets.length} contact(s) (pass ${retryPass}).`);
   enqueuePoolOperation(async () => {
     for (const contactAddress of targets) {
       if (chatsPrivacyEnabled()) return; // flipped back ON mid-broadcast
+      if (engine.address !== walletAtStart) return; // account switched mid-broadcast
       const current = loadPoolState();
       if (current.revokedContacts.includes(contactAddress)) continue;
       if (isWithinPoolServeGap(current, contactAddress, true)) {
         appendEngineLog(`Revoke to ${shortAddress(contactAddress)} deferred by transition gap.`);
         continue;
       }
-      const contact = state.contacts.find((entry) => entry.address === contactAddress);
-      if (!contact) continue;
+      // A deleted contact still holds our pool — the revoke must reach them too.
+      const contact = state.contacts.find((entry) => entry.address === contactAddress)
+        || { id: `pool-revoke-${contactAddress}`, address: contactAddress };
       try {
         await sendInvisiblePoolEnvelope(contact, JSON.stringify({ type: "addr_pool", addresses: [], replace: true }));
         const after = loadPoolState();
         if (!after.revokedContacts.includes(contactAddress)) after.revokedContacts.push(contactAddress);
         after.offeredContacts = after.offeredContacts.filter((a) => a !== contactAddress);
         after.lastPoolServeAt[contactAddress] = Date.now();
+        // The reservations stay recorded and historically offered (still reserved for
+        // this contact alone, still watched — a payment racing the revoke must land and
+        // render), but they leave the ACTIVE set: their rows revert to normal,
+        // hideable addresses until a re-offer reactivates them.
+        for (const entry of after.myReservations[contactAddress] || []) entry.activeOffer = false;
         savePoolState(after);
         appendEngineLog(`Revoked pool at ${shortAddress(contactAddress)}.`);
       } catch (error) {
         appendEngineLog(`Pool revoke to ${shortAddress(contactAddress)} failed (non-fatal, residual drain applies): ${error.message}`);
       }
     }
+
+    // Convergence pass: anyone still holding (gap-deferred or send-failed) gets
+    // another sweep once the transition gap has certainly expired. Bounded so a
+    // permanently unreachable contact can't keep the chain alive forever.
+    if (retryPass >= POOL_MAX_REVOKE_RETRY_PASSES) return;
+    if (!contactsHoldingOurPool().length) return;
+    if (chatsPrivacyEnabled() || engine.address !== walletAtStart) return;
+    window.setTimeout(() => {
+      // Still the same account, still off? (An account switch invalidates the pass —
+      // the next toggle-off for that account starts its own chain.)
+      if (engine.address !== walletAtStart || chatsPrivacyEnabled()) return;
+      revokeOfferedPoolsForChatsPrivacyOff(retryPass + 1);
+    }, POOL_TOGGLE_TRANSITION_GAP_MS + 5000);
   });
 }
 
@@ -4878,7 +5241,7 @@ const STAR_PATH = "m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 18l-5.8 3 1.1-6.5L2.6 
 // Each row: tap the body to open the address's detail (transactions + send/
 // receive); the ⋯ button opens a menu (Rename / Copy / Show QR / Set as Primary),
 // matching iOS's ManageAddressesView.
-function spendingRowHtml(index, address, state, balanceText, used, hasDomain = false) {
+function spendingRowHtml(index, address, state, balanceText, used, hasDomain = false, reserved = false) {
   const isActive = index === state.activeIndex;
   const label = spendingLabelFor(state, index);
   const usageBadge = used === true
@@ -4887,14 +5250,18 @@ function spendingRowHtml(index, address, state, balanceText, used, hasDomain = f
       ? '<span class="spending-address-usage unused">Unused</span>'
       : "";
   const domainBadge = hasDomain ? '<span class="spending-address-domain-tag">Contains domain</span>' : "";
+  // Actively offered to a contact as a chat-payment-privacy address: tagged so the
+  // user knows what the row is, and not hideable while the offer stands.
+  const privacyBadge = reserved ? '<span class="spending-address-domain-tag">Chat privacy</span>' : "";
   const menuItems = [
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="rename" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>Rename Address</button>`,
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="copy" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>Copy Address</button>`,
     `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="receive" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/></svg>Show QR Code</button>`,
     isActive ? "" : `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="activate" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>Set as Primary Address</button>`,
     // Hide straight from the row (iOS parity) — same flag the Address Visibility checklist
-    // edits, with the same guards (never the primary, never a funded address) enforced on tap.
-    isActive ? "" : `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="hide" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/></svg>Hide Address</button>`,
+    // edits, with the same guards (never the primary, never a funded address, never an
+    // actively offered pool address) enforced on tap.
+    isActive || reserved ? "" : `<button type="button" role="menuitem" class="spending-row-menu-item" data-spending-action="hide" data-index="${index}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/></svg>Hide Address</button>`,
   ].filter(Boolean).join("");
   return `
     <div class="spending-address-row${isActive ? " active" : ""}" data-spending-row="${index}">
@@ -4905,6 +5272,7 @@ function spendingRowHtml(index, address, state, balanceText, used, hasDomain = f
           ${isActive ? `<span class="spending-address-active-badge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>Primary</span>` : ""}
           ${usageBadge}
           ${domainBadge}
+          ${privacyBadge}
         </div>
         <span class="spending-address-value">${escapeHtml(shortAddress(address))}</span>
         <span class="spending-address-balance" data-spending-balance-cell="${index}">${escapeHtml(balanceText)}</span>
@@ -4920,12 +5288,17 @@ function spendingRowHtml(index, address, state, balanceText, used, hasDomain = f
 }
 
 // An address counts as "used" if it holds a balance now or has any on-chain
-// transaction history — mirrors iOS's everUsed || balance>0.
-async function spendingAddressHasHistory(address) {
+// transaction history — mirrors iOS's everUsed || balance>0. Deliberately
+// uncached (`cache: "no-store"`, no memo): the pool-payment probe needs the live
+// answer, and a stale "unused" there means a double-pay. `timeoutMs` bounds that
+// probe so a hung REST endpoint can't stall a send; other callers keep the
+// previous unbounded behavior.
+async function spendingAddressHasHistory(address, { timeoutMs = 0 } = {}) {
   if (!String(address || "").trim()) return false; // empty address would 404 as /addresses//…
   try {
     const url = `${getEndpoint("kaspaApi")}/addresses/${encodeURIComponent(address)}/full-transactions?limit=1&offset=0&resolve_previous_outpoints=no`;
-    const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const signal = timeoutMs > 0 && typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : undefined;
+    const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store", signal });
     if (!response.ok) return false;
     const txs = await response.json();
     return Array.isArray(txs) && txs.length > 0;
@@ -4938,10 +5311,14 @@ async function renderSpendingList() {
     spendingListEl.innerHTML = '<p class="spending-address-empty">This account has no recovery phrase, so spending addresses aren\'t available.</p>';
     return;
   }
+  // Repair first: an actively offered pool address can never be hidden, so a row
+  // left hidden by the old born-hidden design comes back into the list here.
+  unhideActivePoolReservations();
   const state = getSpendingState();
   const primaryIndex = state.activeIndex;
   const token = ++spendingListToken;
   const hiddenSet = new Set(state.hidden);
+  const reservedAddresses = activePoolReservationAddressSet();
   const items = [];
   for (let i = 0; i <= state.maxIndex; i++) {
     // Hidden addresses (Address Visibility screen) stay off the main list; the
@@ -4958,7 +5335,7 @@ async function renderSpendingList() {
   // instantly with real numbers instead of a wall of "…" — the live refresh replaces it below.
   const balCache = loadSpendingBalCache();
   spendingListEl.innerHTML = items
-    .map((it) => spendingRowHtml(it.index, it.address, state, balCache[it.address]?.kas != null ? `${balCache[it.address].kas} KAS` : "…", balCache[it.address]?.used ?? null))
+    .map((it) => spendingRowHtml(it.index, it.address, state, balCache[it.address]?.kas != null ? `${balCache[it.address].kas} KAS` : "…", balCache[it.address]?.used ?? null, false, reservedAddresses.has(it.address)))
     .join("");
   // Enrich with live balance + used-state, then order: primary first → funded → rest.
   // Balances arrive in ONE batched node call (the per-address loop this replaces fired one
@@ -5011,7 +5388,7 @@ async function renderSpendingList() {
   const rank = (e) => (e.index === primaryIndex ? 0 : (e.kas > 0 || domainOwning.has(e.address)) ? 1 : 2);
   enriched.sort((a, b) => rank(a) - rank(b) || a.index - b.index);
   spendingListEl.innerHTML = enriched
-    .map((e) => spendingRowHtml(e.index, e.address, state, e.totalKas != null ? `${e.totalKas} KAS` : "-- KAS", e.used, domainOwning.has(e.address)))
+    .map((e) => spendingRowHtml(e.index, e.address, state, e.totalKas != null ? `${e.totalKas} KAS` : "-- KAS", e.used, domainOwning.has(e.address), reservedAddresses.has(e.address)))
     .join("");
 }
 
@@ -5065,19 +5442,26 @@ async function spendingUsageFor(address) {
   return result;
 }
 
-function spendingVisibilityRowHtml(index, address, state, visible) {
+// `reserved` = the address is actively offered to a contact as a Chats Payment
+// Privacy pool address (iOS SpendingAddressVisibilityView): the row shows CHECKED
+// and inert, labeled so the user knows why. A contact may pay into it at any
+// moment, so its owner must always be able to see it; once the offer is no longer
+// active the row becomes an ordinary, hideable row again.
+function spendingVisibilityRowHtml(index, address, state, visible, reserved = false) {
   const isPrimary = index === state.activeIndex;
+  const locked = isPrimary || reserved;
   const customLabel = (state.labels?.[index] ?? state.labels?.[String(index)] ?? "").toString().trim();
   const checkSvg = visible
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/><path class="spending-vis-check" d="m7.5 12.5 3 3 6-6.5"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.2"/></svg>';
   return `
     <div class="spending-visibility-row${visible ? "" : " off"}" data-vis-row="${index}">
-      <button type="button" class="spending-visibility-toggle${visible ? " on" : ""}" data-spending-vis-toggle="${index}" aria-pressed="${visible}" aria-label="Toggle visibility of spending address #${index}">${checkSvg}</button>
+      <button type="button" class="spending-visibility-toggle${visible ? " on" : ""}" data-spending-vis-toggle="${index}" aria-pressed="${visible}"${locked ? ' aria-disabled="true" style="opacity:.45"' : ""} aria-label="Toggle visibility of spending address #${index}">${checkSvg}</button>
       <div class="spending-visibility-info">
         <div class="spending-visibility-head">
           <span class="spending-address-index">#${index}</span>
           ${isPrimary ? `<span class="spending-address-active-badge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STAR_PATH}"/></svg>Primary</span>` : ""}
+          ${reserved ? '<span class="spending-visibility-label">Chat privacy address</span>' : ""}
           ${customLabel ? `<span class="spending-visibility-label">${escapeHtml(customLabel)}</span>` : ""}
           <span class="spending-address-usage spending-visibility-usage" data-vis-usage="${index}">…</span>
         </div>
@@ -5088,8 +5472,11 @@ function spendingVisibilityRowHtml(index, address, state, visible) {
 
 async function renderSpendingVisibilityPage() {
   if (!spendingVisibilityList) return;
+  // Repair first: an actively offered pool address can never be hidden.
+  unhideActivePoolReservations();
   const state = getSpendingState();
   const hiddenSet = new Set(state.hidden);
+  const reservedAddresses = activePoolReservationAddressSet();
   const start = spendingVisibilityPage * SPENDING_VIS_PAGE_SIZE;
   const end = start + SPENDING_VIS_PAGE_SIZE - 1;
   if (spendingVisRangeEl) spendingVisRangeEl.textContent = `#${start} - #${end}`;
@@ -5098,11 +5485,12 @@ async function renderSpendingVisibilityPage() {
   const rows = [];
   for (let i = start; i <= end; i++) {
     const address = deriveSpendingAddressAt(i);
-    const visible = i <= state.maxIndex && !hiddenSet.has(i);
-    rows.push({ index: i, address, visible });
+    const reserved = Boolean(address) && reservedAddresses.has(address);
+    const visible = (i <= state.maxIndex && !hiddenSet.has(i)) || reserved;
+    rows.push({ index: i, address, visible, reserved });
   }
   spendingVisibilityList.innerHTML = rows
-    .map((r) => spendingVisibilityRowHtml(r.index, r.address, state, r.visible))
+    .map((r) => spendingVisibilityRowHtml(r.index, r.address, state, r.visible, r.reserved))
     .join("");
   // Usage fill: funded rows show their balance, the rest Used/Unused. Chunked
   // like the discovery scan so a page can't burst the REST rate limiter.
@@ -5170,10 +5558,16 @@ spendingVisibilityList?.addEventListener("click", async (event) => {
     return;
   }
   const hiddenSet = new Set(state.hidden);
+  const address = deriveSpendingAddressAt(index);
+  // Actively offered payment-pool addresses are inert here: a contact may pay into
+  // one at any moment, so it stays visible until the offer is no longer active.
+  if (address && activePoolReservationAddressSet().has(address)) {
+    showCopyToast("This address is offered to a contact for chat payment privacy, so it stays visible.");
+    return;
+  }
   const visible = index <= state.maxIndex && !hiddenSet.has(index);
   if (visible) {
     // Funded addresses stay visible — same rule iOS enforces store-side.
-    const address = deriveSpendingAddressAt(index);
     const usage = address ? await spendingUsageFor(address) : { kas: 0 };
     if (usage.kas > 0) {
       showCopyToast("Addresses holding a balance stay visible.");
@@ -5243,6 +5637,10 @@ spendingListEl?.addEventListener("click", async (event) => {
       if (index === state.activeIndex) { showCopyToast("The primary address is always visible."); return; }
       const addr = deriveSpendingAddressAt(index);
       if (!addr) { showCopyToast("Address is not ready yet."); return; }
+      if (activePoolReservationAddressSet().has(addr)) {
+        showCopyToast("This address is offered to a contact for chat payment privacy, so it stays visible.");
+        return;
+      }
       let balanceSompi = 0;
       try { balanceSompi = (await spendingBalancesBatchSompi([addr])).get(addr) || 0; } catch { balanceSompi = 0; }
       if (balanceSompi > 0) { showCopyToast("Addresses holding a balance stay visible."); return; }
@@ -9517,9 +9915,11 @@ function openConversation(conversationId) {
   activateComposerMode("message");
   window.setTimeout(() => composer.elements.message?.focus(), 0);
 
-  // Fresh-address payment pools: the lazy once-per-contact offer plus the
-  // low-water top-up request, both no-ops unless due (see the pool section).
+  // Fresh-address payment pools: the lazy once-per-contact offer, the pool-of-2
+  // replenish re-check (retries a top-up whose send failed when a reservation got
+  // funded), and the low-water top-up request. All no-ops unless due.
   offerAddressPoolIfNeeded(contact, conversationEntry);
+  replenishPoolIfNeeded(contact.address);
   maybeRequestMorePoolAddresses(contact);
 
   // The header name above is a synchronous cache-peek and may render before
@@ -10057,7 +10457,7 @@ async function sendTipNow() {
   renderChats();
 
   // Recipient-governed destination: their fresh pool address when they shared one.
-  const destinationAddress = consumePoolPaymentDestination(contact);
+  const destinationAddress = await consumePoolPaymentDestination(contact);
   const createdAt = Date.now();
   const message = createMessage({
     conversationId: conversationEntry.id,
@@ -11474,7 +11874,7 @@ async function sendKasPayment(conversationId, rawAmount) {
     // a payment again, even if this payment ultimately fails), chatting
     // address fallback. Recipient-governed: their shared fresh addresses are
     // used no matter the sender's privacy toggle.
-    const destinationAddress = consumePoolPaymentDestination(contact);
+    const destinationAddress = await consumePoolPaymentDestination(contact);
     const createdAt = Date.now();
     const message = createMessage({
       conversationId: conversationEntry.id,
