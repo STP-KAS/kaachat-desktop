@@ -1245,6 +1245,10 @@ document.addEventListener("keydown", (event) => {
 });
 const profileQrOverlayCanvas = document.querySelector("[data-profile-qr-overlay-canvas]");
 const chattingAddressScreen = document.querySelector("[data-chatting-address-screen]");
+// The chatting-address screen is REUSED for the spending Receive view, so its copy
+// button must copy whatever address is on screen - it used to always copy the chatting
+// address, handing users the wrong one from the spending QR.
+let chattingAddressScreenAddress = null;
 const chattingAddressQr = document.querySelector("[data-chatting-address-qr]");
 const chattingAddressValue = document.querySelector("[data-chatting-address-value]");
 const chattingAddressBalance = document.querySelector("[data-chatting-address-balance]");
@@ -6301,6 +6305,7 @@ async function openChattingAddressScreen(options = {}) {
       subtitleEl.hidden = true;
     }
   }
+  chattingAddressScreenAddress = address;
   if (chattingAddressValue) chattingAddressValue.textContent = address;
   if (chattingAddressBalance) chattingAddressBalance.textContent = balanceText;
   if (chattingAddressQr) {
@@ -7820,6 +7825,7 @@ const CURRENCIES = {
   rub: { name: "Russian Ruble (RUB)", symbol: "₽" },
   try: { name: "Turkish Lira (TRY)", symbol: "₺" },
   zar: { name: "South African Rand (ZAR)", symbol: "R" },
+  idr: { name: "Indonesian Rupiah (IDR)", symbol: "Rp" },
   btc: { name: "Bitcoin (BTC)", symbol: "₿" },
 };
 const DEFAULT_CURRENCY = "usd";
@@ -7882,7 +7888,7 @@ const LANGUAGES = {
   system: "System", en: "English", es: "Español", de: "Deutsch", fr: "Français",
   it: "Italiano", pt: "Português", ru: "Русский", tr: "Türkçe", ar: "العربية",
   "ar-EG": "العربية (مصر)", fa: "فارسی", he: "עברית", hi: "हिन्दी", bn: "বাংলা",
-  ja: "日本語", ko: "한국어", vi: "Tiếng Việt", "zh-Hans": "简体中文",
+  ja: "日本語", ko: "한국어", vi: "Tiếng Việt", id: "Bahasa Indonesia", "zh-Hans": "简体中文",
 };
 const RTL_LANG_PREFIXES = ["ar", "fa", "he"];
 let selectedLanguage = localStorage.getItem(LANGUAGE_PREF_KEY) || "system";
@@ -8142,11 +8148,41 @@ function updateLocalStorageUsedLabel() {
 // ignores standby/wallet/cipher/subscription readiness — those used to also
 // gate the topbar dot, which made it show orange far more than "connected or
 // not" actually warranted.
+// Red is reserved for SUSTAINED disconnection. "Not ready" is also what the primary reads
+// at startup before the first connect and in the gaps between reconnect attempts, and
+// flashing red there tells the user they are offline when they aren't - those windows show
+// orange until the state has persisted past the grace window (iOS parity).
+const DISCONNECT_GRACE_MS = 8000;
+let disconnectedSinceMs = null;
+let disconnectGraceTimer = null;
+
 function computeConnectionHealth() {
   const connection = engine.connectionSnapshot?.() || {};
   const registry = engine.nodeRegistrySnapshot?.() || { endpoints: [], lastGoodEndpoint: "" };
   const primaryReady = Boolean(engine.rpc) && connection.primary === "ready";
-  if (!primaryReady) return { stateName: "error", latencyMs: null };
+  if (!primaryReady) {
+    if (disconnectedSinceMs == null) disconnectedSinceMs = Date.now();
+    const downMs = Date.now() - disconnectedSinceMs;
+    if (downMs < DISCONNECT_GRACE_MS) {
+      // Nothing repaints the dot on a timer (it only redraws on status events), so schedule
+      // the single repaint that turns orange into red once the grace expires. Without this a
+      // silent drop would sit on orange forever.
+      if (disconnectGraceTimer == null) {
+        disconnectGraceTimer = window.setTimeout(() => {
+          disconnectGraceTimer = null;
+          updateGlobalHealthIndicator();
+          if (connectionOverlay && !connectionOverlay.hidden) renderConnectionStatus();
+        }, DISCONNECT_GRACE_MS - downMs + 50);
+      }
+      return { stateName: "busy", latencyMs: null };
+    }
+    return { stateName: "error", latencyMs: null };
+  }
+  disconnectedSinceMs = null;
+  if (disconnectGraceTimer != null) {
+    window.clearTimeout(disconnectGraceTimer);
+    disconnectGraceTimer = null;
+  }
 
   const activeEndpoint = engine.rpc?.url || connection.primaryEndpoint || "";
   const record = (registry.endpoints || []).find((entry) => entry.endpoint === activeEndpoint)
@@ -13433,6 +13469,17 @@ function updateHandshakeWarningBanner() {
     hideHandshakeWarningBanner();
     return;
   }
+  // A handshake FROM them ends the warning immediately (iOS parity). Whether it accepts
+  // ours or initiates their own, their side provably has the conversation and can see what
+  // we send, so waiting for a genuine reply left this banner up after the handshake had
+  // already completed. A handshake we sent and they haven't answered still shows it.
+  const theirHandshake = (conversationEntry.messages || []).some((message) =>
+    message?.direction === "incoming" && message?.messageType === "handshake"
+  );
+  if (theirHandshake) {
+    hideHandshakeWarningBanner();
+    return;
+  }
   handshakeWarningBanner.hidden = false;
 }
 
@@ -14054,7 +14101,12 @@ function renderSetupStep() {
   if (setupNextBtn) setupNextBtn.textContent = setupStepIndex === SETUP_STEPS.length - 1 ? "Finish" : "Next";
   // Previous is available on every step after the first, onboarding runs included -
   // only skipping forward stays forbidden.
-  if (setupBackBtn) setupBackBtn.hidden = setupStepIndex === 0;
+  // Disabled and dimmed on the first step rather than hidden, so Next stays in the exact
+  // same place on every screen and the guide can be tapped straight through (iOS parity).
+  if (setupBackBtn) {
+    setupBackBtn.hidden = false;
+    setupBackBtn.disabled = setupStepIndex === 0;
+  }
   if (setupProgressEl) setupProgressEl.textContent = `${setupStepIndex + 1} / ${SETUP_STEPS.length}`;
   // Skip exists ONLY on replays (Profile > Help). EVERY account-onboarding run
   // — create or import, fresh or re-presented after a page reload — is fully
@@ -15055,13 +15107,16 @@ document.addEventListener("keydown", (event) => {
 
 document.querySelectorAll("[data-copy-engine-address]").forEach((button) => {
   button.addEventListener("click", async () => {
-    if (!engine.address) {
+    // Whatever the screen is showing wins; engine.address is only the fallback for the
+    // plain chatting view (see chattingAddressScreenAddress).
+    const target = chattingAddressScreenAddress || engine.address;
+    if (!target) {
       appendEngineLog("Copy failed: no wallet loaded.");
       return;
     }
     try {
-      await copyTextToClipboard(engine.address);
-      appendEngineLog("Copied current wallet address.");
+      await copyTextToClipboard(target);
+      appendEngineLog("Copied address.");
       showCopyToast("Address copied");
     } catch (error) {
       appendEngineLog(`Copy failed: ${error.message}`);

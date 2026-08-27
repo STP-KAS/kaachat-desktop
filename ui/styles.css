@@ -1304,7 +1304,11 @@ button { cursor: pointer; }
 
 /* Setup guide footer nav: Previous beside Next (Previous hidden on the first step). */
 .setup-guide-nav { display: flex; gap: 10px; }
-.setup-guide-nav .setup-guide-back { flex: 0 0 auto; }
+/* Both buttons share the row evenly and keep their positions on every step - Previous is
+   disabled on the first step rather than removed, so Next never shifts under the cursor. */
+.setup-guide-nav .setup-guide-back { flex: 1 1 0; }
+.setup-guide-nav .setup-guide-next { flex: 1 1 0; }
+.setup-guide-nav .setup-guide-back[disabled] { opacity: 0.35; cursor: default; }
 .setup-guide-nav .setup-guide-next { flex: 1; }
 
 /* Card header (broadcast-room parity): sender name + send time at the top. */
