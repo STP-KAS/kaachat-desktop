@@ -6732,9 +6732,10 @@ document.querySelector("[data-dock-wizard-next]")?.addEventListener("click", () 
 });
 
 // Step 104 — Profile screen mockup wiring. QR buttons reveal the existing
-// real QR card; address dropdowns expand/collapse; anything without real
-// desktop backend yet (KNS, spending address, withdraw, transaction history,
-// manage addresses, gift) just surfaces a "Coming soon" toast.
+// real QR card; address dropdowns expand/collapse. The list of unimplemented
+// stubs this comment used to carry is long gone: KNS, spending addresses,
+// withdraw, transaction history and Manage Addresses are all built. The gift
+// program stays mobile-only by design.
 // "Receive Kaspa" opens the same full-screen QR view as Chatting Address (and the
 // spending-address Receive), just without the chat-fee note — the old inline
 // profile-qr-card toggle looked nothing like it.
