@@ -6,16 +6,37 @@
 // and on-chain Kaspa address import. Charts are hand-drawn SVG — no chart library, matching
 // the app's zero-dependency approach.
 
-import { fetchKasPrice, fetchKasPriceHistory } from "../engine/prices.js";
+import {
+  fetchKasPrice,
+  fetchKasPriceHistory,
+  peekKasPrice,
+  peekKasPriceHistory,
+  peekDailyPrices,
+  resolveDailyPrices,
+  resolveDailyPriceSingle,
+  utcDayKey,
+  PRICE_REQUEST_SPACING_MS,
+} from "../engine/prices.js";
 import { getEndpoint } from "../engine/endpoints.js";
 import { validateMainnetAddress } from "../engine/utils.js";
+import { looksLikeDomain, resolveDomain } from "../engine/kns.js";
 
 const PORTFOLIO_KEY = "kachat-portfolios-v1"; // account-scoped: { activeId, portfolios: [{id, name, transactions: [...] }] }
-const DAILY_PRICE_CACHE_KEY = "kachat-kas-daily-price-v1"; // global: { "DD-MM-YYYY": priceUsd }
 const MAX_PORTFOLIOS = 5;
-// Mirrors iOS PortfolioAddressImporter.priceUnavailableNote — rows imported without a
-// historical price carry this note and show a warning until the user sets one.
-const PRICE_UNAVAILABLE_NOTE = "Price unavailable — set manually";
+// Mirrors iOS PortfolioAddressImporter.priceUnavailableNote — rows the import couldn't price
+// synchronously carry this note, show a warning icon, and are filled in by the background price
+// backfill (the user can also set a price by hand via the edit sheet).
+const PRICE_PENDING_NOTE = "Price loading, will fill in automatically";
+// Sentinel written by builds before the background backfill existed. Still recognized so rows
+// imported by an older version keep their warning icon and get backfilled too — same two-
+// generation scheme as iOS's priceUnavailableNote / legacyPriceUnavailableNote.
+const LEGACY_PRICE_UNAVAILABLE_NOTE = "Price unavailable — set manually";
+
+/** True when `notes` marks a row whose price is still pending (either sentinel generation). */
+function isPricePending(notes) {
+  return notes === PRICE_PENDING_NOTE || notes === LEGACY_PRICE_UNAVAILABLE_NOTE;
+}
+
 const RANGES = [
   { days: 1, label: "1D" },
   { days: 7, label: "7D" },
@@ -28,15 +49,52 @@ let deps = null;
 let rootEl = null;
 let modalsEl = null;
 let state = { activeId: null, portfolios: [] };
-let price = null;          // { usd, change24h }
-let history = [];          // [[ts, usd]] for the selected range
+let price = null;          // { price, change24h, currency, fetchedAt }
+let history = [];          // [[ts, fiat]] for the selected range — resolved every render
 let sevenDayHistory = [];  // fixed 7d window for per-card "today's change" (independent of range)
 let valuePoints = [];      // ledger replay of `history` — rebuilt every render
+// Session cache of fetched ranges for the CURRENT currency, so switching ranges (or coming back
+// to one) repaints instantly instead of blanking while the network catches up. Cleared whenever
+// the selected currency changes. Mirrors iOS PortfolioViewModel.priceHistoryCache.
+let historyByRange = {};
+let historyCurrency = null;
 let rangeDays = 7;
 let loading = false;
 let editingTx = null;      // null = closed; { id } editing; { id: null } adding
-let addressImport = null;  // null = closed; { busy, progress, result, error }
+// null = closed; otherwise { busy, progress, input, resolving, resolvedAddress, resolvedDomain,
+// notFound } — the KNS resolution state for the Add Kaspa Address sheet.
+let addressImport = null;
+let priceBackfillTimer = null; // non-null while the background price backfill loop is running
 let view = "main";         // "main" | "price" | "value" — which portfolio screen is showing
+
+// ---------------------------------------------------------------------------
+// Selected currency
+// ---------------------------------------------------------------------------
+// The preference itself lives in ui/app.js (Settings > Customization > Currency), which owns the
+// picker, persists the choice under this key and fires `kachat:currency-changed` on every change.
+// Portfolio isn't handed a currency accessor in its deps (unlike Cold Storage, which gets
+// `currencyCode`/`currencySymbol`), so it reads the same key directly and prefers a deps accessor
+// if one is ever added. Symbols mirror app.js's CURRENCIES table, which isn't exported.
+const CURRENCY_PREF_KEY = "kachat-currency-v1";
+const CURRENCY_SYMBOLS = {
+  usd: "$", eur: "€", gbp: "£", jpy: "¥", cny: "CN¥", aud: "A$", cad: "C$", chf: "CHF ",
+  hkd: "HK$", inr: "₹", krw: "₩", sgd: "S$", nzd: "NZ$", mxn: "MX$", brl: "R$", rub: "₽",
+  try: "₺", zar: "R", idr: "Rp", btc: "₿",
+};
+
+function currencyCode() {
+  const fromDeps = deps?.currencyCode?.();
+  if (fromDeps && CURRENCY_SYMBOLS[String(fromDeps).toLowerCase()]) return String(fromDeps).toLowerCase();
+  try {
+    const stored = String(localStorage.getItem(CURRENCY_PREF_KEY) || "").toLowerCase();
+    if (CURRENCY_SYMBOLS[stored]) return stored;
+  } catch { /* private mode */ }
+  return "usd";
+}
+
+function currencySymbol() {
+  return deps?.currencySymbol?.() || CURRENCY_SYMBOLS[currencyCode()] || "$";
+}
 
 // CoinMarketCap-style "what is Kaspa" blurb, paraphrased (not copied verbatim), shown on the
 // full-screen KAS price chart below the range selector.
@@ -143,21 +201,23 @@ function computeTodayChange(points) {
 }
 
 // ---------------------------------------------------------------------------
-// Formatting (USD — desktop is USD-only throughout)
+// Formatting — in the selected currency (iOS PortfolioFormat)
 // ---------------------------------------------------------------------------
 
-function fmtUsd(value) {
+// iOS PortfolioFormat.currency: symbol prefix (built by hand rather than via an ISO-4217 currency
+// formatter, whose behavior for a non-ISO code like BTC isn't worth relying on), 2 decimals.
+function fmtFiat(value) {
   const sign = value < 0 ? "-" : "";
   const magnitude = Math.abs(Number(value) || 0).toLocaleString(undefined, {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   });
-  return `${sign}$${magnitude}`;
+  return `${sign}${currencySymbol()}${magnitude}`;
 }
 
-// iOS formatPrice: 5 decimals under a dollar, else 2.
+// iOS PortfolioFormat.price: 5 decimals under a unit, else 2.
 function fmtPrice(value) {
   const v = Number(value) || 0;
-  return `$${v.toLocaleString(undefined, {
+  return `${currencySymbol()}${v.toLocaleString(undefined, {
     minimumFractionDigits: v < 1 ? 5 : 2, maximumFractionDigits: v < 1 ? 5 : 2,
   })}`;
 }
@@ -294,7 +354,7 @@ function attachScrub(wrap, points, onScrub, onEnd) {
 
 function pickerCard(portfolio) {
   const isActive = portfolio.id === state.activeId;
-  const summary = computeSummary(portfolio.transactions || [], price?.usd || 0);
+  const summary = computeSummary(portfolio.transactions || [], price?.price || 0);
   const change = computeTodayChange(computeValueHistory(portfolio.transactions || [], sevenDayHistory));
   const positive = (change?.amount ?? 0) >= 0;
   return `
@@ -303,7 +363,7 @@ function pickerCard(portfolio) {
         <span class="portfolio-card-name">${deps.escapeHtml(portfolio.name)}</span>
         <button class="portfolio-card-menu-btn" type="button" data-portfolio-card-menu="${portfolio.id}" aria-label="Portfolio options">⋯</button>
       </div>
-      <div class="portfolio-card-value">${price ? fmtUsd(summary.currentValue) : "—"}</div>
+      <div class="portfolio-card-value">${price ? fmtFiat(summary.currentValue) : "—"}</div>
       ${change
         ? `<div class="portfolio-card-change ${positive ? "gain" : "loss"}">${positive ? "↑" : "↓"} ${Math.abs(change.percent).toFixed(2)}%</div>`
         : `<div class="portfolio-card-change muted">—</div>`}
@@ -322,7 +382,7 @@ function summaryCardHtml(summary) {
       <div class="portfolio-summary-head">
         <div>
           <p class="profile-card-label" data-portfolio-price-label>KAS Price</p>
-          <div class="portfolio-summary-price" data-portfolio-price-value>${price ? fmtPrice(price.usd) : "—"}</div>
+          <div class="portfolio-summary-price" data-portfolio-price-value>${price ? fmtPrice(price.price) : "—"}</div>
         </div>
         ${change !== null ? `
           <div class="portfolio-summary-24h ${positive ? "gain" : "loss"}" data-portfolio-price-24h>
@@ -336,19 +396,19 @@ function summaryCardHtml(summary) {
         </div>
         <div class="portfolio-stat right">
           <span class="portfolio-stat-label">Current Value</span>
-          <span class="portfolio-stat-value">${fmtUsd(summary.currentValue)}</span>
+          <span class="portfolio-stat-value">${fmtFiat(summary.currentValue)}</span>
         </div>
       </div>
       <div class="portfolio-summary-divider"></div>
       <div class="portfolio-summary-grid">
         <div class="portfolio-stat">
           <span class="portfolio-stat-label">Total Invested</span>
-          <span class="portfolio-stat-value">${fmtUsd(summary.totalInvested)}</span>
+          <span class="portfolio-stat-value">${fmtFiat(summary.totalInvested)}</span>
         </div>
         <div class="portfolio-stat right">
           <span class="portfolio-stat-label">Total P&amp;L</span>
           <span class="portfolio-stat-value ${summary.totalPL >= 0 ? "gain" : "loss"}">
-            ${summary.totalPL >= 0 ? "↗" : "↘"} ${fmtUsd(summary.totalPL)} (${summary.totalPLPercent.toFixed(1)}%)
+            ${summary.totalPL >= 0 ? "↗" : "↘"} ${fmtFiat(summary.totalPL)} (${summary.totalPLPercent.toFixed(1)}%)
           </span>
         </div>
       </div>
@@ -365,18 +425,18 @@ function summaryCardHtml(summary) {
 
 function transactionRowHtml(tx) {
   const isBuy = tx.type !== "sell";
-  const needsPrice = tx.notes === PRICE_UNAVAILABLE_NOTE;
+  const needsPrice = isPricePending(tx.notes);
   return `
     <div class="portfolio-tx-row" data-portfolio-tx-edit="${tx.id}" role="button" tabindex="0">
       <span class="portfolio-tx-icon ${isBuy ? "buy" : "sell"}">${isBuy ? "↓" : "↑"}</span>
       <div class="portfolio-tx-main">
-        <span class="portfolio-tx-type ${isBuy ? "buy" : "sell"}">${isBuy ? "Buy" : "Sell"}${needsPrice ? ' <span class="portfolio-tx-warn" title="Price needed — click to set">⚠</span>' : ""}</span>
+        <span class="portfolio-tx-type ${isBuy ? "buy" : "sell"}">${isBuy ? "Buy" : "Sell"}${needsPrice ? ' <span class="portfolio-tx-warn" title="Price is still loading, it will fill in automatically. Click to set it yourself.">⚠</span>' : ""}</span>
         <span class="portfolio-tx-date">${fmtDate(tx.timestamp)}</span>
         ${tx.notes && !needsPrice ? `<span class="portfolio-tx-notes">${deps.escapeHtml(tx.notes)}</span>` : ""}
       </div>
       <div class="portfolio-tx-amounts">
         <span class="portfolio-tx-amount">${fmtKas(tx.amountKas)}</span>
-        <span class="portfolio-tx-fiat">${fmtUsd(tx.fiatValue || 0)}</span>
+        <span class="portfolio-tx-fiat">${fmtFiat(tx.fiatValue || 0)}</span>
       </div>
       <button class="portfolio-tx-delete" type="button" data-portfolio-tx-delete="${tx.id}" aria-label="Delete transaction">×</button>
     </div>`;
@@ -395,7 +455,7 @@ function squaresHtml(summary) {
           <span class="portfolio-square-title">Kaspa</span>
           <span class="portfolio-square-chev">›</span>
         </div>
-        <div class="portfolio-square-value">${price ? fmtPrice(price.usd) : "—"}</div>
+        <div class="portfolio-square-value">${price ? fmtPrice(price.price) : "—"}</div>
         ${change !== null ? `<div class="portfolio-square-change ${pPos ? "gain" : "loss"}">${pPos ? "↑" : "↓"} ${Math.abs(change).toFixed(2)}%</div>` : `<div class="portfolio-square-change muted">—</div>`}
       </button>
       <button class="portfolio-square" type="button" data-portfolio-open="value">
@@ -404,7 +464,7 @@ function squaresHtml(summary) {
           <span class="portfolio-square-title">Value</span>
           <span class="portfolio-square-chev">›</span>
         </div>
-        <div class="portfolio-square-value">${fmtUsd(summary.currentValue)}</div>
+        <div class="portfolio-square-value">${fmtFiat(summary.currentValue)}</div>
         <div class="portfolio-square-change ${plPos ? "gain" : "loss"}">${plPos ? "↑" : "↓"} ${Math.abs(summary.totalPLPercent).toFixed(2)}%</div>
       </button>
     </div>`;
@@ -425,7 +485,7 @@ function priceViewHtml() {
       </div>
       <div class="portfolio-detail-date" data-portfolio-price-date hidden></div>
       <div class="portfolio-detail-price-row">
-        <span class="portfolio-detail-price" data-portfolio-price-value>${price ? fmtPrice(price.usd) : "—"}</span>
+        <span class="portfolio-detail-price" data-portfolio-price-value>${price ? fmtPrice(price.price) : "—"}</span>
         ${change !== null ? `<span class="portfolio-detail-24h ${pPos ? "gain" : "loss"}" data-portfolio-price-24h>${pPos ? "↑" : "↓"} ${Math.abs(change).toFixed(2)}% (24h)</span>` : ""}
       </div>
       ${bigChartSvg(history, { height: 240, chart: "price" })}
@@ -445,12 +505,12 @@ function valueStatsHtml(summary) {
     <div class="profile-card portfolio-summary">
       <div class="portfolio-summary-grid">
         <div class="portfolio-stat"><span class="portfolio-stat-label">Holdings</span><span class="portfolio-stat-value">${fmtKas(summary.holdingsKas)}</span></div>
-        <div class="portfolio-stat right"><span class="portfolio-stat-label">Current Value</span><span class="portfolio-stat-value">${fmtUsd(summary.currentValue)}</span></div>
+        <div class="portfolio-stat right"><span class="portfolio-stat-label">Current Value</span><span class="portfolio-stat-value">${fmtFiat(summary.currentValue)}</span></div>
       </div>
       <div class="portfolio-summary-divider"></div>
       <div class="portfolio-summary-grid">
-        <div class="portfolio-stat"><span class="portfolio-stat-label">Total Invested</span><span class="portfolio-stat-value">${fmtUsd(summary.totalInvested)}</span></div>
-        <div class="portfolio-stat right"><span class="portfolio-stat-label">Total P&amp;L</span><span class="portfolio-stat-value ${summary.totalPL >= 0 ? "gain" : "loss"}">${summary.totalPL >= 0 ? "↗" : "↘"} ${fmtUsd(summary.totalPL)} (${summary.totalPLPercent.toFixed(1)}%)</span></div>
+        <div class="portfolio-stat"><span class="portfolio-stat-label">Total Invested</span><span class="portfolio-stat-value">${fmtFiat(summary.totalInvested)}</span></div>
+        <div class="portfolio-stat right"><span class="portfolio-stat-label">Total P&amp;L</span><span class="portfolio-stat-value ${summary.totalPL >= 0 ? "gain" : "loss"}">${summary.totalPL >= 0 ? "↗" : "↘"} ${fmtFiat(summary.totalPL)} (${summary.totalPLPercent.toFixed(1)}%)</span></div>
       </div>
       ${summary.averageBuyPriceUsd !== null ? `
         <div class="portfolio-summary-divider"></div>
@@ -470,7 +530,7 @@ function valueViewHtml(summary) {
     <div class="profile-card">
       <p class="profile-card-label" data-portfolio-value-label>Portfolio Value</p>
       <div class="portfolio-detail-date" data-portfolio-value-date hidden></div>
-      <div class="portfolio-detail-price" data-portfolio-value-readout>${fmtUsd(latest)}</div>
+      <div class="portfolio-detail-price" data-portfolio-value-readout>${fmtFiat(latest)}</div>
       ${valuePoints.length >= 2
         ? bigChartSvg(valuePoints, { height: 220, stroke: "var(--kaspa-ink)", chart: "value", lineWidth: 3 })
         : `<div class="portfolio-chart-empty">Not enough history yet — check back after a few days of activity.</div>`}
@@ -485,7 +545,11 @@ function render() {
   if (!rootEl) return;
   const portfolio = activePortfolio();
   const scoped = portfolio.transactions || [];
-  const summary = computeSummary(scoped, price?.usd || 0);
+  // Resolved per render (session cache, else the persisted copy for this exact range) so a
+  // refresh in flight never blanks the chart and a range switch repaints instantly.
+  history = historyForRange(rangeDays);
+  sevenDayHistory = historyForRange(7);
+  const summary = computeSummary(scoped, price?.price || 0);
   valuePoints = computeValueHistory(scoped, history);
 
   if (view === "price") {
@@ -558,7 +622,7 @@ function wireScrubbing() {
       const value = rootEl.querySelector("[data-portfolio-price-value]");
       const change = rootEl.querySelector("[data-portfolio-price-24h]");
       if (date) date.hidden = true;
-      if (value) value.textContent = price ? fmtPrice(price.usd) : "—";
+      if (value) value.textContent = price ? fmtPrice(price.price) : "—";
       if (change) change.style.visibility = "";
     });
     return;
@@ -571,12 +635,12 @@ function wireScrubbing() {
       const date = rootEl.querySelector("[data-portfolio-value-date]");
       const readout = rootEl.querySelector("[data-portfolio-value-readout]");
       if (date) { date.hidden = false; date.textContent = new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
-      if (readout) readout.textContent = fmtUsd(v);
+      if (readout) readout.textContent = fmtFiat(v);
     }, () => {
       const date = rootEl.querySelector("[data-portfolio-value-date]");
       const readout = rootEl.querySelector("[data-portfolio-value-readout]");
       if (date) date.hidden = true;
-      if (readout) readout.textContent = fmtUsd(valuePoints.length ? valuePoints[valuePoints.length - 1][1] : 0);
+      if (readout) readout.textContent = fmtFiat(valuePoints.length ? valuePoints[valuePoints.length - 1][1] : 0);
     });
   }
 }
@@ -601,8 +665,10 @@ function openTxEditor(txId) {
   modalsEl.querySelector("[data-portfolio-editor-amount]").value = tx ? String(tx.amountKas) : "";
   modalsEl.querySelector("[data-portfolio-editor-fiat]").value = tx && tx.fiatValue ? String(tx.fiatValue) : "";
   modalsEl.querySelector("[data-portfolio-editor-date]").value = toDatetimeLocal(tx?.timestamp ?? Date.now());
-  const notes = tx?.notes === PRICE_UNAVAILABLE_NOTE ? "" : (tx?.notes || "");
+  const notes = isPricePending(tx?.notes) ? "" : (tx?.notes || "");
   modalsEl.querySelector("[data-portfolio-editor-notes]").value = notes;
+  const fiatLabel = modalsEl.querySelector("[data-portfolio-editor-fiat-label]");
+  if (fiatLabel) fiatLabel.textContent = `Total Value (${currencyCode().toUpperCase()})`;
   modalsEl.querySelector("[data-portfolio-editor-delete]").hidden = !tx;
   updateEditorHint();
   backdrop.hidden = false;
@@ -622,7 +688,7 @@ function updateEditorHint() {
   if (Number.isFinite(amount) && amount > 0 && Number.isFinite(fiat) && fiat > 0) {
     hint.textContent = `≈ ${fmtPrice(fiat / amount)} / KAS`;
   } else if (price && Number.isFinite(amount) && amount > 0) {
-    hint.textContent = `At current price: ${fmtUsd(amount * price.usd)}`;
+    hint.textContent = `At current price: ${fmtFiat(amount * price.price)}`;
   } else {
     hint.textContent = "";
   }
@@ -775,7 +841,6 @@ function importCsvText(content) {
 // ---------------------------------------------------------------------------
 
 const IMPORT_MAX_TRANSACTIONS = 500;
-const PRICE_REQUEST_SPACING_MS = 1200; // CoinGecko free tier rate-limits aggressively
 
 function txDirectionForAddress(tx, address) {
   const inputs = tx.inputs || [];
@@ -801,28 +866,6 @@ function txDirectionForAddress(tx, address) {
   return null;
 }
 
-function dayKey(ts) {
-  const d = new Date(ts);
-  const pad = (n) => String(n).padStart(2, "0");
-  // CoinGecko's /history endpoint takes DD-MM-YYYY (UTC-day granularity).
-  return `${pad(d.getUTCDate())}-${pad(d.getUTCMonth() + 1)}-${d.getUTCFullYear()}`;
-}
-
-async function fetchHistoricalDayPrice(key) {
-  let cache = {};
-  try { cache = JSON.parse(localStorage.getItem(DAILY_PRICE_CACHE_KEY) || "{}"); } catch { /* fresh */ }
-  if (Number.isFinite(cache[key])) return cache[key];
-  const url = `https://api.coingecko.com/api/v3/coins/kaspa/history?date=${encodeURIComponent(key)}&localization=false`;
-  const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
-  if (!response.ok) return null;
-  const json = await response.json();
-  const value = Number(json?.market_data?.current_price?.usd);
-  if (!Number.isFinite(value)) return null;
-  cache[key] = value;
-  try { localStorage.setItem(DAILY_PRICE_CACHE_KEY, JSON.stringify(cache)); } catch { /* quota */ }
-  return value;
-}
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function setImportProgress(text) {
@@ -831,19 +874,191 @@ function setImportProgress(text) {
   if (el) el.textContent = text || "";
 }
 
+// --- address field: raw address or KNS domain (iOS PortfolioAddAddressView) ---
+
+function looksLikeRawAddress(input) {
+  const lower = String(input || "").toLowerCase();
+  return lower.startsWith("kaspa:") || lower.startsWith("kaspatest:");
+}
+
+function isValidRawAddress(input) {
+  return /^kaspa:[a-z0-9]{50,90}$/.test(String(input || "").toLowerCase());
+}
+
+function shortenAddress(address) {
+  return address.length > 26 ? `${address.slice(0, 16)}...${address.slice(-8)}` : address;
+}
+
+/** What Import actually runs against: the resolved owner of a KNS domain, else the raw input. */
+function importEffectiveAddress() {
+  return addressImport?.resolvedAddress || addressImport?.input || "";
+}
+
+function canImportAddress() {
+  if (!addressImport || addressImport.busy) return false;
+  if (addressImport.resolvedAddress) return true;
+  return isValidRawAddress(addressImport.input);
+}
+
+/** Under-field status line + button states — port of iOS's `validationStatus`: nothing while
+ *  empty or mid-resolution, "Resolves to ..." for a resolved domain, a quiet "Domain not found",
+ *  or the raw address's valid/invalid affordance. */
+function syncImportModal() {
+  if (!modalsEl) return;
+  const startBtn = modalsEl.querySelector("[data-portfolio-import-start]");
+  const pasteBtn = modalsEl.querySelector("[data-portfolio-import-paste]");
+  const status = modalsEl.querySelector("[data-portfolio-import-status]");
+  if (startBtn) startBtn.disabled = !canImportAddress();
+  if (pasteBtn) pasteBtn.disabled = Boolean(addressImport?.busy);
+  if (!status) return;
+
+  const input = addressImport?.input || "";
+  status.style.color = "";
+  if (addressImport?.resolving) { status.textContent = "Resolving domain…"; return; }
+  if (!input) { status.textContent = ""; return; }
+  if (addressImport.resolvedAddress) {
+    status.textContent = `Resolves to ${shortenAddress(addressImport.resolvedAddress)}`;
+    status.style.color = "#4cd964";
+    return;
+  }
+  if (addressImport.notFound) { status.textContent = "Domain not found"; return; }
+  if (looksLikeRawAddress(input)) {
+    const valid = isValidRawAddress(input);
+    status.textContent = valid ? "Valid address" : "Invalid address format";
+    status.style.color = valid ? "#4cd964" : "#ff6b6b";
+    return;
+  }
+  status.textContent = "";
+}
+
+// Bumped on every keystroke so an in-flight lookup for older input can't land on newer input.
+let knsResolveSeq = 0;
+
+function handleImportInputChange(raw) {
+  if (!addressImport || addressImport.busy) return;
+  const trimmed = String(raw || "").trim();
+  addressImport.input = trimmed;
+  addressImport.resolvedAddress = null;
+  addressImport.resolvedDomain = null;
+  addressImport.notFound = false;
+  addressImport.resolving = false;
+  const seq = (knsResolveSeq += 1);
+
+  if (trimmed && !looksLikeRawAddress(trimmed) && looksLikeDomain(trimmed)) {
+    addressImport.resolving = true;
+    resolveImportDomain(trimmed, seq);
+  }
+  syncImportModal();
+}
+
+/** Clipboard fill for the address field — the desktop equivalent of iOS's Paste button. Setting
+ *  the field's value programmatically fires no `input` event, so the change is fed through by
+ *  hand (mirroring iOS, where assigning `addressText` triggers `handleInputChange`). */
+async function pasteIntoImportField() {
+  if (!addressImport || addressImport.busy) return;
+  let text = "";
+  try {
+    text = String((await navigator.clipboard.readText()) || "").trim();
+  } catch {
+    setImportProgress("Couldn't read the clipboard. Paste into the field with Cmd+V instead.");
+    return;
+  }
+  if (!text) return;
+  // Strip URI query params (kaspa:addr?amount=...) so only the address itself lands in the
+  // field — same normalization iOS's scan/paste handler applies.
+  if (looksLikeRawAddress(text)) text = text.split("?")[0];
+  const field = modalsEl.querySelector("[data-portfolio-import-address]");
+  if (field) field.value = text;
+  setImportProgress("");
+  handleImportInputChange(text);
+}
+
+/** Debounced forward resolution — the same 300ms wait-then-check-input-unchanged pattern iOS
+ *  uses, so mid-typing keystrokes never each fire a KNS request. */
+async function resolveImportDomain(domain, seq) {
+  await sleep(300);
+  if (seq !== knsResolveSeq || addressImport?.input !== domain) return;
+
+  let resolution = null;
+  try {
+    resolution = await resolveDomain(domain, { baseUrl: getEndpoint("knsApi") });
+  } catch { resolution = null; }
+
+  // Input may have moved on while the lookup was in flight — a stale answer must not overwrite
+  // the state for what's in the field now.
+  if (seq !== knsResolveSeq || addressImport?.input !== domain) return;
+  addressImport.resolvedAddress = resolution?.ownerAddress || null;
+  addressImport.resolvedDomain = resolution?.domain || null;
+  addressImport.notFound = !resolution;
+  addressImport.resolving = false;
+  syncImportModal();
+}
+
+/** Backoff schedule for a failing history page: retry the SAME offset with growing pauses before
+ *  declaring the fetch incomplete, instead of aborting the whole import on the first hiccup.
+ *  Port of PortfolioAddressImporter.pageRetryDelaysSeconds. */
+const PAGE_RETRY_DELAYS_MS = [0, 1000, 3000, 8000];
+const IMPORT_PAGE_SIZE = 50;
+
+/** Same endpoint and paging as before, but a failing page retries the SAME offset on a growing
+ *  backoff — and when the retries are exhausted, whatever was fetched so far is returned (marked
+ *  incomplete) so the import can still save the rows it has. A 429 on page 4 used to discard
+ *  pages 1 through 3 entirely. Port of PortfolioAddressImporter.fetchTransactionsResumable. */
+async function fetchTransactionsResumable(address, onProgress) {
+  const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
+  const all = [];
+  let offset = 0;
+
+  while (all.length < IMPORT_MAX_TRANSACTIONS) {
+    const url = `${base}/addresses/${encodeURIComponent(address)}/full-transactions`
+      + `?limit=${IMPORT_PAGE_SIZE}&offset=${offset}&resolve_previous_outpoints=light`;
+
+    let page = null;
+    for (let attempt = 0; attempt < PAGE_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (PAGE_RETRY_DELAYS_MS[attempt] > 0) {
+        onProgress(`Fetching transactions… (retrying, ${all.length} so far)`);
+        await sleep(PAGE_RETRY_DELAYS_MS[attempt]);
+      }
+      try {
+        const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (!response.ok) continue;
+        const json = await response.json();
+        if (!Array.isArray(json)) continue;
+        page = json;
+        break;
+      } catch { /* network hiccup — the next attempt waits longer */ }
+    }
+
+    if (page === null) return { transactions: all, complete: false };
+    if (!page.length) break;
+    all.push(...page);
+    onProgress(`Fetching transactions… (${all.length})`);
+    if (page.length < IMPORT_PAGE_SIZE) break;
+    offset += IMPORT_PAGE_SIZE;
+  }
+
+  return { transactions: all.slice(0, IMPORT_MAX_TRANSACTIONS), complete: true };
+}
+
+/** Imports `address`'s on-chain history into the active portfolio. The rows are SAVED FIRST —
+ *  with whatever prices the persistent day cache already knows — and everything still unpriced
+ *  is handed to the background backfill, so a CoinGecko rate limit can never cost the user the
+ *  ledger data itself. Mirrors iOS: PortfolioAddressImporter.importAddress returns rows and
+ *  PortfolioViewModel.importAddress persists them before kicking off startPriceBackfillIfNeeded. */
 async function runAddressImport(addressRaw) {
   const address = String(addressRaw || "").trim();
   try {
     validateMainnetAddress(address);
     // validateMainnetAddress only checks the prefix — also require a plausible bech32 payload
-    // so obvious typos fail here instead of as an opaque Kaspa API error.
+    // so obvious typos fail here instead of as an opaque Kaspa API error. KNS domains never
+    // reach this check: the field resolves them to an address before Import is enabled.
     if (!/^kaspa:[a-z0-9]{50,90}$/.test(address)) throw new Error("bad payload");
   } catch {
     setImportProgress("That doesn't look like a valid mainnet Kaspa address.");
     return;
   }
   addressImport.busy = true;
-  modalsEl.querySelector("[data-portfolio-import-start]").disabled = true;
+  syncImportModal();
 
   try {
     // Re-importing the same address only adds transactions not already present anywhere in
@@ -856,21 +1071,10 @@ async function runAddressImport(addressRaw) {
     }
 
     setImportProgress("Fetching transactions…");
-    const base = String(getEndpoint("kaspaApi") || "https://api.kaspa.org").replace(/\/+$/, "");
-    const fullTransactions = [];
-    for (let offset = 0; fullTransactions.length < IMPORT_MAX_TRANSACTIONS; offset += 50) {
-      const url = `${base}/addresses/${encodeURIComponent(address)}/full-transactions?limit=50&offset=${offset}&resolve_previous_outpoints=light`;
-      const response = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
-      if (!response.ok) throw new Error(`Kaspa API returned ${response.status}`);
-      const page = await response.json();
-      if (!Array.isArray(page) || !page.length) break;
-      fullTransactions.push(...page);
-      if (page.length < 50) break;
-      setImportProgress(`Fetching transactions… (${fullTransactions.length})`);
-    }
+    const historyResult = await fetchTransactionsResumable(address, setImportProgress);
 
     const candidates = [];
-    for (const tx of fullTransactions.slice(0, IMPORT_MAX_TRANSACTIONS)) {
+    for (const tx of historyResult.transactions) {
       const txId = tx.transaction_id;
       const blockTime = Number(tx.block_time);
       if (!txId || existingTxIds.has(txId) || !Number.isFinite(blockTime) || blockTime <= 0) continue;
@@ -881,60 +1085,124 @@ async function runAddressImport(addressRaw) {
         isOutgoing: direction.isOutgoing,
         amountKas: Number(direction.amountSompi) / 1e8,
         timestamp: blockTime,
-        day: dayKey(blockTime),
+        day: utcDayKey(blockTime),
       });
     }
     if (!candidates.length) {
-      setImportProgress("No new transactions found for this address.");
+      setImportProgress(historyResult.complete
+        ? "No new transactions found for this address."
+        : "Couldn't fetch this address's transactions. Check your connection and try again.");
       return;
     }
 
-    // One historical-price fetch per unique day, paced sequentially for the free-tier limit.
+    // Prices the day cache already holds are applied for free (no network call at all); every
+    // other row lands with the pending sentinel and is filled in by the backfill below.
+    const currency = currencyCode();
     const uniqueDays = [...new Set(candidates.map((c) => c.day))];
-    const priceByDay = {};
-    for (let i = 0; i < uniqueDays.length; i += 1) {
-      setImportProgress(`Pricing ${i + 1}/${uniqueDays.length} days…`);
-      let dayPrice = await fetchHistoricalDayPrice(uniqueDays[i]);
-      if (dayPrice === null) {
-        await sleep(PRICE_REQUEST_SPACING_MS);
-        dayPrice = await fetchHistoricalDayPrice(uniqueDays[i]);
-      }
-      priceByDay[uniqueDays[i]] = dayPrice;
-      if (i < uniqueDays.length - 1) await sleep(PRICE_REQUEST_SPACING_MS);
-    }
+    const priceByDay = peekDailyPrices(uniqueDays, currency);
 
-    // Every candidate is imported even if its day couldn't be priced — a row with no price is
-    // still real ledger data the user can fill in via the edit sheet, not silently dropped.
     const portfolio = activePortfolio();
     portfolio.transactions ||= [];
     let missingPriceCount = 0;
     for (const c of candidates) {
       const dayPrice = priceByDay[c.day];
-      if (dayPrice === null || dayPrice === undefined) missingPriceCount += 1;
+      const priced = Number.isFinite(dayPrice);
+      if (!priced) missingPriceCount += 1;
       portfolio.transactions.push({
         id: nowId(),
         type: c.isOutgoing ? "sell" : "buy",
         amountKas: c.amountKas,
-        fiatValue: c.amountKas * (dayPrice || 0),
+        fiatValue: priced ? c.amountKas * dayPrice : 0,
         timestamp: c.timestamp,
-        notes: dayPrice === null || dayPrice === undefined ? PRICE_UNAVAILABLE_NOTE : null,
+        notes: priced ? null : PRICE_PENDING_NOTE,
         sourceAddress: address,
         sourceTxId: c.txId,
       });
     }
+    // Saved BEFORE any pricing network call — this is the whole point: the ledger survives a
+    // mid-import rate limit, whatever CoinGecko does next.
     saveState();
     render();
+
     setImportProgress(
-      `Imported ${candidates.length} transaction${candidates.length === 1 ? "" : "s"}` +
-      (missingPriceCount ? ` (${missingPriceCount} still need a price — marked with ⚠).` : "."),
+      `Imported ${candidates.length} transaction${candidates.length === 1 ? "" : "s"}.`
+      + (historyResult.complete ? "" : " Some pages couldn't be fetched, so this is partial - run it again later to pick up the rest.")
+      + (missingPriceCount ? ` Prices for ${missingPriceCount} of them are still loading and will fill in automatically.` : ""),
     );
+    startPriceBackfillIfNeeded();
   } catch (error) {
     setImportProgress(`Import failed: ${error.message}`);
   } finally {
-    addressImport.busy = false;
-    const startBtn = modalsEl.querySelector("[data-portfolio-import-start]");
-    if (startBtn) startBtn.disabled = false;
+    if (addressImport) addressImport.busy = false;
+    syncImportModal();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Background price backfill (iOS PortfolioViewModel.startPriceBackfillIfNeeded)
+// ---------------------------------------------------------------------------
+
+function pendingPriceRows() {
+  const rows = [];
+  for (const p of state.portfolios) {
+    for (const tx of p.transactions || []) {
+      if (isPricePending(tx.notes) && tx.sourceTxId) rows.push(tx);
+    }
+  }
+  return rows;
+}
+
+/** Prices auto-imported rows the import itself couldn't price. Runs a few passes on a growing
+ *  backoff — each pass retries the batched range call first (cheap: cache + at most one request)
+ *  and then walks the leftover days through the paced per-day fallback, saving every price the
+ *  moment it lands so rows fill in incrementally rather than all-or-nothing. One loop at a time;
+ *  re-triggering while it runs is a no-op (the running loop picks up any newly imported rows on
+ *  its next pass). */
+function startPriceBackfillIfNeeded() {
+  if (priceBackfillTimer || !pendingPriceRows().length) return;
+  const accountKey = deps.accountScopedKey(PORTFOLIO_KEY);
+  priceBackfillTimer = (async () => {
+    for (const delay of [0, 30_000, 120_000, 300_000]) {
+      if (delay > 0) await sleep(delay);
+      // An account switch reloaded `state` out from under this loop — its rows are gone.
+      if (deps.accountScopedKey(PORTFOLIO_KEY) !== accountKey || !pendingPriceRows().length) break;
+      await runPriceBackfillPass(accountKey);
+    }
+    priceBackfillTimer = null;
+  })();
+}
+
+async function runPriceBackfillPass(accountKey) {
+  const currency = currencyCode();
+  const pending = pendingPriceRows();
+  if (!pending.length) return;
+  const days = [...new Set(pending.map((tx) => utcDayKey(tx.timestamp)))];
+
+  const prices = await resolveDailyPrices(days, currency);
+  // Days the batched range couldn't cover (older than CoinGecko's keyless 365-day window, or
+  // the range call failed): paced per-day fallback, newest first, capped per pass so one pass
+  // stays bounded — the rest wait for the next pass.
+  const missing = days.filter((day) => prices[day] === undefined).sort().reverse().slice(0, 30);
+  for (const day of missing) {
+    if (deps.accountScopedKey(PORTFOLIO_KEY) !== accountKey) return;
+    const value = await resolveDailyPriceSingle(day, currency);
+    if (value !== null) prices[day] = value;
+    await sleep(PRICE_REQUEST_SPACING_MS);
+  }
+
+  if (deps.accountScopedKey(PORTFOLIO_KEY) !== accountKey) return;
+  let changed = false;
+  for (const p of state.portfolios) {
+    for (const tx of p.transactions || []) {
+      if (!isPricePending(tx.notes) || !tx.sourceTxId) continue;
+      const dayPrice = prices[utcDayKey(tx.timestamp)];
+      if (!Number.isFinite(dayPrice)) continue;
+      tx.fiatValue = (Number(tx.amountKas) || 0) * dayPrice;
+      tx.notes = null;
+      changed = true;
+    }
+  }
+  if (changed) { saveState(); render(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -963,7 +1231,7 @@ function buildModals() {
             <input type="number" step="any" min="0" placeholder="0.0" data-portfolio-editor-amount />
           </label>
           <label class="portfolio-editor-field">
-            <span>Total Value (USD)</span>
+            <span data-portfolio-editor-fiat-label>Total Value (USD)</span>
             <input type="number" step="any" min="0" placeholder="0.00" data-portfolio-editor-fiat />
           </label>
           <p class="portfolio-editor-hint" data-portfolio-editor-hint></p>
@@ -990,11 +1258,15 @@ function buildModals() {
           <button class="modal-close" type="button" data-portfolio-import-close aria-label="Close">×</button>
         </div>
         <div class="portfolio-editor-body">
-          <p class="portfolio-import-note">Imports this address's on-chain history: every received transaction becomes a buy and every sent one a sell, priced at that day's KAS price. Re-running later only adds new activity.</p>
+          <p class="portfolio-import-note">Enter a Kaspa address or a KNS domain like name.kas. Imports that address's on-chain history: every received transaction becomes a buy and every sent one a sell, priced at that day's KAS price. Re-running later only adds new activity.</p>
           <label class="portfolio-editor-field">
-            <span>Kaspa Address</span>
-            <input type="text" placeholder="kaspa:…" data-portfolio-import-address spellcheck="false" autocomplete="off" />
+            <span>Kaspa Address or KNS Domain</span>
+            <input type="text" placeholder="kaspa:qr… or name.kas" data-portfolio-import-address spellcheck="false" autocomplete="off" autocapitalize="off" />
           </label>
+          <p class="portfolio-editor-hint" data-portfolio-import-status></p>
+          <div class="portfolio-tx-header-actions">
+            <button class="cold-inline-link" type="button" data-portfolio-import-paste>Paste</button>
+          </div>
           <p class="portfolio-import-progress" data-portfolio-import-progress></p>
         </div>
         <div class="modal-actions">
@@ -1022,19 +1294,31 @@ function buildModals() {
     if (event.target.closest("[data-portfolio-import-close]")) {
       if (!addressImport?.busy) {
         addressImport = null;
+        knsResolveSeq += 1; // any in-flight KNS lookup belongs to a sheet that's gone
         modalsEl.querySelector("[data-portfolio-import-modal]").hidden = true;
       }
       return;
     }
+    if (event.target.closest("[data-portfolio-import-paste]")) {
+      pasteIntoImportField();
+      return;
+    }
     if (event.target.closest("[data-portfolio-import-start]")) {
-      if (addressImport && !addressImport.busy) {
-        runAddressImport(modalsEl.querySelector("[data-portfolio-import-address]")?.value);
-      }
+      // Runs against the RESOLVED address when a KNS domain was typed, not the domain text.
+      if (canImportAddress()) runAddressImport(importEffectiveAddress());
     }
   });
 
   modalsEl.addEventListener("input", (event) => {
     if (event.target.closest("[data-portfolio-editor-amount], [data-portfolio-editor-fiat]")) updateEditorHint();
+    if (event.target.closest("[data-portfolio-import-address]")) handleImportInputChange(event.target.value);
+  });
+
+  modalsEl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target.closest("[data-portfolio-import-address]")) {
+      event.preventDefault();
+      if (canImportAddress()) runAddressImport(importEffectiveAddress());
+    }
   });
 
   modalsEl.querySelector("[data-portfolio-csv-input]").addEventListener("change", async (event) => {
@@ -1051,22 +1335,64 @@ function buildModals() {
 // Data refresh
 // ---------------------------------------------------------------------------
 
+/** Best data already on hand for a range, so every render paints something instead of blanking:
+ *  this session's fetch first, else the persisted copy for THAT range (even past its 10-minute
+ *  TTL — a 3-month curve from an hour ago is still the right shape, and it beats showing another
+ *  range's curve). Port of iOS's stale-while-refresh per-range painting. */
+function historyForRange(days) {
+  const session = historyByRange[days];
+  if (session?.length) return session;
+  return peekKasPriceHistory(days, currencyCode())?.points || [];
+}
+
+/** Drops every cached curve when the selected currency changes — EUR numbers must never be
+ *  painted from the USD cache. Mirrors iOS handleSettingsChanged -> refreshPrice(). */
+function syncCurrencyState() {
+  const currency = currencyCode();
+  if (historyCurrency === currency) return false;
+  historyCurrency = currency;
+  historyByRange = {};
+  attemptedRanges = new Set();
+  price = peekKasPrice(currency);
+  return true;
+}
+
+// Ranges this session has already tried to fetch for the current currency — stops the
+// "range changed while we were fetching" catch-up below from looping forever on a range whose
+// fetch keeps failing.
+let attemptedRanges = new Set();
+
 async function refreshData({ force = false } = {}) {
   if (loading) return;
+  syncCurrencyState();
+  if (force) attemptedRanges = new Set();
+  const currency = historyCurrency;
+  // Capture the range this refresh is fetching — a range tap mid-refresh must not mis-key the
+  // cache write or repaint the new range with the old range's data.
+  const days = rangeDays;
+  attemptedRanges.add(days);
   loading = true;
-  render();
+  render(); // paints from cache immediately; the fetch below only ever upgrades it
   try {
     const [priceResult, historyResult, sevenDayResult] = await Promise.all([
-      fetchKasPrice({ force }).catch(() => price),
-      fetchKasPriceHistory(rangeDays).catch(() => history),
-      rangeDays === 7 ? null : fetchKasPriceHistory(7).catch(() => sevenDayHistory),
+      fetchKasPrice({ force, currency }),
+      fetchKasPriceHistory(days, { currency, force }),
+      days === 7 ? null : fetchKasPriceHistory(7, { currency, force }),
     ]);
-    price = priceResult || price;
-    history = historyResult || history;
-    sevenDayHistory = rangeDays === 7 ? (historyResult || sevenDayHistory) : (sevenDayResult || sevenDayHistory);
+    // A currency switch while this was in flight makes every result stale — drop it.
+    if (currencyCode() !== currency) return;
+    if (priceResult) price = priceResult;
+    if (historyResult?.length) historyByRange[days] = historyResult;
+    if (days !== 7 && sevenDayResult?.length) historyByRange[7] = sevenDayResult;
   } finally {
     loading = false;
     render();
+    // The user switched range or currency while this fetch was in flight, which made that tap's
+    // own refreshData a no-op — go fetch what they're actually looking at now. Converges: a
+    // currency switch resets attemptedRanges, and every pass records the range it tried.
+    const currencyMoved = currencyCode() !== currency;
+    const rangeUnfetched = rangeDays !== days && !historyByRange[rangeDays]?.length && !attemptedRanges.has(rangeDays);
+    if (currencyMoved || rangeUnfetched) refreshData({ force: currencyMoved });
   }
 }
 
@@ -1100,12 +1426,16 @@ export function refreshPortfolio() {
   view = "main"; // always land on the main portfolio screen when the tab is (re)opened
   render();
   refreshData();
+  // Rows left unpriced by an import the browser was closed during (or by an older build with no
+  // backfill at all) resume pricing here — same trigger point as iOS's setCurrentWallet.
+  startPriceBackfillIfNeeded();
 }
 
 export function resetPortfolioForAccount() {
   loadState();
   ensureDefaultPortfolio();
   render();
+  startPriceBackfillIfNeeded();
 }
 
 function closeCardMenus(except = null) {
@@ -1122,11 +1452,26 @@ export function initPortfolio(dependencies) {
   loadState();
   ensureDefaultPortfolio();
   buildModals();
+  historyCurrency = currencyCode();
+  const initialFiatLabel = modalsEl?.querySelector("[data-portfolio-editor-fiat-label]");
+  if (initialFiatLabel) initialFiatLabel.textContent = `Total Value (${historyCurrency.toUpperCase()})`;
 
   document.addEventListener("click", (event) => {
     // Any click outside the portfolio pane's menus closes them.
     if (!rootEl || rootEl.contains(event.target)) return;
     closeCardMenus();
+  });
+
+  // Settings > Customization > Currency lives in ui/app.js, which fires this after persisting
+  // the new choice. A currency switch while Portfolio is open must not merely reformat the
+  // existing (wrong-currency) numbers, so every cached curve is dropped and refetched — iOS
+  // does exactly this in PortfolioViewModel.handleSettingsChanged.
+  document.addEventListener("kachat:currency-changed", () => {
+    syncCurrencyState();
+    const fiatLabel = modalsEl?.querySelector("[data-portfolio-editor-fiat-label]");
+    if (fiatLabel) fiatLabel.textContent = `Total Value (${currencyCode().toUpperCase()})`;
+    render();
+    refreshData({ force: true });
   });
 
   rootEl?.addEventListener("click", (event) => {
@@ -1185,7 +1530,12 @@ export function initPortfolio(dependencies) {
     if (event.target.closest("[data-portfolio-back]")) { view = "main"; render(); return; }
 
     const range = event.target.closest("[data-portfolio-range]");
-    if (range) { rangeDays = Number(range.dataset.portfolioRange) || 7; refreshData(); return; }
+    if (range) {
+      rangeDays = Number(range.dataset.portfolioRange) || 7;
+      render();       // repaints the tapped range from cache right away, even mid-refresh
+      refreshData();  // no-op while a refresh is in flight; that one finishes into its own range
+      return;
+    }
 
     if (event.target.closest("[data-portfolio-refresh]")) { refreshData({ force: true }); return; }
 
@@ -1206,9 +1556,14 @@ export function initPortfolio(dependencies) {
     }
     if (event.target.closest("[data-portfolio-io-address]")) {
       closeCardMenus();
-      addressImport = { busy: false, progress: "" };
+      addressImport = {
+        busy: false, progress: "", input: "",
+        resolving: false, resolvedAddress: null, resolvedDomain: null, notFound: false,
+      };
+      knsResolveSeq += 1; // abandon any lookup left over from a previous open
       modalsEl.querySelector("[data-portfolio-import-address]").value = "";
       setImportProgress("");
+      syncImportModal();
       modalsEl.querySelector("[data-portfolio-import-modal]").hidden = false;
       return;
     }
