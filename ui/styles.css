@@ -5963,11 +5963,8 @@ body.session-logged-out [data-account-rename-modal] {
 .broadcast-room-dot { width: 10px; height: 10px; border-radius: 50%; background: #e05555; flex-shrink: 0; }
 .broadcast-room-dot.ok { background: #4cd964; }
 .broadcast-hidden-btn { margin-left: auto; }
-.broadcast-room-banner {
-  text-align: center; font-size: 12px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 12px; padding: 7px 12px;
-  background: var(--surface-1);
-}
+/* (No in-room retention banner: iOS removed it so the room reads clean. The 30-day rule is
+   stated once, beside the Popular header in the channel list.) */
 .broadcast-hidden-panel {
   border: 1px solid var(--card-border); border-radius: 16px; padding: 12px;
   background: var(--surface-1); display: flex; flex-direction: column; gap: 8px;
@@ -6490,6 +6487,10 @@ body.session-logged-out [data-account-rename-modal] {
   background: rgba(98,244,208,.14); color: var(--kaspa-ink); font-size: 17px; font-weight: 700; line-height: 1;
 }
 .broadcast-join-toggle:hover { background: rgba(98,244,208,.22); }
+/* Retention note at the trailing edge of the Popular header (iOS parity: the in-room banner
+   was removed, so the 30-day rule is stated once, here). Headers are intentionally NOT
+   sticky - they scroll away with their content. */
+.broadcast-section-note { font-size: 11.5px; font-weight: 500; color: var(--muted); padding-right: 4px; }
 .broadcast-card {
   display: flex; align-items: center; gap: 4px; padding: 12px 12px 12px 16px; margin-bottom: 8px;
   border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2);
@@ -6512,6 +6513,24 @@ body.session-logged-out [data-account-rename-modal] {
   font-size: 12px; font-weight: 600; cursor: pointer; padding: 6px 8px;
 }
 .broadcast-card-leave:hover { color: #e99aa1; }
+/* "Other Languages": collapsed category of curated language rooms at the foot of Popular. */
+.broadcast-languages-toggle {
+  width: 100%; gap: 8px; cursor: pointer; font: inherit; color: var(--ink); text-align: left;
+}
+.broadcast-languages-toggle:hover { border-color: var(--card-border); }
+.broadcast-languages-toggle strong { flex: 1; min-width: 0; font-size: 15px; }
+.broadcast-languages-globe { display: grid; place-items: center; flex: 0 0 auto; color: var(--kaspa-ink); }
+.broadcast-languages-globe svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.broadcast-languages-count { font-size: 13px; color: var(--muted); flex: 0 0 auto; }
+.broadcast-languages-chevron {
+  display: grid; place-items: center; flex: 0 0 auto; color: var(--muted);
+  transform: rotate(-90deg); transition: transform .2s ease;
+}
+.broadcast-languages-toggle.expanded .broadcast-languages-chevron { transform: rotate(0deg); }
+.broadcast-languages-chevron svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+/* Language rooms read as children of the row they slid out from. */
+.broadcast-card-language { margin-left: 16px; }
+.broadcast-card-language .broadcast-card-main strong { font-size: 14.5px; font-weight: 600; }
 .broadcast-empty-hint { margin: 4px 4px 0; color: var(--muted); font-size: 13px; font-style: italic; }
 .broadcast-join-card {
   margin: 0 0 8px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2);

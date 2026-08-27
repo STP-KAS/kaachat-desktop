@@ -1,7 +1,7 @@
 // Broadcasts tab UI — desktop port of the iOS/Android 4.0 broadcast rooms. Channel list
 // (featured rooms pinned + joinable customs), room view with indexer backfill (once on open +
-// 8s polling while open), per-room hidden users, the permanent public/30-day banner on the
-// featured rooms, and a live connection dot in the room header. Feature parity with mobile:
+// 8s polling while open), per-room hidden users, the "Other Languages" disclosure of curated
+// language rooms, and a live connection dot in the room header. Feature parity with mobile:
 // link previews in bubbles (same progressive Nextcloud probe as 1:1), reactions (same
 // cross-platform JSON payload as 1:1, sent as normal broadcast messages), and voice notes
 // via Nextcloud media upload.
@@ -9,8 +9,10 @@
 import {
   BROADCAST_RETENTION_MS,
   FEATURED_BROADCAST_CHANNELS,
+  LANGUAGE_BROADCAST_CHANNELS,
+  broadcastLanguageDisplayName,
   fetchBroadcastHistory,
-  isFeaturedBroadcastChannel,
+  isIndexedBroadcastChannel,
   isValidBroadcastChannel,
   normalizeBroadcastChannel,
   sendBroadcastMessage,
@@ -28,12 +30,15 @@ const VOICE_MAX_DURATION_SECONDS = 600;
 
 let deps = null;
 
-let listEl, roomEl, roomTitleEl, roomDotEl, roomBodyEl, roomBannerEl, composerInput, sendBtn, joinInput;
+let listEl, roomEl, roomTitleEl, roomDotEl, roomBodyEl, composerInput, sendBtn, joinInput;
 let voicePanelEl, voiceTimeEl, voiceBtn;
 let joinedChannels = [];
 let hiddenByRoom = {};
 let notifyByChannel = {};    // { [channel]: true } — the bell: OS pings for new messages
-let retentionByChannel = {}; // { [channel]: days } — own channels only; featured are fixed 30-day
+let retentionByChannel = {}; // { [channel]: days } — own channels only; indexed rooms are fixed 30-day
+// "Other Languages" disclosure under Popular. Collapsed by default: eleven language rooms
+// would bury the two Popular rooms and the user's own channels under a wall of list.
+let languagesExpanded = false;
 // Only messages arriving AFTER app launch may ping — backfilled history never notifies.
 const broadcastSessionStartMs = Date.now();
 let messageCache = {}; // { [channel]: [{ txId, senderAddress, content, blockTime, status? }] }
@@ -69,7 +74,9 @@ function loadState() {
   try {
     reactionsCache = JSON.parse(localStorage.getItem(REACTIONS_KEY) || "{}") || {};
   } catch { reactionsCache = {}; }
-  // The curated rooms are always present for every account (matches iOS/Android).
+  // The two featured rooms are always present for every account (matches iOS/Android). The
+  // curated LANGUAGE rooms are deliberately NOT auto-joined - they are joined on first open or
+  // bell tap, so a user who wants none of them pays for none of them.
   for (const name of FEATURED_BROADCAST_CHANNELS) {
     if (!joinedChannels.includes(name)) joinedChannels.push(name);
   }
@@ -113,10 +120,11 @@ function saveRetention() {
   localStorage.setItem(deps.accountScopedKey(RETENTION_KEY), JSON.stringify(retentionByChannel));
 }
 
-/** Effective retention cutoff for a channel: featured rooms are fixed 30-day (matching the room
- *  banner and iOS); own channels use their configured days, forever when unset/0. */
+/** Effective retention cutoff for a channel: every indexer-backed room (featured + the curated
+ *  language rooms) is fixed 30-day, matching iOS; own channels use their configured days,
+ *  forever when unset/0. */
 function retentionCutoffMs(channel) {
-  if (isFeaturedBroadcastChannel(channel)) return Date.now() - BROADCAST_RETENTION_MS;
+  if (isIndexedBroadcastChannel(channel)) return Date.now() - BROADCAST_RETENTION_MS;
   const days = Number(retentionByChannel[channel] || 0);
   return days > 0 ? Date.now() - days * 86_400_000 : 0;
 }
@@ -141,9 +149,9 @@ function saveReactions() {
   catch { reactionsCache = {}; }
 }
 
-/** Rolling retention, matching the featured rooms' product rule. */
+/** Rolling retention, matching the indexed rooms' product rule. */
 function pruneCache() {
-  // Per-channel retention (iOS parity): featured rooms fixed 30-day, own channels use their
+  // Per-channel retention (iOS parity): indexed rooms fixed 30-day, own channels use their
   // configured retention (0 = keep forever).
   for (const channel of Object.keys(messageCache)) {
     const cutoff = retentionCutoffMs(channel);
@@ -400,7 +408,12 @@ function bellButtonHtml(name) {
   return `<button class="broadcast-card-icon${on ? " active" : ""}" type="button" data-broadcast-notify="${deps.escapeHtml(name)}" title="${on ? "Notifications on" : "Notifications off"}" aria-label="Toggle notifications">${on ? BELL_ON_SVG : BELL_OFF_SVG}</button>`;
 }
 
-function channelCardHtml(name, { featured }) {
+const GLOBE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"/></svg>`;
+const CHEVRON_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
+
+// `indexed` = an indexer-backed room (featured or curated language). Those rooms have a fixed
+// 30-day retention served by the indexer, so they get no retention gear and no Leave.
+function channelCardHtml(name, { indexed }) {
   // Name only, no preview/description line - matches iOS's clean rows.
   return `
     <div class="broadcast-card">
@@ -408,27 +421,55 @@ function channelCardHtml(name, { featured }) {
         <strong>#${deps.escapeHtml(name)}</strong>
       </button>
       ${bellButtonHtml(name)}
-      ${featured ? "" : `<button class="broadcast-card-icon" type="button" data-broadcast-retention="${deps.escapeHtml(name)}" title="Message retention" aria-label="Message retention">${GEAR_SVG}</button>`}
-      ${featured ? "" : `<button class="broadcast-card-leave" type="button" data-broadcast-leave="${deps.escapeHtml(name)}">Leave</button>`}
+      ${indexed ? "" : `<button class="broadcast-card-icon" type="button" data-broadcast-retention="${deps.escapeHtml(name)}" title="Message retention" aria-label="Message retention">${GEAR_SVG}</button>`}
+      ${indexed ? "" : `<button class="broadcast-card-leave" type="button" data-broadcast-leave="${deps.escapeHtml(name)}">Leave</button>`}
     </div>`;
 }
 
-// iOS's list anatomy: Popular (curated, permanent - bell is the only control) pinned on top,
-// then Your Channels with a + to join/create, each row bell + retention gear + Leave.
+/** One curated language room, indented under "Other Languages": native language name over the
+ *  literal `#channel-name`, plus its own bell. Neither control assumes the room is joined -
+ *  both join it on demand (see openRoom / the bell handler). */
+function languageCardHtml(name) {
+  const label = broadcastLanguageDisplayName(name) || `#${name}`;
+  return `
+    <div class="broadcast-card broadcast-card-language">
+      <button class="broadcast-card-main" type="button" data-broadcast-open="${deps.escapeHtml(name)}">
+        <strong>${deps.escapeHtml(label)}</strong>
+        <span>#${deps.escapeHtml(name)}</span>
+      </button>
+      ${bellButtonHtml(name)}
+    </div>`;
+}
+
+// iOS's list anatomy: Popular (curated, permanent - bell is the only control) pinned on top
+// with the 30-day retention note beside its title and the collapsed "Other Languages" category
+// at its foot, then Your Channels with a + to join/create, each row bell + retention gear +
+// Leave. Note: these headers scroll away with their content - they are deliberately not sticky.
 function renderChannelList() {
   if (!listEl) return;
   const own = joinedChannels
-    .filter((name) => !isFeaturedBroadcastChannel(name))
+    .filter((name) => !isIndexedBroadcastChannel(name))
     .sort((a, b) => a.localeCompare(b));
   listEl.innerHTML = `
-    <div class="broadcast-section-header">Popular</div>
-    ${FEATURED_BROADCAST_CHANNELS.map((name) => channelCardHtml(name, { featured: true })).join("")}
+    <div class="broadcast-section-header">
+      <span>Popular</span>
+      <span class="broadcast-section-note">All messages persist for 30 days</span>
+    </div>
+    ${FEATURED_BROADCAST_CHANNELS.map((name) => channelCardHtml(name, { indexed: true })).join("")}
+    <button class="broadcast-card broadcast-languages-toggle${languagesExpanded ? " expanded" : ""}" type="button"
+            data-broadcast-languages-toggle aria-expanded="${languagesExpanded ? "true" : "false"}">
+      <span class="broadcast-languages-globe">${GLOBE_SVG}</span>
+      <strong>Other Languages</strong>
+      <span class="broadcast-languages-count">${LANGUAGE_BROADCAST_CHANNELS.length}</span>
+      <span class="broadcast-languages-chevron">${CHEVRON_SVG}</span>
+    </button>
+    ${languagesExpanded ? LANGUAGE_BROADCAST_CHANNELS.map((name) => languageCardHtml(name)).join("") : ""}
     <div class="broadcast-section-header broadcast-section-your">
       <span>Your Channels</span>
       <button class="broadcast-join-toggle" type="button" data-broadcast-join-toggle aria-label="Join or create a channel">+</button>
     </div>
     ${own.length
-      ? own.map((name) => channelCardHtml(name, { featured: false })).join("")
+      ? own.map((name) => channelCardHtml(name, { indexed: false })).join("")
       : `<p class="broadcast-empty-hint">No channels yet. Tap + to join or create one.</p>`}
   `;
 }
@@ -678,7 +719,8 @@ function renderRoom() {
   if (!inRoom) return;
 
   if (roomTitleEl) roomTitleEl.textContent = `#${activeChannel}`;
-  if (roomBannerEl) roomBannerEl.hidden = !isFeaturedBroadcastChannel(activeChannel);
+  // No in-room retention banner: iOS removed it so the room reads clean. The 30-day rule is
+  // stated once, beside the Popular header in the channel list.
   updateVoiceButtonVisibility();
 
   const hidden = hiddenIn(activeChannel);
@@ -810,6 +852,12 @@ function cancelVoiceRecordingIfActive() {
 
 function openRoom(channel) {
   activeChannel = normalizeBroadcastChannel(channel);
+  // Curated language rooms are not auto-joined, so opening one is what creates its row.
+  if (activeChannel && isIndexedBroadcastChannel(activeChannel) && !joinedChannels.includes(activeChannel)) {
+    joinedChannels.push(activeChannel);
+    saveChannels();
+    renderChannelList();
+  }
   cancelBroadcastReply(); // a reply drafted in another room must not leak across
   renderRoom();
   updateConnectionDot();
@@ -844,7 +892,9 @@ function joinChannel(rawName) {
 }
 
 function leaveChannel(name) {
-  if (isFeaturedBroadcastChannel(name)) return; // featured rooms can't be left
+  // Indexer-backed rooms (featured + curated language) can't be left - both are permanent
+  // fixtures of the list screen, so no UI offers it; this guards stray paths.
+  if (isIndexedBroadcastChannel(name)) return;
   joinedChannels = joinedChannels.filter((c) => c !== name);
   saveChannels();
   delete messageCache[name];
@@ -1041,7 +1091,10 @@ export function initBroadcasts(dependencies) {
   roomTitleEl = document.querySelector("[data-broadcast-room-title]");
   roomDotEl = document.querySelector("[data-broadcast-room-dot]");
   roomBodyEl = document.querySelector("[data-broadcast-room-body]");
-  roomBannerEl = document.querySelector("[data-broadcast-room-banner]");
+  // The in-room retention banner was removed for iOS parity (the room reads clean; the 30-day
+  // rule is stated beside the Popular header instead). Its markup still lives in index.html —
+  // drop the node so it can never render. Safe to delete the element from index.html later.
+  document.querySelector("[data-broadcast-room-banner]")?.remove();
   composerInput = document.querySelector("[data-broadcast-input]");
   sendBtn = document.querySelector("[data-broadcast-send]");
   joinInput = document.querySelector("[data-broadcast-join-input]");
@@ -1099,11 +1152,26 @@ export function initBroadcasts(dependencies) {
       return;
     }
 
+    // "Other Languages": the collapsed category of curated language rooms under Popular.
+    const languagesToggle = event.target.closest("[data-broadcast-languages-toggle]");
+    if (languagesToggle) {
+      event.stopPropagation();
+      languagesExpanded = !languagesExpanded;
+      renderChannelList();
+      return;
+    }
+
     // The bell: OS notifications for new messages in this channel.
     const notify = event.target.closest("[data-broadcast-notify]");
     if (notify) {
       event.stopPropagation();
       const name = notify.dataset.broadcastNotify;
+      // Curated language rooms are not auto-joined - the bell creates the row on demand, so
+      // the very first tap turns notifications ON rather than silently creating an off row.
+      if (isIndexedBroadcastChannel(name) && !joinedChannels.includes(name)) {
+        joinedChannels.push(name);
+        saveChannels();
+      }
       if (notifyByChannel[name]) {
         delete notifyByChannel[name];
         deps.showToast?.(`Notifications off for #${name}.`);
