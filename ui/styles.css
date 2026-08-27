@@ -5713,6 +5713,20 @@ body.session-logged-out [data-account-rename-modal] {
   background: linear-gradient(180deg, var(--surface-1), rgba(255,255,255,.02));
 }
 .kaposts-cell.root { border-color: var(--card-border); }
+/* Reply-notification landing: the parent's thread opens scrolled to the reply, and the reply
+   itself pulses once so the eye lands on it instead of hunting the comment list. */
+.kaposts-cell-highlight {
+  border-color: var(--kaspa-ink);
+  animation: kaposts-cell-flash 2.4s ease-out 1;
+}
+@keyframes kaposts-cell-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(98,244,208,.55); }
+  18%  { box-shadow: 0 0 0 5px rgba(98,244,208,.28); }
+  100% { box-shadow: 0 0 0 0 rgba(98,244,208,0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kaposts-cell-highlight { animation: none; box-shadow: 0 0 0 2px rgba(98,244,208,.35); }
+}
 .kaposts-avatar {
   flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%;
   overflow: hidden; background: var(--surface-2);

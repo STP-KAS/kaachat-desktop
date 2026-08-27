@@ -54,6 +54,15 @@ let feedLoading = false;
 let feedError = null;
 let prefs = { following: [], muted: [], blocked: [] };
 let threadStack = [];     // post ids (local ids)
+// A panel opened from INSIDE an open thread (Post Activity, a poster's profile) presents OVER
+// the thread and its Back returns to the thread — the desktop stand-in for the sheets iOS
+// presents from the thread's own hierarchy. False = the thread owns the viewport.
+let panelOverThread = false;
+// Reply-notification landing: the txid of the reply to scroll to once the parent thread's
+// comment list contains it, and the txid currently flashing after that landing.
+let pendingThreadScrollRemoteId = null;
+let threadHighlightRemoteId = null;
+let threadHighlightTimer = 0;
 let replyTargetId = null; // in-thread: which comment the reply bar targets (null = the root post)
 let composerQuoteTarget = null; // post being quoted, when the composer is a quote composer
 let countdownTicker = null;
@@ -509,30 +518,112 @@ function allPostLists() {
   return [...localPosts, ...remotePosts, ...myContentPosts, ...extra];
 }
 
-function findPost(id, list = null) {
-  for (const post of list || allPostLists()) {
-    if (post.id === id) return post;
-    const hit = findPost(id, post.comments);
-    if (hit) return hit;
-  }
-  return null;
-}
-
-function mutatePost(id, transform) {
-  const target = findPost(id);
-  if (target) transform(target);
-}
-
-function findPostByRemoteId(remoteId) {
+/**
+ * Depth-first lookup over every collection that can hold a post node. Thread-chain copies are
+ * searched LAST (iOS findPost): segments beyond the first live ONLY in threadChains, and
+ * without that fallback a like/bookmark tap on a chain segment resolved to nothing at all.
+ */
+function findPostWhere(match) {
   const search = (list) => {
-    for (const post of list) {
-      if (post.remoteId === remoteId) return post;
-      const hit = search(post.comments || []);
+    for (const post of list || []) {
+      if (match(post)) return post;
+      const hit = search(post.comments);
       if (hit) return hit;
     }
     return null;
   };
-  return search(allPostLists());
+  const hit = search(allPostLists());
+  if (hit) return hit;
+  for (const chain of threadChains.values()) {
+    const chainHit = search(chain);
+    if (chainHit) return chainHit;
+  }
+  return null;
+}
+
+function findPost(id) {
+  return findPostWhere((post) => post.id === id);
+}
+
+/**
+ * Applies `transform` to EVERY node carrying this id, in every collection and at any depth
+ * (iOS mutatePost). Remote ids are a stable hash of the txid, so one post routinely exists as
+ * several DISTINCT objects at once — a feed row, a comment nested under its parent, and a
+ * thread-chain segment. Stopping at the first match updated whichever twin the search order
+ * hit first, so a like/dislike/repost/bookmark made inside an open thread landed on the feed
+ * twin and the thread kept rendering the untouched node until it was closed and reopened.
+ * Nodes are de-duplicated by OBJECT identity: the same object can be reachable through two
+ * lists (a chain segment is also its parent's comment), and a counter must not be bumped twice.
+ */
+function mutatePost(id, transform) {
+  const visited = new Set();
+  const walk = (list) => {
+    for (const post of list || []) {
+      if (!post || visited.has(post)) continue;
+      visited.add(post);
+      if (post.id === id) transform(post);
+      walk(post.comments);
+    }
+  };
+  walk(allPostLists());
+  // The open thread's "Thread" section renders from threadChains copies, so sweep them too.
+  for (const chain of threadChains.values()) walk(chain);
+}
+
+function findPostByRemoteId(remoteId) {
+  return findPostWhere((post) => post.remoteId === remoteId);
+}
+
+/** Widens the resolution pool without dropping what it already holds (dedupe by txid). */
+function mergeIntoResolutionPool(mapped) {
+  const known = new Set(myContentPosts.map((post) => post.remoteId).filter(Boolean));
+  const fresh = (mapped || []).filter((post) => post.remoteId && !known.has(post.remoteId));
+  if (fresh.length) myContentPosts = [...myContentPosts, ...fresh];
+}
+
+/**
+ * Own posts + replies into the resolution pool. Deep-link/notification targets are usually
+ * YOUR content, which lives outside the feed window, and a reply notification's PARENT
+ * always is. Returns false when there is nothing to fetch with.
+ */
+async function loadOwnContentIntoResolutionPool() {
+  const pubkey = safeRequesterPubkey();
+  if (!pubkey) return false;
+  try {
+    const [ownPosts, ownReplies] = await Promise.all([
+      fetchUserPosts({ engine: deps.engine, pubkey }),
+      fetchUserReplies({ engine: deps.engine, pubkey }).catch(() => ({ posts: [] })),
+    ]);
+    mergeIntoResolutionPool([...ownPosts.posts, ...ownReplies.posts].map(mapRemotePost).filter(Boolean));
+    return true;
+  } catch (error) {
+    deps.appendEngineLog?.(`KaPost own-content fetch failed: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * A resolved deep-link/notification target that is itself a REPLY opens its PARENT's thread —
+ * the post that was replied to on top, the reply itself scrolled into view below — instead of
+ * presenting the bare reply as a context-free thread root (iOS openResolvedPost). The parent
+ * resolves from what is already loaded, then from own posts+replies; when it still cannot be
+ * found, the reply's own thread opens as before.
+ */
+async function openResolvedPost(post, { parentRemoteIdHint = null, ownContentLoaded = false } = {}) {
+  const parentId = post.parentRemoteId || parentRemoteIdHint || null;
+  if (!parentId || parentId === post.remoteId) {
+    closePanel();
+    openThread(post);
+    return;
+  }
+  let parent = findPostByRemoteId(parentId);
+  if (!parent && !ownContentLoaded) {
+    await loadOwnContentIntoResolutionPool();
+    parent = findPostByRemoteId(parentId);
+  }
+  closePanel();
+  if (parent) openThread(parent, { scrollToRemoteId: post.remoteId });
+  else openThread(post);
 }
 
 /**
@@ -540,26 +631,16 @@ function findPostByRemoteId(remoteId) {
  * then a feed refresh, then OWN content from the indexer (notification targets are almost
  * always your posts, which live outside the feed window). Matches iOS's openSharedPost.
  */
-async function resolveAndOpenPost(txId) {
+async function resolveAndOpenPost(txId, { parentRemoteIdHint = null } = {}) {
   let post = findPostByRemoteId(txId);
+  let ownContentLoaded = false;
   if (!post) {
     await loadFeed();
     post = findPostByRemoteId(txId);
   }
   if (!post) {
-    try {
-      const pubkey = safeRequesterPubkey();
-      if (pubkey) {
-        const [ownPosts, ownReplies] = await Promise.all([
-          fetchUserPosts({ engine: deps.engine, pubkey }),
-          fetchUserReplies({ engine: deps.engine, pubkey }).catch(() => ({ posts: [] })),
-        ]);
-        myContentPosts = [...ownPosts.posts, ...ownReplies.posts].map(mapRemotePost).filter(Boolean);
-        post = findPostByRemoteId(txId);
-      }
-    } catch (error) {
-      deps.appendEngineLog?.(`KaPost own-content fetch failed: ${error.message}`);
-    }
+    ownContentLoaded = await loadOwnContentIntoResolutionPool();
+    post = findPostByRemoteId(txId);
   }
   if (!post) {
     // Still unresolved: the txid is usually a notification's ACTING content — someone
@@ -577,19 +658,30 @@ async function resolveAndOpenPost(txId) {
         const mapped = [...theirPosts.posts, ...theirReplies.posts].map(mapRemotePost).filter(Boolean);
         // myContentPosts is purely the resolution pool behind findPostByRemoteId —
         // widening it with the actor's content is safe (nothing renders it directly).
-        myContentPosts = [...myContentPosts, ...mapped];
+        mergeIntoResolutionPool(mapped);
         post = findPostByRemoteId(txId);
+        // For a reply notification the stream's contentId IS the parent — pass it through in
+        // case the fetched mapping lost parentPostId.
+        if (post && n.contentType === "reply" && n.contentId) parentRemoteIdHint = String(n.contentId);
         // A reply's own thread can open directly; but when the target still isn't
-        // findable, fall back to the conversation it belongs to (the parent post).
-        if (!post && n.contentId) post = findPostByRemoteId(String(n.contentId));
+        // findable, fall back to the conversation it belongs to (the parent post) — that
+        // parent IS the thread to show, so it opens as the root rather than resolving
+        // one level further up.
+        if (!post && n.contentId) {
+          const parent = findPostByRemoteId(String(n.contentId));
+          if (parent) {
+            closePanel();
+            openThread(parent);
+            return;
+          }
+        }
       }
     } catch (error) {
       deps.appendEngineLog?.(`KaPost actor-content fetch failed: ${error.message}`);
     }
   }
   if (post) {
-    closePanel();
-    openThread(post);
+    await openResolvedPost(post, { parentRemoteIdHint, ownContentLoaded });
   } else {
     deps.showToast?.("Post not found — it may be older than the feed window.");
   }
@@ -599,7 +691,8 @@ async function resolveAndOpenPost(txId) {
 // 5-second undo scheduler
 // ---------------------------------------------------------------------------
 
-function scheduleUndoable(key, action, undo = null) {
+/** `label` overrides the key-derived toast wording (a like and an un-like share one key). */
+function scheduleUndoable(key, action, undo = null, label = null) {
   cancelUndoable(key);
   const timer = setTimeout(() => {
     pendingActions.delete(key);
@@ -609,7 +702,7 @@ function scheduleUndoable(key, action, undo = null) {
     renderToasts();
     action();
   }, UNDO_DELAY_MS);
-  pendingActions.set(key, { deadline: Date.now() + UNDO_DELAY_MS, timer, undo });
+  pendingActions.set(key, { deadline: Date.now() + UNDO_DELAY_MS, timer, undo, label });
   startTicker();
   renderAll();
 }
@@ -783,7 +876,7 @@ function postCellHtml(post, { inThread = false, isRoot = false, replyInline = fa
     : "";
 
   return `
-    <article class="kaposts-cell${isRoot ? " root" : ""}${!isRoot ? " openable" : ""}" data-kaposts-post="${post.id}"${!isRoot ? ` data-kaposts-open="${post.id}"` : ""}>
+    <article class="kaposts-cell${isRoot ? " root" : ""}${!isRoot ? " openable" : ""}" data-kaposts-post="${post.id}"${post.remoteId ? ` data-kaposts-remote-id="${deps.escapeHtml(post.remoteId)}"` : ""}${!isRoot ? ` data-kaposts-open="${post.id}"` : ""}>
       <span data-kaposts-profile="${post.id}" class="kaposts-avatar-tap">${posterAvatarHtml(post.posterAddress)}</span>
       <div class="kaposts-cell-main">
         <div class="kaposts-cell-head">
@@ -890,17 +983,38 @@ function updateReplyContext() {
   if (isNested && label) label.textContent = `Replying to ${posterName(target.posterAddress)}`;
 }
 
-function renderThread() {
-  const topId = threadStack[threadStack.length - 1];
-  const post = topId ? findPost(topId) : null;
-  const showThread = Boolean(post);
+/**
+ * The feed, the thread and the panel are `flex: 1` SIBLINGS in one scroller, so any two of
+ * them visible at once produce a stacked split view with two back headers. Exactly one wins,
+ * decided here in one place (both renderThread and renderPanel route through it):
+ *
+ *  - a panel opened from the rail/feed wins whenever no thread is open;
+ *  - a thread opened FROM a panel (profile row, bookmark) takes the viewport over, and the
+ *    panel returns when the thread stack empties;
+ *  - a panel opened from INSIDE a thread (Post Activity, a poster's profile) is presented
+ *    OVER the thread — `panelOverThread` — and its Back returns to the thread, mirroring the
+ *    nested sheets iOS presents from the thread's own hierarchy.
+ */
+function syncSurfaces(threadPost) {
+  const hasThread = Boolean(threadPost);
+  const showPanel = Boolean(activePanel) && (!hasThread || panelOverThread);
+  const showThread = hasThread && !showPanel;
+  const showFeed = !showPanel && !showThread;
   if (threadEl) threadEl.hidden = !showThread;
-  if (feedEl) feedEl.hidden = showThread || Boolean(activePanel);
-  if (tabsEl) tabsEl.hidden = showThread || Boolean(activePanel);
-  // A thread opened FROM a profile/bookmarks panel takes over the viewport — without this the
-  // panel stayed visible and the two stacked in the same scroller (two back headers, split view).
-  // The panel returns when the thread stack empties (thread-back restores it via renderPanel).
-  if (panelEl && activePanel) panelEl.hidden = showThread;
+  if (panelEl) panelEl.hidden = !showPanel;
+  if (feedEl) feedEl.hidden = !showFeed;
+  if (tabsEl) tabsEl.hidden = !showFeed;
+}
+
+function currentThreadPost() {
+  const topId = threadStack[threadStack.length - 1];
+  return topId ? findPost(topId) : null;
+}
+
+function renderThread() {
+  const post = currentThreadPost();
+  const showThread = Boolean(post);
+  syncSurfaces(post);
   if (!showThread) clearPagerSentinel("thread");
   if (!post || !threadRootEl) return;
   if (replyTargetId && !findPost(replyTargetId)) replyTargetId = null;
@@ -938,6 +1052,52 @@ function renderThread() {
     // so hold the scroll position explicitly or paging in older replies would jump the view.
     if (scroller) scroller.scrollTop = previousTop;
   }
+  // Runs AFTER the scroll restore above, which would otherwise undo the landing scroll.
+  applyPendingThreadScroll();
+  applyThreadHighlight();
+}
+
+/** The rendered cell for a txid inside the open thread (replies first, then root/chain). */
+function threadCellElementFor(remoteId) {
+  if (!remoteId || !threadEl) return null;
+  const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(remoteId) : remoteId;
+  const selector = `[data-kaposts-remote-id="${escaped}"]`;
+  return threadRepliesEl?.querySelector(selector) || threadEl.querySelector(selector);
+}
+
+/**
+ * Reply-notification landing: the parent's thread is open, so as soon as the reply itself is
+ * in the comment list, bring it into view and flash it. Stays pending until the reply lands
+ * (openThread's reply fetch re-renders), and is cleared by the next openThread either way.
+ */
+function applyPendingThreadScroll() {
+  // Measuring a hidden thread (a panel is presented over it) yields zero-sized rects — the
+  // landing waits until the thread is the surface on screen again.
+  if (!pendingThreadScrollRemoteId || !threadEl || threadEl.hidden) return;
+  const target = threadCellElementFor(pendingThreadScrollRemoteId);
+  const scroller = kapostsScrollEl();
+  if (!target || !scroller) return;
+  threadHighlightRemoteId = pendingThreadScrollRemoteId;
+  pendingThreadScrollRemoteId = null;
+  requestAnimationFrame(() => {
+    const scrollerRect = scroller.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const centering = Math.max(0, (scroller.clientHeight - targetRect.height) / 2);
+    scroller.scrollTop += targetRect.top - scrollerRect.top - centering;
+    applyThreadHighlight();
+  });
+  window.clearTimeout(threadHighlightTimer);
+  threadHighlightTimer = window.setTimeout(() => {
+    threadHighlightRemoteId = null;
+    threadEl?.querySelectorAll(".kaposts-cell-highlight")
+      .forEach((el) => el.classList.remove("kaposts-cell-highlight"));
+  }, 2600);
+}
+
+/** Re-applies the landing flash after a re-render rebuilt the replies list from scratch. */
+function applyThreadHighlight() {
+  if (!threadHighlightRemoteId) return;
+  threadCellElementFor(threadHighlightRemoteId)?.classList.add("kaposts-cell-highlight");
 }
 
 /** Toast label per pending-action key: EVERY interaction gets a visible undo toast. */
@@ -959,7 +1119,7 @@ function renderToasts() {
     parts.push(`
       <div class="kaposts-toast">
         <span class="kaposts-countdown" data-kaposts-countdown="${deps.escapeHtml(key)}">${seconds}</span>
-        <span>${deps.escapeHtml(toastLabelFor(key))}</span>
+        <span>${deps.escapeHtml(pending.label || toastLabelFor(key))}</span>
         <button type="button" data-kaposts-undo="${deps.escapeHtml(key)}">Undo</button>
       </div>`);
   }
@@ -1177,15 +1337,25 @@ function scheduleQuote(target, text) {
   });
 }
 
+/** Same optimistic-now / submit-after-the-countdown rule as toggleVote. */
 function scheduleRepost(target) {
-  scheduleUndoable(`repost:${target.id}`, async () => {
-    mutatePost(target.id, (p) => { if (!p.repostedByMe) { p.repostedByMe = true; p.reposts += 1; } });
+  const key = `repost:${target.id}`;
+  if (pendingActions.has(key)) { cancelUndoable(key); return; }
+  const wasReposted = (findPost(target.id) || target).repostedByMe === true;
+  if (!wasReposted) {
+    mutatePost(target.id, (p) => { p.repostedByMe = true; p.reposts = (p.reposts || 0) + 1; });
     renderAll();
+  }
+  scheduleUndoable(key, async () => {
     try {
       await submitKaPostQuote({ engine: deps.engine, text: "", contentId: target.remoteId, quotedAuthorPubkey: target.posterPubkey });
       deps.showToast?.("Repost posted to the network");
     } catch (error) {
       deps.appendEngineLog?.(`KaPost repost failed: ${error.message}`);
+    }
+  }, () => {
+    if (!wasReposted) {
+      mutatePost(target.id, (p) => { p.repostedByMe = false; p.reposts = Math.max(0, (p.reposts || 0) - 1); });
     }
   });
 }
@@ -1225,22 +1395,34 @@ function spawnKaspaLogoBurst(anchor) {
   }
 }
 
+/**
+ * Like/dislike. The state change is OPTIMISTIC and lands immediately — filled icon, bumped
+ * count, burst — on every copy of the post; only the on-chain submit waits out the 5s undo
+ * countdown, and Undo reverts the state it applied. Deferring the mutation to the end of the
+ * countdown (as this used to) read as a dead button for five seconds, worst of all inside an
+ * open thread. Tapping the same button again while the countdown runs cancels it and rolls
+ * the state back, exactly like pressing Undo.
+ */
 function toggleVote(post, kind) {
   const flag = kind === "like" ? "likedByMe" : "dislikedByMe";
   const other = kind === "like" ? "dislikedByMe" : "likedByMe";
   const count = kind === "like" ? "likes" : "dislikes";
   const otherCount = kind === "like" ? "dislikes" : "likes";
-  scheduleUndoable(`${kind}:${post.id}`, async () => {
-    const wasSet = findPost(post.id)?.[flag] === true;
-    mutatePost(post.id, (p) => {
-      if (p[flag]) { p[flag] = false; p[count] -= 1; }
-      else {
-        p[flag] = true; p[count] += 1;
-        if (p[other]) { p[other] = false; p[otherCount] -= 1; }
-      }
-    });
-    renderAll();
-    if (!wasSet) playVoteBurst(post.id, kind);
+  const key = `${kind}:${post.id}`;
+  if (pendingActions.has(key)) { cancelUndoable(key); return; }
+  const current = findPost(post.id) || post;
+  const wasSet = current[flag] === true;
+  const clearedOther = !wasSet && current[other] === true;
+  mutatePost(post.id, (p) => {
+    if (wasSet) { p[flag] = false; p[count] = Math.max(0, (p[count] || 0) - 1); }
+    else {
+      p[flag] = true; p[count] = (p[count] || 0) + 1;
+      if (clearedOther) { p[other] = false; p[otherCount] = Math.max(0, (p[otherCount] || 0) - 1); }
+    }
+  });
+  renderAll();
+  if (!wasSet) playVoteBurst(post.id, kind);
+  scheduleUndoable(key, async () => {
     if (!post.remoteId || !post.posterPubkey) return;
     try {
       const vote = wasSet ? "unvote" : (kind === "like" ? "upvote" : "downvote");
@@ -1249,7 +1431,17 @@ function toggleVote(post, kind) {
     } catch (error) {
       deps.appendEngineLog?.(`KaPost vote failed: ${error.message}`);
     }
-  });
+  }, () => {
+    mutatePost(post.id, (p) => {
+      if (wasSet) { p[flag] = true; p[count] = (p[count] || 0) + 1; }
+      else {
+        p[flag] = false; p[count] = Math.max(0, (p[count] || 0) - 1);
+        if (clearedOther) { p[other] = true; p[otherCount] = (p[otherCount] || 0) + 1; }
+      }
+    });
+  }, wasSet
+    ? (kind === "like" ? "Removing like" : "Removing dislike")
+    : (kind === "like" ? "Liking" : "Disliking"));
 }
 
 function toggleFollow(post) {
@@ -1265,8 +1457,17 @@ function toggleFollow(post) {
     .catch((error) => deps.appendEngineLog?.(`KaPost follow failed: ${error.message}`));
 }
 
-async function openThread(post) {
+/**
+ * `scrollToRemoteId` is the reply-notification landing: this thread is the PARENT of the reply
+ * that was tapped, so once the comment list actually contains that reply it is scrolled into
+ * view and flashed. It is cleared on every normal open, so a stale target from an earlier
+ * landing can never yank a later thread around (iOS pendingThreadScrollRemoteId).
+ */
+async function openThread(post, { scrollToRemoteId = null } = {}) {
   rememberFeedScroll();
+  pendingThreadScrollRemoteId = scrollToRemoteId;
+  // A thread always takes over the viewport: any panel it was opened from waits underneath.
+  panelOverThread = false;
   threadStack.push(post.id);
   renderThread();
   if (!post.remoteId) return;
@@ -1315,7 +1516,10 @@ function loadMoreThreadReplies(postId) {
         const known = new Set(p.comments.map((c) => c.remoteId).filter(Boolean));
         const rows = mapped.filter((reply) => reply.remoteId && !known.has(reply.remoteId));
         p.comments = [...p.comments, ...rows];
-        added = rows.filter((reply) => !isHiddenAuthor(reply.posterAddress)).length;
+        // mutatePost now visits EVERY copy of this post and each carries its own comments
+        // array, so the copies can disagree on how many rows were new — the pager's shrinkage
+        // loop wants the largest, not whichever copy happened to be visited last.
+        added = Math.max(added, rows.filter((reply) => !isHiddenAuthor(reply.posterAddress)).length);
       });
       renderThread();
       resolvePosterIdentities(mapped.map((reply) => reply.posterAddress), () => {
@@ -1480,20 +1684,38 @@ function syncRailActive() {
   });
 }
 
+/**
+ * Prepares a panel for display, deciding whether it takes the viewport or is presented OVER an
+ * open thread. Opened from inside a thread it is an over-thread panel, and whatever panel the
+ * thread itself was opened from is parked in `beneath` so closing this one restores the thread
+ * and a later thread-back still lands on that original panel.
+ */
+function beginPanel(next) {
+  if (threadStack.length > 0) {
+    next.beneath = panelOverThread ? (activePanel?.beneath || null) : (activePanel || null);
+    panelOverThread = true;
+  } else {
+    panelOverThread = false;
+  }
+  return next;
+}
+
 function closePanel() {
-  activePanel = null;
+  // An over-thread panel closes back to the thread, handing the viewport to whatever panel
+  // the thread was opened from (usually none).
+  activePanel = panelOverThread ? (activePanel?.beneath || null) : null;
+  panelOverThread = false;
   panelGeneration += 1; // any page still in flight for the panel we just left is now stale
   clearPanelPagerSentinels();
   renderPanel();
+  if (threadStack.length > 0) renderThread();
   syncRailActive();
   restoreFeedScroll();
 }
 
 function renderPanel() {
   const show = Boolean(activePanel);
-  if (panelEl) panelEl.hidden = !show;
-  if (feedEl) feedEl.hidden = show || threadStack.length > 0;
-  if (tabsEl) tabsEl.hidden = show || threadStack.length > 0;
+  syncSurfaces(currentThreadPost());
   if (!show) clearPanelPagerSentinels();
   if (!show || !panelBodyEl) return;
   const panel = activePanel;
@@ -1560,7 +1782,7 @@ function renderPanel() {
       : items.length === 0
         ? `<div class="no-results-card"><strong>Nothing yet</strong><span>When someone likes, replies to or shares your posts, it shows up here.</span></div>`
         : items.map((item) => `
-            <div class="kaposts-notification-row${item.targetTxId ? " openable" : ""}" ${item.targetTxId ? `data-kaposts-open-remote="${deps.escapeHtml(item.targetTxId)}"` : ""}>
+            <div class="kaposts-notification-row${item.targetTxId ? " openable" : ""}" ${item.targetTxId ? `data-kaposts-open-remote="${deps.escapeHtml(item.targetTxId)}"` : ""}${item.parentTxId ? ` data-kaposts-open-remote-parent="${deps.escapeHtml(item.parentTxId)}"` : ""}>
               ${posterAvatarHtml(item.actorAddress)}
               <div class="kaposts-notification-main">
                 <span><strong>${deps.escapeHtml(posterName(item.actorAddress))}</strong> ${deps.escapeHtml(item.action)}</span>
@@ -1680,10 +1902,10 @@ async function openPosterProfile(address, pubkey) {
   panelGeneration += 1;
   clearPanelPagerSentinels();
   const generation = panelGeneration;
-  activePanel = {
+  activePanel = beginPanel({
     type: "profile", address, pubkey, tab: "posts", posts: [], replies: [], details: null, loading: true,
     pagers: { posts: makePager(), replies: makePager() },
-  };
+  });
   const panel = activePanel;
   renderPanel();
   syncRailActive();
@@ -1734,7 +1956,7 @@ async function openFollowListPanel({ address, pubkey, mode, parent }) {
   panelGeneration += 1;
   clearPanelPagerSentinels();
   const generation = panelGeneration;
-  activePanel = { type: "followList", mode, address, pubkey, parent: parent || null, rows: [], loading: true };
+  activePanel = beginPanel({ type: "followList", mode, address, pubkey, parent: parent || null, rows: [], loading: true });
   const panel = activePanel;
   renderPanel();
   syncRailActive();
@@ -1884,7 +2106,7 @@ async function pollKaPostNotificationsForPings() {
       // notification can arrive while another tab is active), then deep-open.
       onClick: () => {
         deps.openKaPostsTab?.();
-        if (target) resolveAndOpenPost(target);
+        if (target) resolveAndOpenPost(target, { parentRemoteIdHint: notificationParentTxId(n) });
         else openNotificationsPanel();
       },
     });
@@ -1901,6 +2123,16 @@ function notificationTargetTxId(n, decodedText = "") {
   // the notification's own txid — without this, mention rows had no target at all.
   if (n.contentType === "mention") return n.contentId || n.id || null;
   return n.contentId || null; // vote, unknown kinds
+}
+
+/**
+ * A reply notification's target is the REPLY, and the conversation it belongs to is the
+ * notification's contentId — the post of yours that was replied to. Handing that through as
+ * the parent hint means the parent thread opens even when the indexer's mapping for the reply
+ * itself lost parentPostId (iOS parentRemoteIdHint).
+ */
+function notificationParentTxId(n) {
+  return n?.contentType === "reply" && n.contentId ? String(n.contentId) : null;
 }
 
 /** Deep-open a post/comment by txid from OUTSIDE this module (the global bell center). */
@@ -1930,7 +2162,11 @@ function mapNotificationRow(n) {
     targetTxId = text ? n.id : n.contentId;
   } else if (n.contentType === "follow") { action = "followed you"; targetTxId = null; }
   else if (n.contentType === "mention") { action = "mentioned you in a post"; targetTxId = n.contentId || n.id; }
-  return { id: n.id, actorAddress, action, snippet: text || null, timestamp: Number(n.timestamp) || Date.now(), targetTxId };
+  return {
+    id: n.id, actorAddress, action, snippet: text || null,
+    timestamp: Number(n.timestamp) || Date.now(),
+    targetTxId, parentTxId: notificationParentTxId(n),
+  };
 }
 
 async function openNotificationsPanel() {
@@ -1938,7 +2174,7 @@ async function openNotificationsPanel() {
   panelGeneration += 1;
   clearPanelPagerSentinels();
   const generation = panelGeneration;
-  activePanel = { type: "notifications", items: [], loading: true, pager: makePager({ pageSize: PAGER_THREAD_PAGE_SIZE }) };
+  activePanel = beginPanel({ type: "notifications", items: [], loading: true, pager: makePager({ pageSize: PAGER_THREAD_PAGE_SIZE }) });
   const panel = activePanel;
   renderPanel();
   syncRailActive();
@@ -2006,10 +2242,12 @@ async function openEngagementPanel(post) {
   panelGeneration += 1;
   clearPanelPagerSentinels();
   const generation = panelGeneration;
-  activePanel = {
+  // Post Activity opened from inside a thread presents OVER that thread and returns to it on
+  // Back (iOS threadEngagementTarget); from the feed it takes the viewport as before.
+  activePanel = beginPanel({
     type: "engagement", postId: post.id, postTxId: post.remoteId, tab: "likes", lists: null, loading: true,
     pager: makePager({ pageSize: PAGER_THREAD_PAGE_SIZE }),
-  };
+  });
   const panel = activePanel;
   renderPanel();
   const lists = { likes: [], dislikes: [], reposts: [], quotes: [] };
@@ -2168,6 +2406,13 @@ export function resetKaPostsForAccount() {
   myContentPosts = [];
   threadStack = [];
   activePanel = null;
+  panelOverThread = false;
+  pendingThreadScrollRemoteId = null;
+  threadHighlightRemoteId = null;
+  // The one-shot on-chain follow sync is a module latch: without clearing it the SECOND
+  // account of a session never rebuilt its local follow set and sat at "following 0" until
+  // the app was reloaded.
+  followingChainSynced = false;
   // Account change: every cursor, every in-flight page and every observer belongs to the old
   // wallet's lists.
   feedGeneration += 1;
@@ -2175,6 +2420,10 @@ export function resetKaPostsForAccount() {
   panelGeneration += 1;
   feedPager = makePager();
   threadPagers.clear();
+  // Chains and the thread-root probe cache hold the previous wallet's posts, and both are
+  // searched by findPost now — they must not survive the switch.
+  threadChains.clear();
+  threadRootProbe.clear();
   renderedFeedIds = new Set();
   lastFeedLoadAt = 0;
   clearAllPagerSentinels();
@@ -2354,6 +2603,9 @@ export function initKaPosts(dependencies) {
       const key = button.dataset.kapostsRail;
       threadStack = [];
       threadGeneration += 1; // drops any reply page still in flight for the thread we left
+      // The rail always leaves the thread, so nothing here is an over-thread panel.
+      panelOverThread = false;
+      pendingThreadScrollRemoteId = null;
       if (key === "feed") closePanel();
       else if (key === "notifications") openNotificationsPanel();
       else if (key === "profile") openPosterProfile(deps.engine.address, safeRequesterPubkey());
@@ -2361,7 +2613,7 @@ export function initKaPosts(dependencies) {
         rememberFeedScroll();
         panelGeneration += 1;
         clearPanelPagerSentinels();
-        activePanel = { type: "list", kind: key };
+        activePanel = beginPanel({ type: "list", kind: key });
         renderPanel();
       }
       renderThread();
@@ -2388,6 +2640,9 @@ export function initKaPosts(dependencies) {
   document.querySelector("[data-kaposts-thread-back]")?.addEventListener("click", () => {
     threadStack.pop();
     replyTargetId = null;
+    // Leaving the thread retires any unspent reply-landing scroll target.
+    pendingThreadScrollRemoteId = null;
+    threadHighlightRemoteId = null;
     if (threadStack.length === 0) {
       // Back at the feed: drop every thread cursor so a re-open starts from a fresh page one.
       threadGeneration += 1;
@@ -2642,7 +2897,11 @@ export function initKaPosts(dependencies) {
     const openRemote = event.target.closest("[data-kaposts-open-remote]");
     if (openRemote) {
       if (event.target.closest("a")) return; // let the explorer link win its own clicks
-      resolveAndOpenPost(openRemote.dataset.kapostsOpenRemote);
+      // Reply rows carry the conversation they belong to, so the parent's thread opens even
+      // when the reply's own indexer mapping has no parent id.
+      resolveAndOpenPost(openRemote.dataset.kapostsOpenRemote, {
+        parentRemoteIdHint: openRemote.dataset.kapostsOpenRemoteParent || null,
+      });
       return;
     }
 
