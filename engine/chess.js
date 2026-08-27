@@ -320,10 +320,63 @@ export function deriveBoard(moveList) {
 }
 
 // --- wire codec (JSON envelopes embedded as message content; matches iOS ChessCodec) ---
-export function chessInvite(gameId, inviterColor) { return JSON.stringify({ type: "chess_invite", gameId, inviterColor }); }
+//
+// The three time-control fields (`tcMinutes`/`tcIncSeconds` on the invite, `clockMs` on a move,
+// `reason` on a resign) are all OPTIONAL and are OMITTED ENTIRELY when absent — that omitted
+// shape is byte-for-byte the legacy casual-game envelope, which is what keeps this compatible
+// with older desktop/iOS/Android builds in both directions. iOS gets the same behaviour for free
+// from Codable's `encodeIfPresent` on its optional properties (Models.swift chess structs), so
+// never emit these keys as `null`.
+
+/// `tcMinutes`/`tcIncSeconds` together describe a timed game ("3 | 2"); pass null/0 minutes for a
+/// casual untimed game, which omits both keys.
+export function chessInvite(gameId, inviterColor, tcMinutes = null, tcIncSeconds = null) {
+  const env = { type: "chess_invite", gameId, inviterColor };
+  const minutes = Number(tcMinutes);
+  if (Number.isFinite(minutes) && minutes > 0) {
+    env.tcMinutes = Math.round(minutes);
+    const inc = Number(tcIncSeconds);
+    env.tcIncSeconds = Number.isFinite(inc) ? Math.max(Math.round(inc), 0) : 0;
+  }
+  return JSON.stringify(env);
+}
 export function chessResponse(gameId, accepted) { return JSON.stringify({ type: "chess_response", gameId, accepted }); }
-export function chessMove(gameId, from, to, promotion = null) { return JSON.stringify({ type: "chess_move", gameId, from, to, promotion: promotion || null }); }
-export function chessResign(gameId) { return JSON.stringify({ type: "chess_resign", gameId }); }
+/// `clockMs` is the mover's remaining milliseconds AFTER this move, increment already added.
+export function chessMove(gameId, from, to, promotion = null, clockMs = null) {
+  const env = { type: "chess_move", gameId, from, to, promotion: promotion || null };
+  const ms = Number(clockMs);
+  if (clockMs !== null && clockMs !== undefined && Number.isFinite(ms)) env.clockMs = Math.max(Math.round(ms), 0);
+  return JSON.stringify(env);
+}
+/// `reason` is "timeout" when the sender's clock ran out; omitted for a manual resign.
+export function chessResign(gameId, reason = null) {
+  const env = { type: "chess_resign", gameId };
+  if (reason) env.reason = String(reason);
+  return JSON.stringify(env);
+}
+
+// "3 | 2"-style label for a time control, matching how chess sites name minute/increment pairs.
+export function chessTimeControlLabel(tc) {
+  if (!tc || !(tc.minutes > 0)) return null;
+  return `${tc.minutes} | ${tc.incSeconds || 0}`;
+}
+// Reads the time control off a raw invite envelope (already-parsed object), or null when casual.
+export function chessTimeControlFromInvite(invite) {
+  const minutes = Number(invite?.tcMinutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) return null;
+  const inc = Number(invite?.tcIncSeconds);
+  return { minutes: Math.round(minutes), incSeconds: Number.isFinite(inc) ? Math.max(Math.round(inc), 0) : 0 };
+}
+// mm:ss, switching to tenths (0:09.4) under 10 seconds — matches iOS ChessGameView.formatClock.
+export function formatChessClock(ms) {
+  const clamped = Math.max(Math.floor(Number(ms) || 0), 0);
+  if (clamped < 10000) {
+    const tenths = Math.floor(clamped / 100);
+    return `0:${String(Math.floor(tenths / 10)).padStart(2, "0")}.${tenths % 10}`;
+  }
+  const totalSeconds = Math.floor(clamped / 1000);
+  return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
 
 const CHESS_TYPES = { chess_invite: "invite", chess_response: "response", chess_move: "move", chess_resign: "resign" };
 // Parses text as any chess envelope, or null. Cheap {-prefix + size guard first (runs per message).
@@ -362,9 +415,13 @@ export function summarizeChessGame(gameId, messages, myAddress, contactAddress) 
   let inviterAddress = null;
   let response = null;
   let resignerAddress = null;
+  let resignReason = null;
   let lastTxid = "";
   let board = initialBoard();
   const moveHistory = [];
+  // Last clockMs each color reported on its own moves — resolved to a concrete remaining time
+  // (falling back to the initial allotment) once the invite's time control is known.
+  const lastClockByColor = {};
 
   const ordered = [...messages].sort((a, b) => (a.at || 0) - (b.at || 0));
   for (const msg of ordered) {
@@ -387,6 +444,9 @@ export function summarizeChessGame(gameId, messages, myAddress, contactAddress) 
       const isEnPassant = movingPiece.type === "pawn" && board.enPassantTarget && squareEquals(to, board.enPassantTarget) && !pieceAt(board, to);
       const captured = isEnPassant ? pieceAt(board, sq(to.file, from.rank)) : pieceAt(board, to);
       board = applyMove(board, m);
+      if (typeof env.clockMs === "number" && Number.isFinite(env.clockMs)) {
+        lastClockByColor[movingPiece.color] = Math.max(Math.round(env.clockMs), 0);
+      }
       moveHistory.push({
         from, to, pieceType: movingPiece.type, color: movingPiece.color,
         capturedType: captured ? captured.type : null,
@@ -395,6 +455,7 @@ export function summarizeChessGame(gameId, messages, myAddress, contactAddress) 
       });
     } else if (env.kind === "resign") {
       resignerAddress = senderAddress;
+      resignReason = typeof env.reason === "string" ? env.reason : null;
     }
   }
 
@@ -404,7 +465,9 @@ export function summarizeChessGame(gameId, messages, myAddress, contactAddress) 
   const blackAddress = invite.inviterColor === WHITE ? otherAddress : inviterAddress;
 
   let status;
-  if (resignerAddress) status = { kind: "resigned", loser: resignerAddress === whiteAddress ? WHITE : BLACK };
+  // `timeout` true when the loser flagged (their clock ran out and their app auto-sent a
+  // chess_resign carrying reason "timeout") rather than resigning by hand.
+  if (resignerAddress) status = { kind: "resigned", loser: resignerAddress === whiteAddress ? WHITE : BLACK, timeout: resignReason === "timeout" };
   else if (response && !response.accepted) status = { kind: "declined" };
   else if (!response) status = { kind: "pendingResponse" };
   else if (isCheckmate(board)) status = { kind: "checkmate", winner: opposite(board.sideToMove) };
@@ -412,9 +475,19 @@ export function summarizeChessGame(gameId, messages, myAddress, contactAddress) 
   else status = { kind: "inProgress" };
 
   const viewerColor = myAddress === whiteAddress ? WHITE : (myAddress === blackAddress ? BLACK : null);
+  // Time control from the invite, or null for a casual untimed game (including every invite from
+  // a client that predates time controls). The per-side clocks are the last clockMs that side
+  // stamped on one of its own moves, or the initial allotment before its first move; the side to
+  // move's REAL remaining time is this minus their accumulated open-board thinking time, which
+  // only their own device tracks.
+  const timeControl = chessTimeControlFromInvite(invite);
+  const initialMs = timeControl ? timeControl.minutes * 60000 : null;
   return {
     gameId, status, board, whiteAddress, blackAddress, inviterAddress,
     iAmInviter: inviterAddress === myAddress, viewerColor, moveHistory, lastTxid,
+    timeControl,
+    whiteClockMs: timeControl ? (lastClockByColor[WHITE] ?? initialMs) : null,
+    blackClockMs: timeControl ? (lastClockByColor[BLACK] ?? initialMs) : null,
     capturedByWhite: moveHistory.filter((r) => r.color === WHITE && r.capturedType).map((r) => r.capturedType),
     capturedByBlack: moveHistory.filter((r) => r.color === BLACK && r.capturedType).map((r) => r.capturedType),
   };
@@ -465,31 +538,66 @@ export function chessSummaryStatusText(summary) {
     case "pendingResponse": return summary.iAmInviter ? "Waiting for response" : "Invited you to play";
     case "declined": return "Game declined";
     case "checkmate":
-      if (!viewer) return `Checkmate — ${s.winner === WHITE ? "White" : "Black"} wins`;
-      return s.winner === viewer ? "Checkmate — You win!" : "Checkmate — You lost";
-    case "stalemate": return "Stalemate — draw";
+      if (!viewer) return `Checkmate - ${s.winner === WHITE ? "White" : "Black"} wins`;
+      return s.winner === viewer ? "Checkmate - You win!" : "Checkmate - You lost";
+    case "stalemate": return "Stalemate - draw";
     case "resigned":
+      if (s.timeout) {
+        if (!viewer) return `${s.loser === WHITE ? "White" : "Black"} lost on time`;
+        return s.loser === viewer ? "You lost on time" : "They lost on time";
+      }
       if (!viewer) return `${s.loser === WHITE ? "White" : "Black"} resigned`;
       return s.loser === viewer ? "You resigned" : "They resigned";
     case "inProgress":
     default: {
       const base = viewer ? (summary.board.sideToMove === viewer ? "Your turn" : "Their turn")
         : (summary.board.sideToMove === WHITE ? "White to move" : "Black to move");
-      return isKingInCheck(summary.board, summary.board.sideToMove) ? `${base} — Check` : base;
+      return isKingInCheck(summary.board, summary.board.sideToMove) ? `${base} - Check` : base;
     }
   }
 }
 
-// Short label for a chess message bubble/chat-list preview.
+// Short label for the compact chess card shown on a non-latest chess message — the desktop
+// equivalent of iOS's MessageBubbleView.chessLogText, including the "3 | 2" chip on a timed
+// invite and the flag-fall wording on a timeout resign.
 export function chessEnvelopeLabel(text) {
   const env = parseChessEnvelope(unwrapReplyText(text));
   if (!env) return null;
   switch (env.kind) {
-    case "invite": return "Chess invite";
+    case "invite": {
+      const label = chessTimeControlLabel(chessTimeControlFromInvite(env));
+      return label ? `Chess invite - ${label}` : "Chess invite";
+    }
     case "response": return env.accepted ? "Chess accepted" : "Chess declined";
-    case "move": return `Chess: ${env.from}→${env.to}`;
-    case "resign": return "Chess resigned";
+    case "move": {
+      const promo = env.promotion ? ` (${String(env.promotion).toUpperCase()})` : "";
+      return `Chess: ${env.from}→${env.to}${promo}`;
+    }
+    case "resign": return env.reason === "timeout" ? "Chess: lost on time" : "Chess resigned";
     default: return "Chess";
+  }
+}
+
+// Friendly one-line preview/notification text for a chess message, so chat-list previews, reply
+// quotes, notification bodies and Copy never surface raw envelope JSON. Wording matches iOS
+// (ChatService+Fetching.formatNotificationBody / MessageBubbleView's invite bubble); `outgoing`
+// only changes the invite and response phrasing, exactly where iOS phrases them from the
+// sender's side too.
+export function chessPreviewText(text, outgoing = false) {
+  const env = parseChessEnvelope(unwrapReplyText(text));
+  if (!env) return null;
+  switch (env.kind) {
+    case "invite": {
+      const label = chessTimeControlLabel(chessTimeControlFromInvite(env));
+      const base = outgoing ? "♟️ Chess game invite sent" : "♟️ Invited you to a game of chess";
+      return label ? `${base} - ${label}` : base;
+    }
+    case "response":
+      if (outgoing) return env.accepted ? "♟️ Accepted the chess game" : "♟️ Declined the chess game";
+      return env.accepted ? "♟️ Accepted your chess game" : "♟️ Declined your chess game";
+    case "move": return `♟️ Played ${env.from} → ${env.to}`;
+    case "resign": return env.reason === "timeout" ? "♟️ Lost on time" : "♟️ Resigned the chess game";
+    default: return "♟️ Chess game";
   }
 }
 

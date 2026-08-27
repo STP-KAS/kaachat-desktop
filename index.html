@@ -257,6 +257,29 @@
                   <strong>Send Handshake</strong>
                 </button>
               </div>
+              <!-- Second step after "Play Chess": pick a time control. The blitz presets put
+                   tcMinutes/tcIncSeconds on the invite; "Casual" omits them entirely, which is
+                   the exact legacy wire shape, so casual games with older clients stay
+                   byte-compatible. Reuses the plus-menu class so it is anchored and styled
+                   identically. -->
+              <div class="composer-plus-menu" data-chess-tc-menu hidden>
+                <button type="button" data-chess-tc="3|2">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg></span>
+                  <strong>3 | 2 Blitz</strong>
+                </button>
+                <button type="button" data-chess-tc="2|1">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg></span>
+                  <strong>2 | 1 Bullet</strong>
+                </button>
+                <button type="button" data-chess-tc="1|1">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg></span>
+                  <strong>1 | 1 Bullet</strong>
+                </button>
+                <button type="button" data-chess-tc="casual">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg></span>
+                  <strong>Casual (no timer)</strong>
+                </button>
+              </div>
 
               <input type="file" accept="image/*" hidden data-photo-file-input />
               <div class="pending-photo-preview" data-pending-photo-preview hidden>
@@ -2473,6 +2496,14 @@
         <button type="button" class="primary-button" data-chess-accept>Accept</button>
       </div>
       <div class="chess-captured" data-chess-captured-top></div>
+      <!-- Timed games only (shown/hidden from JS, which is also why display lives in the inline
+           style rather than the hidden attribute). The opponent row shows the clockMs they last
+           reported on a move and never ticks locally; the "You" row counts down only while this
+           board is open on your turn. -->
+      <div data-chess-clock-them style="display:none;align-items:center;justify-content:space-between;gap:10px;margin:2px 16px 4px;padding:6px 12px;border:1px solid var(--line);border-radius:12px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);">Them</span>
+        <span data-chess-clock-them-value style="font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text);">0:00</span>
+      </div>
       <div class="chess-board-wrap">
         <div class="chess-board-frame">
           <div class="chess-files" data-chess-files-top></div>
@@ -2484,6 +2515,10 @@
           <div class="chess-files" data-chess-files-bottom></div>
         </div>
         <div class="chess-waiting" data-chess-waiting hidden><span data-chess-waiting-text>Waiting on opponent…</span></div>
+      </div>
+      <div data-chess-clock-me style="display:none;align-items:center;justify-content:space-between;gap:10px;margin:4px 16px 2px;padding:6px 12px;border:1px solid var(--line);border-radius:12px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);">You</span>
+        <span data-chess-clock-me-value style="font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text);">0:00</span>
       </div>
       <div class="chess-captured" data-chess-captured-bottom></div>
       <div class="chess-chat" data-chess-chat></div>

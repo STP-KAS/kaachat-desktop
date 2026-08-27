@@ -2666,7 +2666,10 @@ function sniffInlineFileMime(text) {
 
 function displayTextForMessage(message) {
   if (!message) return "";
-  if (Chess.isChessEnvelope(Chess.unwrapReplyText(message.text))) return "♟ Chess";
+  // Per-envelope-kind wording ("♟️ Played e2 → e4", "♟️ Lost on time", …) rather than one
+  // generic "Chess" for everything — matches iOS's formatNotificationBody.
+  const chessPreview = Chess.chessPreviewText(message.text, message.direction === "outgoing");
+  if (chessPreview) return chessPreview;
   const replyEnvelope = parseReplyEnvelope(message.text);
   if (replyEnvelope) return replyEnvelope.text;
   const fileMime = sniffInlineFileMime(message.text);
@@ -11597,6 +11600,9 @@ function queueConversationMessage(conversationId, text) {
 
 function closeComposerMenu() {
   if (composerPlusMenu) composerPlusMenu.hidden = true;
+  // The chess time-control menu is a second step of the same plus menu, anchored the same way.
+  const tcMenu = document.querySelector("[data-chess-tc-menu]");
+  if (tcMenu) tcMenu.hidden = true;
 }
 
 function setComposerHint(message) {
@@ -11988,6 +11994,10 @@ async function sendKasPayment(conversationId, rawAmount) {
 
 if (composerPlusButton && composerPlusMenu) {
   composerPlusButton.addEventListener("click", () => {
+    const tcMenu = document.querySelector("[data-chess-tc-menu]");
+    // The plus button always returns to step one of the menu, never leaves the chess
+    // time-control step stranded behind it.
+    if (tcMenu && !tcMenu.hidden) { tcMenu.hidden = true; composerPlusMenu.hidden = true; return; }
     composerPlusMenu.hidden = !composerPlusMenu.hidden;
   });
 }
@@ -12036,7 +12046,148 @@ const chessRecordEl = document.querySelector("[data-chess-record]");
 const chessChatEl = document.querySelector("[data-chess-chat]");
 const chessChatForm = document.querySelector("[data-chess-composer]");
 const chessChatInput = document.querySelector("[data-chess-chat-input]");
-let chessState = null; // { gameId, summary, selected, legalDests, pendingPromo }
+const chessClockThemEl = document.querySelector("[data-chess-clock-them]");
+const chessClockThemValue = document.querySelector("[data-chess-clock-them-value]");
+const chessClockMeEl = document.querySelector("[data-chess-clock-me]");
+const chessClockMeValue = document.querySelector("[data-chess-clock-me-value]");
+const chessTcMenu = document.querySelector("[data-chess-tc-menu]");
+// { gameId, summary, selected, legalDests, pendingPromo, turnMoveCount, turnElapsedMs,
+//   lastTick, timeoutSent }
+let chessState = null;
+
+// --- Timed games: local clock bookkeeping (port of iOS ChessClockStore + ChessGameView) ---
+//
+// Timed chess here is deliberately casual: a side's clock runs ONLY while the board is open on
+// their device AND it is their turn AND the game is in progress — the opponent may be offline
+// for hours, so the clock measures thinking time at the board, not wall time. The opponent's
+// clock is never ticked speculatively; it just shows the clockMs they last reported on a move.
+//
+// This persists the local player's accumulated thinking time for their CURRENT turn, keyed to
+// the move count it applies to, so a reload mid-think doesn't hand the time back. The moment
+// either side's move lands the stored move count no longer matches and the elapsed time reads
+// back as 0 — which is exactly the reset-on-new-turn behaviour the clock needs.
+const CHESS_CLOCK_KEY = "kachat-chess-clocks-v1";
+let chessClocks = (() => { try { return JSON.parse(localStorage.getItem(CHESS_CLOCK_KEY) || "{}") || {}; } catch { return {}; } })();
+function saveChessClocks() { try { localStorage.setItem(CHESS_CLOCK_KEY, JSON.stringify(chessClocks)); } catch {} }
+function chessClockElapsedMs(gameId, moveCount) {
+  const record = chessClocks[gameId];
+  if (!record || record.moveCount !== moveCount) return 0;
+  return Math.max(Number(record.elapsedMs) || 0, 0);
+}
+function setChessClockElapsedMs(gameId, moveCount, elapsedMs) {
+  chessClocks[gameId] = { moveCount, elapsedMs: Math.max(Math.round(elapsedMs), 0) };
+  saveChessClocks();
+}
+// Finished games leave nothing behind.
+function clearChessClock(gameId) {
+  if (!(gameId in chessClocks)) return;
+  delete chessClocks[gameId];
+  saveChessClocks();
+}
+
+let chessClockTimer = 0;
+const CHESS_CLOCK_TICK_MS = 200;
+
+function chessMyBaseClockMs() {
+  const s = chessState?.summary;
+  if (!s?.timeControl || !s.viewerColor) return null;
+  return s.viewerColor === "white" ? s.whiteClockMs : s.blackClockMs;
+}
+function chessOpponentClockMs() {
+  const s = chessState?.summary;
+  if (!s?.timeControl) return null;
+  return opposite2(s.viewerColor || "white") === "white" ? s.whiteClockMs : s.blackClockMs;
+}
+// My chip: authoritative base (clockMs from my own last move, else the initial allotment) minus
+// the open-board thinking time accumulated this turn.
+function chessMyDisplayClockMs() {
+  const base = chessMyBaseClockMs();
+  if (base == null) return null;
+  return Math.max(base - (chessState?.turnElapsedMs || 0), 0);
+}
+function chessMyClockRunning() {
+  const s = chessState?.summary;
+  if (!s?.timeControl || chessState.timeoutSent) return false;
+  return s.status.kind === "inProgress" && !!s.viewerColor && s.board.sideToMove === s.viewerColor;
+}
+
+// (Re)binds the turn's elapsed-time counter whenever the move count changes — on open, on a
+// reload (reads the persisted record back) and after either side moves (reads back 0).
+function syncChessTurnElapsed() {
+  const s = chessState?.summary;
+  if (!s) return;
+  if (!s.timeControl) { chessState.turnMoveCount = -1; chessState.turnElapsedMs = 0; chessState.lastTick = 0; return; }
+  if (Chess.isChessGameOver(s.status)) {
+    clearChessClock(chessState.gameId);
+    chessState.turnMoveCount = -1;
+    chessState.turnElapsedMs = 0;
+    chessState.lastTick = 0;
+    return;
+  }
+  const moveCount = s.moveHistory.length;
+  if (chessState.turnMoveCount === moveCount) return;
+  chessState.turnMoveCount = moveCount;
+  chessState.turnElapsedMs = chessClockElapsedMs(chessState.gameId, moveCount);
+  chessState.lastTick = 0;
+}
+
+function tickChessClock() {
+  const s = chessState?.summary;
+  if (!s?.timeControl || Chess.isChessGameOver(s.status)) { if (chessState) chessState.lastTick = 0; return; }
+  if (!chessMyClockRunning()) { chessState.lastTick = 0; return; }
+  const now = Date.now();
+  if (chessState.lastTick) {
+    const delta = now - chessState.lastTick;
+    // A delta far beyond the tick cadence means the page was frozen (tab backgrounded, machine
+    // asleep) — that gap is away-from-the-board time and must NOT count as thinking time.
+    if (delta > 0 && delta < 2000) {
+      chessState.turnElapsedMs += delta;
+      setChessClockElapsedMs(chessState.gameId, s.moveHistory.length, chessState.turnElapsedMs);
+    }
+  }
+  chessState.lastTick = now;
+  renderChessClocks();
+  if ((chessMyDisplayClockMs() ?? 1) <= 0) sendChessTimeoutResign();
+}
+
+function startChessClockTimer() {
+  if (chessClockTimer) return;
+  chessClockTimer = window.setInterval(tickChessClock, CHESS_CLOCK_TICK_MS);
+}
+function stopChessClockTimer() {
+  if (!chessClockTimer) return;
+  clearInterval(chessClockTimer);
+  chessClockTimer = 0;
+}
+
+// Flagging: my clock hit zero on my turn. Sends exactly one resign carrying reason "timeout";
+// the result then renders through the normal derived-state pipeline ("You lost on time").
+function sendChessTimeoutResign() {
+  if (!chessState || chessState.timeoutSent) return;
+  chessState.timeoutSent = true;
+  chessState.selected = null;
+  chessState.legalDests = [];
+  chessSendEnvelope(Chess.chessResign(chessState.gameId, "timeout"));
+  clearChessClock(chessState.gameId);
+  refreshChessOverlay();
+}
+
+function renderChessClocks() {
+  const s = chessState?.summary;
+  const tc = s?.timeControl || null;
+  const paint = (wrap, valueEl, ms, isActive) => {
+    if (!wrap) return;
+    if (!tc) { wrap.style.display = "none"; return; }
+    wrap.style.display = "flex";
+    wrap.style.opacity = isActive ? "1" : ".55";
+    wrap.style.borderColor = isActive ? "var(--kaspa-ink)" : "var(--line)";
+    if (valueEl) valueEl.textContent = Chess.formatChessClock(ms || 0);
+  };
+  const inProgress = !!s && s.status.kind === "inProgress";
+  const myTurn = inProgress && !!s.viewerColor && s.board.sideToMove === s.viewerColor;
+  paint(chessClockThemEl, chessClockThemValue, chessOpponentClockMs(), inProgress && !myTurn);
+  paint(chessClockMeEl, chessClockMeValue, chessMyDisplayClockMs(), inProgress && myTurn);
+}
 
 // Recent conversation messages (chess envelopes excluded) shown inside the board
 // so you can keep chatting while playing.
@@ -12088,7 +12239,10 @@ function chessSendEnvelope(content) {
   queueConversationMessage(activeConversationId, content);
 }
 
-function openChessGame(preferGameId = null) {
+// `timeControl` is { minutes, incSeconds } for a timed invite, or null for a casual untimed one
+// (which sends the exact legacy envelope). It only applies when this call actually creates the
+// invite; opening an existing game keeps whatever time control that game was started with.
+function openChessGame(preferGameId = null, timeControl = null) {
   const { contact, messages } = chessConversationContext();
   if (!contact?.address || !engine.address) { showCopyToast("Open a 1:1 chat to play chess."); return; }
   let summary = preferGameId
@@ -12097,19 +12251,30 @@ function openChessGame(preferGameId = null) {
   if (!summary && !preferGameId) {
     // No active game — invite the contact (random color), then open the pending board.
     const gameId = Chess.newGameId();
-    chessSendEnvelope(Chess.chessInvite(gameId, Math.random() < 0.5 ? "white" : "black"));
+    chessSendEnvelope(Chess.chessInvite(
+      gameId,
+      Math.random() < 0.5 ? "white" : "black",
+      timeControl?.minutes ?? null,
+      timeControl?.incSeconds ?? null,
+    ));
     const after = chessConversationContext();
     summary = Chess.summarizeChessGame(gameId, after.messages, engine.address, contact.address);
   }
   if (!summary) { showCopyToast("Could not open the chess game."); return; }
-  chessState = { gameId: summary.gameId, summary, selected: null, legalDests: [], pendingPromo: null };
+  chessState = {
+    gameId: summary.gameId, summary, selected: null, legalDests: [], pendingPromo: null,
+    turnMoveCount: null, turnElapsedMs: 0, lastTick: 0, timeoutSent: false,
+  };
+  syncChessTurnElapsed();
   if (chessPromoEl) chessPromoEl.hidden = true;
   renderChess();
   if (chessOverlay) chessOverlay.hidden = false;
+  startChessClockTimer();
 }
 function closeChess() {
   if (chessOverlay) chessOverlay.hidden = true;
   chessState = null;
+  stopChessClockTimer();
   if (chessWaitingTimer) { clearInterval(chessWaitingTimer); chessWaitingTimer = 0; }
   if (chessWaitingEl) chessWaitingEl.hidden = true;
 }
@@ -12140,7 +12305,12 @@ function buildChessThumb(summary, gameId) {
   }
   const status = document.createElement("span");
   status.className = "chess-thumb-status";
-  status.textContent = Chess.chessSummaryStatusText(summary);
+  // "3 | 2" chip alongside the status while a timed game is still live (the iOS invite bubble
+  // shows the same label); once it is over the time control is no longer news.
+  const tcLabel = Chess.isChessGameOver(summary.status) ? null : Chess.chessTimeControlLabel(summary.timeControl);
+  status.textContent = tcLabel
+    ? `${Chess.chessSummaryStatusText(summary)} - ${tcLabel}`
+    : Chess.chessSummaryStatusText(summary);
   if (summary.status.kind === "inProgress" && summary.viewerColor && summary.board.sideToMove === summary.viewerColor) status.classList.add("you");
   wrap.append(boardEl, status);
   wrap.addEventListener("click", (event) => { event.stopPropagation(); openChessGame(gameId); });
@@ -12149,7 +12319,11 @@ function buildChessThumb(summary, gameId) {
 
 function chessInteractive() {
   const s = chessState?.summary;
-  return !!s && s.status.kind === "inProgress" && s.viewerColor && s.board.sideToMove === s.viewerColor;
+  if (!s || s.status.kind !== "inProgress" || !s.viewerColor || s.board.sideToMove !== s.viewerColor) return false;
+  // Flagged: input is blocked from the moment my clock hits zero until the timeout resign lands.
+  if (chessState.timeoutSent) return false;
+  const remaining = chessMyDisplayClockMs();
+  return remaining == null || remaining > 0;
 }
 function chessOrientation() { return chessState?.summary?.viewerColor || "white"; }
 
@@ -12161,7 +12335,13 @@ function renderChessStatus() {
     chessStatusEl.classList.toggle("over", over);
     chessStatusEl.classList.toggle("check", !over && s.status.kind === "inProgress" && Chess.isKingInCheck(s.board, s.board.sideToMove));
   }
-  if (chessResignBtn) chessResignBtn.disabled = over || s.status.kind === "pendingResponse";
+  // Available for the whole life of the game, not just once play has begun — the inviter must
+  // be able to close a game the opponent has not answered (matches iOS ChessGameView, which
+  // labels the same control "Cancel game" while the invite is still pending).
+  if (chessResignBtn) {
+    chessResignBtn.disabled = over;
+    chessResignBtn.textContent = s.status.kind === "pendingResponse" ? "Cancel game" : "Resign";
+  }
   // Accept/Decline only when an incoming invite awaits my response.
   const awaitingMyResponse = s.status.kind === "pendingResponse" && !s.iAmInviter;
   if (chessActionsEl) chessActionsEl.hidden = !awaitingMyResponse;
@@ -12225,7 +12405,7 @@ function renderChessCaptured() {
   fill(chessCapturedBottom, takenByMe, viewer);
 }
 function opposite2(c) { return c === "white" ? "black" : "white"; }
-function renderChess() { renderChessStatus(); renderChessRecord(); renderChessCaptured(); renderChessBoard(); updateChessWaiting(); renderChessChat(); }
+function renderChess() { renderChessStatus(); renderChessRecord(); renderChessCaptured(); renderChessClocks(); renderChessBoard(); updateChessWaiting(); renderChessChat(); }
 
 function selectChessSquare(square) {
   chessState.selected = square;
@@ -12238,7 +12418,14 @@ function doChessMove(move) {
   const promo = move.promotion ? Chess.promotionLetter(move.promotion) : null;
   chessState.selected = null;
   chessState.legalDests = [];
-  chessSendEnvelope(Chess.chessMove(chessState.gameId, from, to, promo));
+  // Timed games: stamp the move with my remaining clock AFTER the move, increment already added
+  // — the opponent reads their view of my clock straight off this field. Untimed games send no
+  // clockMs at all, which is exactly the legacy envelope shape.
+  const tc = chessState.summary?.timeControl || null;
+  const remaining = chessMyDisplayClockMs();
+  const clockMs = tc && remaining != null ? remaining + tc.incSeconds * 1000 : null;
+  chessState.lastTick = 0;
+  chessSendEnvelope(Chess.chessMove(chessState.gameId, from, to, promo, clockMs));
   refreshChessOverlay();
 }
 function showChessPromo(color) {
@@ -12289,8 +12476,10 @@ function handleChessTap(square) {
 function resignChess() {
   if (!chessState) return;
   const s = chessState.summary;
-  if (Chess.isChessGameOver(s.status) || s.status.kind === "pendingResponse") return;
+  // A pending invite is resignable too — that is how the inviter cancels it.
+  if (Chess.isChessGameOver(s.status)) return;
   chessSendEnvelope(Chess.chessResign(chessState.gameId));
+  clearChessClock(chessState.gameId);
   refreshChessOverlay();
 }
 // Re-derive the bound game from the latest conversation messages and re-render.
@@ -12299,12 +12488,25 @@ function refreshChessOverlay() {
   const { contact, messages } = chessConversationContext();
   if (!contact) return;
   const summary = Chess.summarizeChessGame(chessState.gameId, messages, engine.address, contact.address);
-  if (summary) { chessState.summary = summary; renderChess(); }
+  if (summary) { chessState.summary = summary; syncChessTurnElapsed(); renderChess(); }
 }
 
+// "Play Chess" opens a second menu to pick a time control first (matching iOS's second
+// confirmation dialog). The blitz presets put tcMinutes/tcIncSeconds on the invite; "Casual"
+// omits them entirely, which is the exact legacy wire shape.
 document.querySelectorAll("[data-chess-open]").forEach((btn) => btn.addEventListener("click", () => {
   if (composerPlusMenu) composerPlusMenu.hidden = true;
-  openChessGame();
+  if (chessTcMenu) chessTcMenu.hidden = false;
+  else openChessGame();
+}));
+chessTcMenu?.querySelectorAll("[data-chess-tc]").forEach((btn) => btn.addEventListener("click", () => {
+  chessTcMenu.hidden = true;
+  const raw = String(btn.dataset.chessTc || "").trim();
+  if (!raw || raw === "casual") { openChessGame(null, null); return; }
+  const [minutes, inc] = raw.split("|").map((part) => Number(part.trim()));
+  openChessGame(null, Number.isFinite(minutes) && minutes > 0
+    ? { minutes, incSeconds: Number.isFinite(inc) ? inc : 0 }
+    : null);
 }));
 document.querySelector("[data-chess-close]")?.addEventListener("click", closeChess);
 chessResignBtn?.addEventListener("click", resignChess);
@@ -12731,6 +12933,10 @@ const REPLY_PREVIEW_MAX_LENGTH = 80;
 // matches iOS's MessageReplyCodec.previewText.
 function replyPreviewTextFor(message) {
   if (!message) return "";
+  // Chess envelopes are JSON in the message text — without this branch, replying to a chess
+  // message quoted the raw envelope JSON straight into the composer preview and onto the wire.
+  const chessPreview = Chess.chessPreviewText(message.text, message.direction === "outgoing");
+  if (chessPreview) return chessPreview.slice(0, REPLY_PREVIEW_MAX_LENGTH);
   const asReply = parseReplyEnvelope(message.text);
   if (asReply) return asReply.text.slice(0, REPLY_PREVIEW_MAX_LENGTH);
   const fileMime = sniffInlineFileMime(message.text);
@@ -13857,8 +14063,11 @@ composerModeButtons.forEach((button) => {
 });
 
 document.addEventListener("click", (event) => {
-  if (!composerPlusMenu || composerPlusMenu.hidden) return;
-  if (composerPlusMenu.contains(event.target) || composerPlusButton?.contains(event.target)) return;
+  const plusOpen = !!composerPlusMenu && !composerPlusMenu.hidden;
+  const tcOpen = !!chessTcMenu && !chessTcMenu.hidden;
+  if (!plusOpen && !tcOpen) return;
+  if (composerPlusMenu?.contains(event.target) || chessTcMenu?.contains(event.target)) return;
+  if (composerPlusButton?.contains(event.target)) return;
   closeComposerMenu();
 });
 
