@@ -697,9 +697,12 @@ function scheduleUndoable(key, action, undo = null, label = null) {
   const timer = setTimeout(() => {
     pendingActions.delete(key);
     stopTickerIfIdle();
-    // Clear this toast NOW rather than trusting the action to re-render the toast layer —
-    // a comment's action only re-renders the thread, which left its toast lingering at "1".
-    renderToasts();
+    // Repaint every surface NOW rather than trusting the action to do it. The countdown is
+    // not only a toast: countdownOrIconHtml swaps it in for the like/repost icon inside the
+    // post cell itself, so the cell has to be re-rendered for the icon to come back. The
+    // action re-renders at best one surface, and only after its network round trip, which
+    // left a dead countdown frozen at 1 on the cell.
+    renderAll();
     action();
   }, UNDO_DELAY_MS);
   pendingActions.set(key, { deadline: Date.now() + UNDO_DELAY_MS, timer, undo, label });
@@ -759,8 +762,12 @@ function renderStatus() {
 }
 
 function countdownOrIconHtml(key, iconHtml) {
-  if (pendingActions.has(key)) {
-    return `<span class="kaposts-countdown" data-kaposts-countdown="${deps.escapeHtml(key)}">5</span>`;
+  const pending = pendingActions.get(key);
+  if (pending) {
+    // Real remaining seconds, not a hardcoded 5: any re-render mid-countdown (a sibling
+    // action, an arriving post) would otherwise flash the badge back to 5 until the next tick.
+    const seconds = Math.max(0, Math.ceil((pending.deadline - Date.now()) / 1000));
+    return `<span class="kaposts-countdown" data-kaposts-countdown="${deps.escapeHtml(key)}">${seconds}</span>`;
   }
   return iconHtml;
 }
