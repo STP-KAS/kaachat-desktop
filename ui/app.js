@@ -6471,6 +6471,12 @@ let dockPinned = false; // click-to-pin: when true the dock stays open regardles
 // mouse-leave can't snatch it away mid-drag (see enableDockReorder below).
 let dockDragActive = false;
 
+// Below this width the dock is iOS's permanent bottom bar (see the mobile block in
+// styles.css), so the desktop hover/pin/auto-hide behaviour must not run at all: there is
+// no hover on touch, and a nav that hides itself is undiscoverable.
+const MOBILE_DOCK_QUERY = window.matchMedia ? window.matchMedia("(max-width: 859px)") : null;
+function isMobileDock() { return Boolean(MOBILE_DOCK_QUERY?.matches); }
+
 function syncDockHandle() {
   if (!dockHandle || !dockBar) return;
   const open = !dockBar.classList.contains("dock-hidden");
@@ -6488,6 +6494,7 @@ function showDock() {
 
 function hideDock() {
   if (!dockBar) return;
+  if (isMobileDock()) return; // permanent on mobile
   dockBar.classList.add("dock-hidden");
   if (dockHideTimer) { clearTimeout(dockHideTimer); dockHideTimer = null; }
   syncDockHandle();
@@ -6495,6 +6502,7 @@ function hideDock() {
 
 function hideDockSoon(delay = 400) {
   if (!dockBar) return;
+  if (isMobileDock()) return;
   if (dockHideTimer) clearTimeout(dockHideTimer);
   dockHideTimer = window.setTimeout(() => {
     if (dockDragActive || dockPinned) return;
@@ -6504,9 +6512,20 @@ function hideDockSoon(delay = 400) {
 }
 
 if (dockBar) {
-  // Start tucked away — the handle is the obvious way in.
-  dockBar.classList.add("dock-hidden");
+  // Start tucked away on desktop only; on mobile the dock is always on screen.
+  if (!isMobileDock()) dockBar.classList.add("dock-hidden");
   syncDockHandle();
+  // Rotating a phone or resizing across the breakpoint must not strand the dock in the
+  // other mode's state.
+  MOBILE_DOCK_QUERY?.addEventListener?.("change", (event) => {
+    if (event.matches) {
+      dockPinned = false;
+      dockBar.classList.remove("dock-hidden");
+    } else {
+      dockBar.classList.add("dock-hidden");
+    }
+    syncDockHandle();
+  });
 
   if (dockHandle) {
     // Click pins the dock open (or closes it).
@@ -6587,6 +6606,9 @@ if (dockBar) {
   }
 
   tabbar.addEventListener("pointerdown", (event) => {
+    // Drag-to-reorder is a desktop affordance. On the mobile dock it would swallow taps and
+    // fight scrolling, and iOS offers no reordering there either.
+    if (isMobileDock()) return;
     if (event.button != null && event.button !== 0) return;
     const btn = event.target.closest(".sidebar-tab");
     if (!btn || btn.hidden || !tabbar.contains(btn)) return;
