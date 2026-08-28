@@ -1,0 +1,22 @@
+# Keep the build context small and free of anything that should not be baked
+# into an image.
+
+# Reinstalled inside the image, and a host copy would be the wrong platform.
+node_modules/
+dist/
+.rusty-build/
+
+# Vite inlines every VITE_ var into the bundle, so a .env copied in here would
+# put the ChangeNOW key inside the image for anyone who pulls it. Pass it at
+# run time instead: `-e VITE_CHANGENOW_API_KEY=...`.
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+.claude/
+
+*.log
+*.tmp
+.DS_Store

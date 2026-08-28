@@ -24,6 +24,49 @@ cd KaChat-Desktop && npm run dev
 
 
 
+## Run it in Docker
+
+If you would rather not install Node, there is a Dockerfile and a compose file:
+
+```
+docker compose up -d --build
+```
+
+Then open `http://localhost:5173`, or this machine's address from another
+device on the network. To stop it: `docker compose down`.
+
+Serve it somewhere else by setting the port:
+
+```
+KACHAT_DESKTOP_PORT=8090 docker compose up -d --build
+```
+
+Accounts and settings live in the browser you open it with, not in the
+container, so `docker compose down` loses nothing and there is no volume to
+back up.
+
+The Swaps tab needs a ChangeNOW key. It is read at run time rather than baked
+into the image, so put it in a `.env` next to the compose file:
+
+```
+VITE_CHANGENOW_API_KEY=your-key-here
+```
+
+**Why this runs the dev server.** The image starts Vite rather than serving a
+static build from nginx, which is unusual for a container and is on purpose.
+The Nextcloud integration is a `configureServer` middleware in
+`vite.config.mjs`: the `/nc-proxy` route that works around Nextcloud sending no
+CORS headers on WebDAV. Connect middleware only runs in the dev server, so a
+static build starts up looking completely normal and then fails every Nextcloud
+preview and every history backup. Anyone moving this to a static build needs to
+reimplement `/nc-proxy` in whatever serves the files.
+
+**Reaching it by domain name.** Vite refuses requests whose `Host` header it
+does not recognise. `vite.config.mjs` allows `.duckdns.org`; any other domain
+in front of this needs adding to `server.allowedHosts`. Plain IP addresses are
+fine without any change.
+
+
 ## Self-Hosted Cloud (Nextcloud) Setup
 
 <details>

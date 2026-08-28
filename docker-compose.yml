@@ -1,0 +1,38 @@
+# Standalone KaChat Desktop:
+#
+#   docker compose up -d --build
+#
+# then open http://localhost:5173. To reach it from another machine on the
+# network, use this machine's address rather than localhost.
+#
+# Accounts and settings live in the browser you open it with, not in the
+# container, so removing the container loses nothing and there is no volume to
+# keep.
+
+services:
+  kachat-desktop:
+    build:
+      context: .
+    image: kachat-desktop:local
+    container_name: kachat-desktop
+    restart: unless-stopped
+    ports:
+      # Change the left number to serve it somewhere else; the right one is
+      # what Vite listens on inside the container and should stay put.
+      - "${KACHAT_DESKTOP_PORT:-5173}:5173"
+    environment:
+      # Optional, and read at run time rather than baked into the image: the
+      # Swaps tab uses it, and Vite inlines every VITE_ var into the bundle it
+      # serves. Set it in a .env next to this file, or export it before `up`.
+      VITE_CHANGENOW_API_KEY: ${VITE_CHANGENOW_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # The first start installs dependencies, so give it room before calling
+      # the container unhealthy.
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
