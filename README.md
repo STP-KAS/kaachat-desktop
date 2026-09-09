@@ -1,10 +1,13 @@
 # KaChat Desktop
 
-QUICK START (Mac, Linux, Windows/WSL)
+GitHub: [STP-KAS/kaachat-desktop](https://github.com/STP-KAS/kaachat-desktop).
+Upstream: [KaspaSilver/KaChat-Desktop](https://github.com/KaspaSilver/KaChat-Desktop).
+
+QUICK START (Mac, Linux, Windows)
 
 ```
-git clone https://github.com/KaspaSilver/KaChat-Desktop.git
-cd KaChat-Desktop
+git clone https://github.com/STP-KAS/kaachat-desktop.git
+cd kaachat-desktop
 npm install
 npm run dev
 ```
