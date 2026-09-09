@@ -2953,6 +2953,7 @@ body:has(.group-chat-screen:not([hidden])) .new-chat-fab { display: none; }
 .logged-out-primary:hover { filter:brightness(1.05); }
 .logged-out-secondary { background:var(--surface-1); color:var(--text); border-color:var(--line); }
 .logged-out-secondary:hover { background:var(--surface-2); }
+.logged-out-inject-status { margin:0; color:var(--muted); font:600 12.5px/1.4 inherit; text-align:center; }
 @media (max-height:640px) {
   .logged-out-logo { width:96px; height:96px; }
   .logged-out-content > h1 { font-size:30px; }

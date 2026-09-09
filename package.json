@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "node tools/check-wasm.mjs && vite --host 0.0.0.0",
     "build": "node tools/check-wasm.mjs && vite build",
+    "build:site": "node tools/check-wasm.mjs && vite build --base /kachat/",
+    "test": "node --test engine/injected-wallet.test.js",
     "setup:wasm": "bash tools/setup-wasm-from-rusty-zip.sh",
     "setup:cipher": "bash tools/setup-kasia-cipher.sh",
     "setup:all": "npm run setup:wasm && npm run setup:cipher"

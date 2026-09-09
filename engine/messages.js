@@ -125,7 +125,7 @@ export async function sendMessagePreview({ envelope, onStatus = () => {} }) {
 }
 
 export async function sendMessageOnchain({ engine, envelope, amountKas = KASIA_INTEGRATION_STATUS.defaultMessageAmountKas, feeKas = "0", onStatus = () => {} }) {
-  if (!engine?.kaspa || !engine?.privateKey || !engine?.address) throw new Error("Load WASM and generate/import a wallet first.");
+  if (!engine?.kaspa || !engine?.address || (!engine.privateKey && !engine.injected)) throw new Error("Connect Kasware or Kastle, or generate/import a wallet first.");
   if (!envelope?.toAddress?.startsWith("kaspa:")) throw new Error("A valid kaspa: contact address is required.");
 
   onStatus({
@@ -150,8 +150,11 @@ export async function sendMessageOnchain({ engine, envelope, amountKas = KASIA_I
   // shared alias (see engine/sync.js's /contextual-messages/by-sender
   // query), not by the recipient being a transaction output. The real cost
   // is just the network fee, not the nominal output amount.
-  await engine.connect();
-  const sendResult = await sendPayloadTransaction({
+  const payload = envelope.protocolBytes || envelope.protocolString || envelope.payloadHex;
+  if (!engine.injected) await engine.connect();
+  const sendResult = engine.injected
+    ? await engine.send(engine.address, amountKas, feeKas, { payload })
+    : await sendPayloadTransaction({
     kaspa: engine.kaspa,
     rpc: engine.rpc,
     withRpc: engine.withRpc.bind(engine),
@@ -160,7 +163,7 @@ export async function sendMessageOnchain({ engine, envelope, amountKas = KASIA_I
     destinationAddress: engine.address,
     amountKas,
     feeKas,
-    payload: envelope.protocolBytes || envelope.protocolString || envelope.payloadHex,
+    payload,
     log: engine.log,
   });
 
@@ -216,11 +219,13 @@ export async function createEncryptedHandshakeEnvelope({
 }
 
 export async function sendHandshakeOnchain({ engine, envelope, amountKas = "0.2", feeKas = "0", onStatus = () => {} }) {
-  if (!engine?.kaspa || !engine?.privateKey || !engine?.address) throw new Error("Load a wallet before sending a communication request.");
+  if (!engine?.kaspa || !engine?.address || (!engine.privateKey && !engine.injected)) throw new Error("Connect Kasware or Kastle, or load a wallet before sending a communication request.");
   if (!envelope?.toAddress?.startsWith("kaspa:")) throw new Error("A valid kaspa: recipient address is required.");
   onStatus({ status: "pending", note: "Creating encrypted KaChat communication request.", messageType: "handshake", transport: "onchain" });
-  await engine.connect();
-  const sendResult = await sendPayloadTransaction({
+  if (!engine.injected) await engine.connect();
+  const sendResult = engine.injected
+    ? await engine.send(envelope.toAddress, amountKas, feeKas, { payload: envelope.protocolBytes })
+    : await sendPayloadTransaction({
     kaspa: engine.kaspa,
     rpc: engine.rpc,
     withRpc: engine.withRpc.bind(engine),
@@ -249,10 +254,12 @@ export async function createSelfStashEnvelope({
 }
 
 export async function sendSelfStashOnchain({ engine, envelope, amountKas = "0.0001", feeKas = "0", onStatus = () => {} }) {
-  if (!engine?.kaspa || !engine?.privateKey || !engine?.address) throw new Error("Load a wallet before saving conversation recovery data.");
+  if (!engine?.kaspa || !engine?.address || (!engine.privateKey && !engine.injected)) throw new Error("Connect Kasware or Kastle, or load a wallet before saving conversation recovery data.");
   onStatus({ status: "pending", note: "Stashing encrypted conversation recovery data on-chain.", messageType: "self_stash", transport: "onchain" });
-  await engine.connect();
-  const sendResult = await sendPayloadTransaction({
+  if (!engine.injected) await engine.connect();
+  const sendResult = engine.injected
+    ? await engine.send(engine.address, amountKas, feeKas, { payload: envelope.protocolBytes })
+    : await sendPayloadTransaction({
     kaspa: engine.kaspa,
     rpc: engine.rpc,
     withRpc: engine.withRpc.bind(engine),
