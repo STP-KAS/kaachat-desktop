@@ -5463,6 +5463,43 @@ body.session-logged-out [data-account-rename-modal] {
 
 /* ---- Account creation flow (2-step: setup → seed reveal) ---- */
 .create-account-flow { max-width: 460px; }
+/* Live chatting-address preview on the passphrase step, create and import alike.
+   A passphrase does not protect one account, it opens a DIFFERENT one, and watching
+   address #0 change with every character is what makes that concrete. On import it is
+   also how someone confirms they typed the right passphrase before committing to an
+   account that would otherwise just look empty. Mirrors iOS PassphraseOptionView. */
+.passphrase-address-preview {
+  margin: 12px 0 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.passphrase-preview-label {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #8b9691);
+}
+/* Every character, wrapped over as many lines as it takes: truncating would hide
+   exactly the part that changes when the passphrase does, which is the whole point. */
+.passphrase-preview-address {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  color: var(--text-primary, #e8f0ec);
+  user-select: text;
+}
+.passphrase-preview-address[data-pending] { color: var(--text-muted, #8b9691); }
+.passphrase-preview-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text-muted, #8b9691);
+}
+
 .create-warning {
   display: flex; flex-direction: column; gap: 6px;
   padding: 12px 14px; border-radius: 12px;

@@ -6930,7 +6930,7 @@ document.querySelector("[data-help-dock]")?.addEventListener("click", () => {
 
 // --- Profile > About: Version and Donate (iOS aboutSection). Donate resolves
 // kachat.kas and jumps straight into that chat in payment mode.
-const APP_VERSION = "4.0";
+const APP_VERSION = "4.1";
 const profileVersionEl = document.querySelector("[data-profile-version]");
 if (profileVersionEl) profileVersionEl.textContent = APP_VERSION;
 
@@ -14633,6 +14633,7 @@ const generateAccountBtn = document.querySelector("[data-generate-account]");
 const createPassphraseConfirm = document.querySelector("[data-create-passphrase-confirm]");
 const createPassphraseError = document.querySelector("[data-create-passphrase-error]");
 const passphraseToggleBtn = document.querySelector("[data-passphrase-toggle]");
+createPassphraseInput?.addEventListener("input", () => schedulePassphrasePreview("create"));
 const continueWithPassphraseBtn = document.querySelector("[data-continue-with-passphrase]");
 const skipPassphraseBtn = document.querySelector("[data-skip-passphrase]");
 const recoveryModal = document.querySelector("[data-recovery-modal]");
@@ -14642,6 +14643,91 @@ const recoveryProgressFill = document.querySelector("[data-recovery-progress]");
 
 // Pending new account carried between the setup step and the seed-confirm step.
 let pendingNewAccount = null;
+
+// --- Live chatting-address preview on the passphrase step (create and import) ---
+//
+// A passphrase does not protect one account, it opens a DIFFERENT one. Watching address #0
+// change with every character is what makes that concrete, and on import it is how someone
+// confirms they typed the right passphrase before committing to an account that would otherwise
+// just look empty. Mirrors iOS's PassphraseOptionView, which shows the same thing for the same
+// stated reason.
+//
+// Debounced because each derivation is a full BIP39 seed (PBKDF2) plus a key derivation - far too
+// heavy to run per keystroke.
+const passphrasePreviewTokens = { create: 0, import: 0 };
+
+function passphrasePreviewNodes(flow) {
+  const root = document.querySelector(`[data-passphrase-preview="${flow}"]`);
+  if (!root) return null;
+  return {
+    root,
+    address: root.querySelector("[data-passphrase-preview-address]"),
+    note: root.querySelector("[data-passphrase-preview-note]"),
+  };
+}
+
+/** The seed words the flow is about to commit, or "" when there are none to derive from. */
+function passphrasePreviewPhrase(flow) {
+  if (flow === "create") return pendingNewAccount?.phrase || "";
+  return pendingImport?.recoveryPhrase || "";
+}
+
+function passphrasePreviewFamily(flow) {
+  if (flow === "create") return "kaspaStandard";
+  return pendingImport?.family || "kaspaStandard";
+}
+
+let passphrasePreviewTimers = { create: null, import: null };
+
+function schedulePassphrasePreview(flow) {
+  const nodes = passphrasePreviewNodes(flow);
+  if (!nodes) return;
+  const phrase = passphrasePreviewPhrase(flow);
+  // Nothing to derive from yet: hide rather than show a permanent "Checking...".
+  nodes.root.hidden = !phrase;
+  if (!phrase) return;
+
+  const input = flow === "create" ? createPassphraseInput : importPassphraseInput;
+  const passphrase = input?.value || "";
+  nodes.note.textContent = passphrase
+    ? "A different passphrase gives a different address, and a different account."
+    : "This is the account your seed phrase opens on its own.";
+
+  if (passphrasePreviewTimers[flow]) clearTimeout(passphrasePreviewTimers[flow]);
+  const token = ++passphrasePreviewTokens[flow];
+  nodes.address.dataset.pending = "1";
+  passphrasePreviewTimers[flow] = setTimeout(async () => {
+    try {
+      const derived = await engine.deriveIdentityAddressRange(phrase, passphrase, {
+        family: passphrasePreviewFamily(flow),
+        start: 0,
+        count: 1,
+      });
+      // A later keystroke already asked for a different address - drop this answer.
+      if (token !== passphrasePreviewTokens[flow]) return;
+      const address = derived?.[0]?.address;
+      if (address) {
+        nodes.address.textContent = address;
+        delete nodes.address.dataset.pending;
+      } else {
+        nodes.address.textContent = "Could not derive an address from this phrase.";
+      }
+    } catch (error) {
+      if (token !== passphrasePreviewTokens[flow]) return;
+      nodes.address.textContent = "Could not derive an address from this phrase.";
+      appendEngineLog(`Passphrase address preview failed: ${error.message}`);
+    }
+  }, 250);
+}
+
+function resetPassphrasePreview(flow) {
+  const nodes = passphrasePreviewNodes(flow);
+  if (!nodes) return;
+  passphrasePreviewTokens[flow] += 1;
+  if (passphrasePreviewTimers[flow]) clearTimeout(passphrasePreviewTimers[flow]);
+  nodes.address.textContent = "Checking...";
+  nodes.address.dataset.pending = "1";
+}
 
 function showCreateStep(step) {
   document.querySelectorAll("[data-create-step]").forEach((el) => { el.hidden = el.dataset.createStep !== step; });
@@ -14780,6 +14866,8 @@ createContinueBtn?.addEventListener("click", () => {
   if (createPassphraseError) createPassphraseError.hidden = true;
   if (passphraseToggleBtn) passphraseToggleBtn.textContent = "Show";
   showCreateStep("passphrase");
+  resetPassphrasePreview("create");
+  schedulePassphrasePreview("create");
   queueMicrotask(() => createPassphraseInput?.focus());
 });
 
@@ -15440,6 +15528,7 @@ const importContinueBtn = document.querySelector("[data-import-continue]");
 const importPassphraseInput = document.querySelector("[data-import-passphrase]");
 const importPassphraseToggle = document.querySelector("[data-import-passphrase-toggle]");
 const importPassphraseError = document.querySelector("[data-import-passphrase-error]");
+importPassphraseInput?.addEventListener("input", () => schedulePassphrasePreview("import"));
 const importWithPassphraseBtn = document.querySelector("[data-import-with-passphrase]");
 const importSkipPassphraseBtn = document.querySelector("[data-import-skip-passphrase]");
 let pendingImport = null;
@@ -15635,6 +15724,8 @@ importContinueBtn?.addEventListener("click", async () => {
     if (importPassphraseError) importPassphraseError.hidden = true;
     if (importPassphraseToggle) importPassphraseToggle.textContent = "Show";
     showImportStep("passphrase");
+    resetPassphrasePreview("import");
+    schedulePassphrasePreview("import");
     queueMicrotask(() => importPassphraseInput?.focus());
   } finally {
     importContinueBtn.disabled = false;
