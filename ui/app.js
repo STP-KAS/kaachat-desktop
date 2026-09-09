@@ -14632,10 +14632,22 @@ const createContinueBtn = document.querySelector("[data-continue-to-passphrase]"
 const generateAccountBtn = document.querySelector("[data-generate-account]");
 const createPassphraseConfirm = document.querySelector("[data-create-passphrase-confirm]");
 const createPassphraseError = document.querySelector("[data-create-passphrase-error]");
-const passphraseToggleBtn = document.querySelector("[data-passphrase-toggle]");
+const passphraseToggleBtn = document.querySelector("[data-create-passphrase-toggle]");
 createPassphraseInput?.addEventListener("input", () => schedulePassphrasePreview("create"));
-const continueWithPassphraseBtn = document.querySelector("[data-continue-with-passphrase]");
-const skipPassphraseBtn = document.querySelector("[data-skip-passphrase]");
+const continueWithPassphraseBtn = document.querySelector("[data-create-passphrase-submit]");
+const skipPassphraseBtn = document.querySelector("[data-create-passphrase-no]");
+
+// --- The passphrase wizard: question, then entry, then explainer (iOS PassphraseOptionView) ---
+//
+// It used to be one page with the fields already on it and two buttons at the bottom, which asks
+// someone to decide before it has told them what they are deciding - and most people meeting this
+// screen have never heard of a passphrase. So it opens with the question on its own, with a way to
+// go and read about it first. Same three screens, same copy, as iOS.
+function showPassphraseScreen(flow, screen) {
+  document.querySelectorAll(`[data-${flow}-passphrase-screen]`).forEach((el) => {
+    el.hidden = el.dataset[`${flow}PassphraseScreen`] !== screen;
+  });
+}
 const recoveryModal = document.querySelector("[data-recovery-modal]");
 const recoveryPhraseBox = document.querySelector("[data-recovery-phrase]");
 const revealRecoveryButton = document.querySelector("[data-reveal-recovery]");
@@ -14866,8 +14878,7 @@ createContinueBtn?.addEventListener("click", () => {
   if (createPassphraseError) createPassphraseError.hidden = true;
   if (passphraseToggleBtn) passphraseToggleBtn.textContent = "Show";
   showCreateStep("passphrase");
-  resetPassphrasePreview("create");
-  schedulePassphrasePreview("create");
+  showPassphraseScreen("create", "question");
   queueMicrotask(() => createPassphraseInput?.focus());
 });
 
@@ -14908,10 +14919,31 @@ async function commitPendingAccount(passphrase) {
   }
 }
 
+document.querySelector("[data-create-passphrase-yes]")?.addEventListener("click", () => {
+  showPassphraseScreen("create", "entry");
+  resetPassphrasePreview("create");
+  schedulePassphrasePreview("create");
+  createPassphraseInput?.focus();
+});
+document.querySelector("[data-create-passphrase-explain]")?.addEventListener("click", () => {
+  showPassphraseScreen("create", "explainer");
+});
+document.querySelector("[data-create-passphrase-explain-back]")?.addEventListener("click", () => {
+  showPassphraseScreen("create", "question");
+});
+// Back clears what was typed: returning to the question and answering No must not commit a
+// passphrase the user has already walked away from.
+document.querySelector("[data-create-passphrase-back]")?.addEventListener("click", () => {
+  if (createPassphraseInput) createPassphraseInput.value = "";
+  if (createPassphraseConfirm) createPassphraseConfirm.value = "";
+  if (createPassphraseError) createPassphraseError.hidden = true;
+  showPassphraseScreen("create", "question");
+});
+
 continueWithPassphraseBtn?.addEventListener("click", () => {
   const pass = String(createPassphraseInput?.value || "");
   if (!pass) {
-    if (createPassphraseError) { createPassphraseError.textContent = "Enter a passphrase, or tap Skip to continue without one."; createPassphraseError.hidden = false; }
+    if (createPassphraseError) { createPassphraseError.textContent = "Enter a passphrase, or go Back and choose No to continue without one."; createPassphraseError.hidden = false; }
     return;
   }
   if (pass !== String(createPassphraseConfirm?.value || "")) {
@@ -15553,8 +15585,26 @@ const importPassphraseInput = document.querySelector("[data-import-passphrase]")
 const importPassphraseToggle = document.querySelector("[data-import-passphrase-toggle]");
 const importPassphraseError = document.querySelector("[data-import-passphrase-error]");
 importPassphraseInput?.addEventListener("input", () => schedulePassphrasePreview("import"));
-const importWithPassphraseBtn = document.querySelector("[data-import-with-passphrase]");
-const importSkipPassphraseBtn = document.querySelector("[data-import-skip-passphrase]");
+const importWithPassphraseBtn = document.querySelector("[data-import-passphrase-submit]");
+const importSkipPassphraseBtn = document.querySelector("[data-import-passphrase-no]");
+
+document.querySelector("[data-import-passphrase-yes]")?.addEventListener("click", () => {
+  showPassphraseScreen("import", "entry");
+  resetPassphrasePreview("import");
+  schedulePassphrasePreview("import");
+  importPassphraseInput?.focus();
+});
+document.querySelector("[data-import-passphrase-explain]")?.addEventListener("click", () => {
+  showPassphraseScreen("import", "explainer");
+});
+document.querySelector("[data-import-passphrase-explain-back]")?.addEventListener("click", () => {
+  showPassphraseScreen("import", "question");
+});
+document.querySelector("[data-import-passphrase-back]")?.addEventListener("click", () => {
+  if (importPassphraseInput) importPassphraseInput.value = "";
+  if (importPassphraseError) importPassphraseError.hidden = true;
+  showPassphraseScreen("import", "question");
+});
 let pendingImport = null;
 
 // Source-wallet chooser (iOS ImportSourceWalletView port): shown FIRST, before
@@ -15748,8 +15798,7 @@ importContinueBtn?.addEventListener("click", async () => {
     if (importPassphraseError) importPassphraseError.hidden = true;
     if (importPassphraseToggle) importPassphraseToggle.textContent = "Show";
     showImportStep("passphrase");
-    resetPassphrasePreview("import");
-    schedulePassphrasePreview("import");
+    showPassphraseScreen("import", "question");
     queueMicrotask(() => importPassphraseInput?.focus());
   } finally {
     importContinueBtn.disabled = false;

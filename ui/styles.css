@@ -5463,6 +5463,35 @@ body.session-logged-out [data-account-rename-modal] {
 
 /* ---- Account creation flow (2-step: setup → seed reveal) ---- */
 .create-account-flow { max-width: 460px; }
+/* The passphrase wizard's question screen: the choice on its own, before any field.
+   Mirrors iOS PassphraseOptionView's first screen. */
+.passphrase-question { text-align: center; padding: 18px 8px 6px; }
+.passphrase-question-icon svg {
+  width: 56px; height: 56px; fill: none;
+  stroke: var(--accent, #62f4d0); stroke-width: 1.6;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.passphrase-question-title { margin: 14px 0 0; font-size: 19px; line-height: 1.35; }
+.passphrase-question-steer { margin: 10px 0 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+/* "No" is a real answer here, not a dismissal, so it reads as the accent-tinted second choice
+   iOS gives it rather than a plain grey cancel. */
+.passphrase-actions .passphrase-no {
+  background: color-mix(in srgb, var(--accent, #62f4d0) 15%, transparent);
+  color: var(--accent, #62f4d0);
+}
+.linklike-button {
+  background: none; border: 0; cursor: pointer; padding: 12px;
+  font: inherit; font-weight: 600; font-size: 13.5px;
+  color: var(--accent, #62f4d0);
+}
+.passphrase-entry-title { margin: 14px 0 4px; font-size: 17px; }
+/* The explainer: plain language, scrollable, back only - reading about it always returns to
+   the choice rather than skipping past it. */
+.passphrase-explainer { text-align: left; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+.passphrase-explainer section { margin: 0 0 16px; }
+.passphrase-explainer h4 { margin: 0 0 4px; font-size: 14px; }
+.passphrase-explainer p { margin: 0; font-size: 13px; line-height: 1.55; color: var(--muted); }
+
 /* Live chatting-address preview on the passphrase step, create and import alike.
    A passphrase does not protect one account, it opens a DIFFERENT one, and watching
    address #0 change with every character is what makes that concrete. On import it is
