@@ -50,42 +50,28 @@ async function withTimeout(promise, ms, label) {
   }
 }
 
-async function waitForKasware(win, tries = 10) {
-  if (win?.kasware) return win.kasware;
-  for (let i = 0; i < tries; i += 1) {
-    await sleep(100 * (i + 1));
-    if (win?.kasware) return win.kasware;
-  }
-  return null;
-}
-
-async function kaswareAccountsQuiet(win) {
-  const wallet = win?.kasware;
-  if (!wallet?.getAccounts) return [];
-  try {
-    const accounts = await withTimeout(wallet.getAccounts(), 2500, "Kasware getAccounts timed out");
-    return accounts?.length ? accounts : [];
-  } catch {
-    return [];
-  }
-}
-
 export async function connectKasware(win = globalThis) {
-  const wallet = await waitForKasware(win);
-  if (!wallet) {
+  const wallet = win?.kasware;
+  if (!wallet?.requestAccounts) {
     win?.open?.("https://www.kasware.xyz", "_blank", "noopener");
     throw new Error("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then link again.");
   }
-  const quiet = await kaswareAccountsQuiet(win);
-  let address = quiet[0] ? String(quiet[0]) : "";
-  if (!address) {
-    const accounts = await withTimeout(wallet.requestAccounts(), 45000, "Kasware connect timed out");
-    if (!accounts?.[0]) throw new Error("Kasware returned no account.");
-    address = String(accounts[0]);
-  }
+  // Drop a silent cached session so requestAccounts always opens the Kasware
+  // approval popup. That is where the user unlocks and picks which account.
+  try {
+    if (typeof wallet.disconnect === "function") {
+      await Promise.race([
+        wallet.disconnect(win.location?.origin || ""),
+        sleep(400),
+      ]);
+    }
+  } catch { /* not connected yet */ }
+  const accounts = await withTimeout(wallet.requestAccounts(), 120000, "Kasware approval timed out. Open Kasware, unlock it, pick an account, and approve.");
+  const list = (Array.isArray(accounts) ? accounts : [accounts]).map((value) => String(value || "").trim()).filter(Boolean);
+  if (!list.length) throw new Error("Kasware returned no account. Approve the request in the Kasware popup.");
   let publicKey = "";
   try { publicKey = String(await wallet.getPublicKey?.() || ""); } catch { /* optional */ }
-  return { id: "kasware", address, publicKey };
+  return { id: "kasware", address: list[0], publicKey, accounts: list };
 }
 
 export async function connectKastle(win = globalThis) {
