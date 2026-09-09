@@ -2974,7 +2974,7 @@ body:has(.group-chat-screen:not([hidden])) .new-chat-fab { display: none; }
 
 /* Step 72: KaChat-style account creation */
 .create-account-modal { width: min(460px, calc(100vw - 32px)); }
-.seed-length-fieldset { border: 0; padding: 0; margin: 4px 0 0; }
+.seed-length-fieldset { border: 0; padding: 0; margin: 4px 0 14px; }
 .seed-length-fieldset legend { font-weight: 800; margin-bottom: 10px; }
 .seed-length-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .seed-length-options label { cursor: pointer; }
