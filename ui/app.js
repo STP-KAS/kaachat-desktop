@@ -14980,7 +14980,7 @@ const SETUP_ICONS = {
   network: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/></svg>',
   qrcode: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 20h1"/></svg>',
   server: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>',
-  chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h8A2.5 2.5 0 0 1 16 6.5v4A2.5 2.5 0 0 1 13.5 13H8l-4 3v-3H5.5"/><path d="M8.5 13v1.5A2.5 2.5 0 0 0 11 17h5.5l4 3v-3h-.5A2.5 2.5 0 0 0 18.5 10"/></svg>',
+  chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 6.5A2.5 2.5 0 0 1 5 4h8.5A2.5 2.5 0 0 1 16 6.5v3A2.5 2.5 0 0 1 13.5 12H7.5L4 15v-3.2A2.5 2.5 0 0 1 2.5 9.5Z"/><path fill="var(--accent, #62f4d0)" stroke="none" d="M10.5 11.5A2.5 2.5 0 0 1 13 9h6.5A2.5 2.5 0 0 1 22 11.5v3A2.5 2.5 0 0 1 19.5 17h-3L13 20v-3h0a2.5 2.5 0 0 1-2.5-2.5Z"/></svg>',
   privacy: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M7.2 12.6s2-3.1 4.8-3.1 4.8 3.1 4.8 3.1-2 3.1-4.8 3.1a4.4 4.4 0 0 1-1.7-.34"/><path d="M7 7l10 10"/></svg>',
 };
 
@@ -15092,13 +15092,13 @@ function renderSetupExtra(kind) {
         value: true,
         title: "On",
         badge: "Recommended",
-        sub: "Payments in your chats travel between fresh private addresses. When you pay a contact who also has privacy on, the money goes to a fresh address only the two of you know about, and payments you receive arrive on fresh addresses of your own the same way. Nobody watching the network can tie chat payments to you or your contacts.",
+        sub: "Anytime you receive Kaspa KaChat will do its best make sure the Kaspa goes to a fresh address not tied to your chatting identity. Sending Kaspa KaChat will always make sure it comes out of your primary spend address which is never associated with your chatting identity.",
       },
       {
         value: false,
         title: "Off",
         badge: null,
-        sub: "Payments you send and receive are tied to your chatting address only, where anyone can see the full payment history.",
+        sub: "All Kaspa will flow in and out of your chatting address",
       },
     ];
     const current = chatsPrivacyEnabled();
@@ -15157,8 +15157,8 @@ function renderSetupExtra(kind) {
   } else if (kind === "addresses") {
     const spendingAddr = deriveSpendingAddressAt(getActiveSpendingIndex());
     const rows = [
-      { title: "Chatting Address", value: engine.address || "--", caption: "Your public messaging identity. Fund it with a small amount to pay message fees and KNS profile creation fees. Never send money here that you intend to spend." },
-      { title: "Spending Address", value: spendingAddr || "Import a recovery phrase to use spending addresses", caption: "A separate address for the Kaspa you actually spend and receive. Manage it, view its balance, send and receive from your Profile. The same recovery phrase restores it identically on any device." },
+      { title: "Chatting Address", value: engine.address || "--", caption: "Your public messaging identity. Fund it with a small amount to pay message fees and KNS profile creation fees - never send money here that you intend to spend." },
+      { title: "Spending Address", value: spendingAddr || "Import a recovery phrase to use spending addresses", caption: "Where you send and receive Kaspa you intend to use for everything else." },
     ];
     for (const r of rows) {
       const box = document.createElement("div");
