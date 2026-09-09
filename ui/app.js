@@ -16445,6 +16445,48 @@ document.querySelectorAll('[data-shell-action]:not([data-shell-action="logout"])
   showCopyToast(`${label} frame ready`);
 }));
 
+function explainedWalletHint() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const fromQuery = String(params.get("address") || "").trim();
+    const idQuery = String(params.get("wallet") || "").trim();
+    if (fromQuery) return { address: fromQuery, id: idQuery || "kasware" };
+    return {
+      address: String(sessionStorage.getItem("kaspa-explained-wallet-address") || "").trim(),
+      id: String(sessionStorage.getItem("kaspa-explained-wallet-id") || "kasware").trim() || "kasware",
+    };
+  } catch {
+    return { address: "", id: "kasware" };
+  }
+}
+
+async function resumeExplainedWallet() {
+  const hint = explainedWalletHint();
+  const found = detectedInjectedWallets();
+  if (!found.length) return false;
+  try {
+    if (found.includes("kasware") && window.kasware?.getAccounts) {
+      const accounts = await window.kasware.getAccounts();
+      const address = String(accounts?.[0] || "").trim();
+      if (address) {
+        await enterLinkedWallet({ id: "kasware", address, publicKey: "", accounts: accounts || [address] });
+        return true;
+      }
+    }
+    if (found.includes("kastle") && window.kastle?.getAccount) {
+      const account = await window.kastle.getAccount();
+      const address = String(account?.address || account || "").trim();
+      if (address) {
+        await enterLinkedWallet({ id: "kastle", address, publicKey: String(account?.publicKey || "") });
+        return true;
+      }
+    }
+  } catch (error) {
+    appendEngineLog(`Wallet login resume: ${error.message}`);
+  }
+  return false;
+}
+
 async function enterLinkedWallet(session) {
   if (!engine.kaspa) await ensureRuntimes();
   const saved = loadSavedAccounts().find((entry) => entry.address === session.address && entry.privateKeyHex);
@@ -16779,7 +16821,7 @@ queueMicrotask(async () => {
   }
 
   if (wasmReady) {
-    const restored = restorePersistedTestingWallet();
+    const restored = restorePersistedTestingWallet() || await resumeExplainedWallet();
     updateWalletUi();
     updateServiceSummary();
     if (restored) {
