@@ -22,7 +22,7 @@ clear browser site data for localhost.
 To run KaChat again later:
 
 ```
-cd KaChat-Desktop && npm run dev
+cd kaachat-desktop && npm run dev
 ```
 
 
