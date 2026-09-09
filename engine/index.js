@@ -833,7 +833,9 @@ export class KaspaEngine {
   setInjectedWallet(session) {
     const address = String(session?.address || "").trim();
     const id = session?.id === "kastle" ? "kastle" : "kasware";
-    if (!address.startsWith("kaspa:")) throw new Error("Linked wallet returned no mainnet address.");
+    if (!address.startsWith("kaspa:") && !address.startsWith("kaspatest:")) {
+      throw new Error("That wallet did not return a Kaspa address.");
+    }
     const previousAddress = this.address;
     this.injected = { id, address, publicKey: String(session.publicKey || "") };
     this.privateKey = null;

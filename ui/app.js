@@ -591,7 +591,7 @@ function renderSavedAccountsScreen() {
   if (!accounts.length) {
     const empty = document.createElement("div");
     empty.className = "saved-account-empty";
-    empty.textContent = "Link Kasware or Kastle, or create or import an account.";
+    empty.textContent = "Log in with Kasware or Kastle, or create or import an account.";
     savedAccountList.append(empty);
     return;
   }
@@ -687,8 +687,8 @@ function refreshInjectedWalletStatus() {
   const status = document.querySelector("[data-logged-out-inject-status]");
   if (!status) return;
   const found = detectedInjectedWallets();
-  if (found.length) status.textContent = `Detected in this tab: ${found.join(", ")}. Unlock the wallet, then link.`;
-  else status.textContent = "Kasware and Kastle inject in Chrome, Edge, or Brave. Click Link to open the wallet, approve, and pick the account.";
+  if (found.length) status.textContent = `Detected in this tab: ${found.join(", ")}. Click log in, then approve in the wallet popup.`;
+  else status.textContent = "Install Kasware or Kastle in Chrome, Edge, or Brave, then click log in. The wallet popup must be approved. This app never asks for a recovery phrase.";
 }
 
 function showLoggedOutScreen() {
@@ -16465,7 +16465,7 @@ async function enterLinkedWallet(session) {
   refreshSubscriptionAddresses({ restart: false });
   appendEngineLog(`Linked ${session.id}: ${session.address}`);
   renderChats();
-  showCopyToast(`${session.id === "kastle" ? "Kastle" : "Kasware"} linked. Transactions confirm in the wallet popup.`);
+  showCopyToast(`Logged in with ${session.id === "kastle" ? "Kastle" : "Kasware"}.`);
   void connectAndRefresh({ quiet: true }).catch((error) => appendEngineLog(error.message));
 }
 
@@ -16505,7 +16505,7 @@ async function linkInjectedWallet(id) {
   const button = document.querySelector(id === "kastle" ? "[data-logged-out-kastle]" : "[data-logged-out-kasware]");
   if (button) button.disabled = true;
   try {
-    showCopyToast(id === "kastle" ? "Opening Kastle…" : "Opening Kasware. Approve and pick the account.");
+    showCopyToast(id === "kastle" ? "Opening Kastle. Approve to log in." : "Opening Kasware. Approve and pick the account to log in.");
     let session = await connectInjected(id);
     if (id === "kasware") {
       session = await pickKaswareAccount(session);
@@ -16526,6 +16526,39 @@ document.querySelector("[data-logged-out-kastle]")?.addEventListener("click", ()
 refreshInjectedWalletStatus();
 window.setTimeout(refreshInjectedWalletStatus, 400);
 window.setTimeout(refreshInjectedWalletStatus, 1200);
+window.addEventListener("kasware#initialized", refreshInjectedWalletStatus);
+
+function bindInjectedAccountEvents() {
+  const onKaswareAccounts = (accounts) => {
+    if (!engine.injected || engine.injected.id !== "kasware") return;
+    const address = String(accounts?.[0] || "").trim();
+    if (!address) return;
+    if (address === engine.address) return;
+    try {
+      engine.setInjectedWallet({ ...engine.injected, address });
+      upsertInjectedAccount({ ...engine.injected, address });
+      updateWalletUi();
+      appendEngineLog(`Kasware switched to ${address}`);
+    } catch (error) {
+      appendEngineLog(error.message);
+    }
+  };
+  window.kasware?.on?.("accountsChanged", onKaswareAccounts);
+  window.kastle?.on?.("accountsChanged", (accounts) => {
+    if (!engine.injected || engine.injected.id !== "kastle") return;
+    const address = String(accounts?.[0] || "").trim();
+    if (!address || address === engine.address) return;
+    try {
+      engine.setInjectedWallet({ ...engine.injected, address });
+      upsertInjectedAccount({ ...engine.injected, address });
+      updateWalletUi();
+    } catch (error) {
+      appendEngineLog(error.message);
+    }
+  });
+}
+bindInjectedAccountEvents();
+window.addEventListener("kasware#initialized", bindInjectedAccountEvents);
 
 document.querySelector("[data-logged-out-create]")?.addEventListener("click", openCreateAccountModal);
 
