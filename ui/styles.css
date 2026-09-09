@@ -5463,6 +5463,30 @@ body.session-logged-out [data-account-rename-modal] {
 
 /* ---- Account creation flow (2-step: setup → seed reveal) ---- */
 .create-account-flow { max-width: 460px; }
+/* Post-onboarding catch-up screen. Blocking on purpose: it has no close button and its backdrop
+   ignores clicks, because letting someone into a half-synced chat list is the thing it exists to
+   prevent. The "Continue anyway" escape appears after 20s. Mirrors iOS's InitialSyncProgressModal. */
+.initial-sync-backdrop { pointer-events: all; }
+.initial-sync-modal { max-width: 360px; text-align: center; padding: 28px 24px; }
+.initial-sync-title { margin: 14px 0 6px; font-size: 18px; }
+.initial-sync-phase { margin: 0 0 8px; font-size: 14px; color: var(--text-primary, #e8f0ec); }
+.initial-sync-note { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.initial-sync-spinner {
+  display: inline-block; width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--accent, #62f4d0) 25%, transparent);
+  border-top-color: var(--accent, #62f4d0);
+  animation: initial-sync-spin 0.9s linear infinite;
+}
+@keyframes initial-sync-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .initial-sync-spinner { animation-duration: 2.4s; }
+}
+.initial-sync-modal .linklike-button { margin-top: 16px; }
+.initial-sync-check svg {
+  width: 44px; height: 44px; fill: none;
+  stroke: #4cd964; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+
 /* The passphrase wizard's question screen: the choice on its own, before any field.
    Mirrors iOS PassphraseOptionView's first screen. */
 .passphrase-question { text-align: center; padding: 18px 8px 6px; }

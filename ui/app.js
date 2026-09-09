@@ -15234,11 +15234,74 @@ function openSetupGuide(options = {}) {
     setupGuideModal.hidden = false;
   }
 }
+// --- Post-onboarding catch-up (iOS MainTabView.InitialSyncProgressModal) ---
+//
+// Finish on the last guide step hands over to this rather than straight to the app. A half-synced
+// chat list invites taps on chats whose history has not landed yet, so the app waits behind a
+// blocking screen that says which part it is on. iOS holds sync for the whole wizard and releases
+// it here; desktop starts its sweep as soon as the account exists, so this waits out whatever is
+// already running and then runs a real one rather than assuming the background pass finished.
+const initialSyncBackdrop = document.querySelector("[data-initial-sync]");
+const initialSyncPhaseEl = document.querySelector("[data-initial-sync-phase]");
+const initialSyncSkipBtn = document.querySelector("[data-initial-sync-skip]");
+let initialSyncSkipTimer = null;
+
+function setInitialSyncState(state) {
+  document.querySelectorAll("[data-initial-sync-state]").forEach((el) => {
+    el.hidden = el.dataset.initialSyncState !== state;
+  });
+}
+
+function setInitialSyncPhase(label) {
+  if (initialSyncPhaseEl) initialSyncPhaseEl.textContent = label;
+}
+
+function closeInitialSync() {
+  if (initialSyncSkipTimer) { clearTimeout(initialSyncSkipTimer); initialSyncSkipTimer = null; }
+  if (initialSyncBackdrop) initialSyncBackdrop.hidden = true;
+}
+
+initialSyncSkipBtn?.addEventListener("click", closeInitialSync);
+document.querySelector("[data-initial-sync-done]")?.addEventListener("click", closeInitialSync);
+
+async function runPostOnboardingSync() {
+  if (!initialSyncBackdrop) return;
+  setInitialSyncState("running");
+  setInitialSyncPhase("Starting");
+  if (initialSyncSkipBtn) initialSyncSkipBtn.hidden = true;
+  initialSyncBackdrop.hidden = false;
+  // A modal with no way out would be worse than an incomplete chat list, so the escape appears
+  // once this has been running a while. Same 20 seconds iOS waits.
+  initialSyncSkipTimer = setTimeout(() => {
+    if (initialSyncSkipBtn) initialSyncSkipBtn.hidden = false;
+  }, 20_000);
+
+  try {
+    setInitialSyncPhase("Connecting for live updates");
+    await connectAndRefresh({ quiet: true });
+    // refreshAllConversations returns immediately when a sweep is already in flight, so awaiting
+    // it while the create/import path's own sweep runs would wait for nothing at all.
+    setInitialSyncPhase("Finding your conversations");
+    const startedWaiting = Date.now();
+    while (messageRefreshInFlight && Date.now() - startedWaiting < 120_000) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    setInitialSyncPhase("Downloading message history");
+    await refreshAllConversations({ quiet: true });
+    startAutomaticRefresh();
+  } catch (error) {
+    appendEngineLog(`Post-onboarding sync failed: ${error.message}`);
+  }
+  setInitialSyncState("finished");
+  if (initialSyncSkipTimer) { clearTimeout(initialSyncSkipTimer); initialSyncSkipTimer = null; }
+}
+
 function closeSetupGuide({ completed = false } = {}) {
   // Onboarding runs only ever end via Finish on the last step: no Skip, no
   // backdrop dismissal, nothing in between. Checked BEFORE the completed
   // branch clears the context so a mid-run backdrop click stays a no-op.
   if (!completed && setupGuideIsOnboardingRun) return;
+  const wasOnboardingRun = setupGuideIsOnboardingRun;
   if (completed) {
     // Finish on the last step: the onboarding run is done — a completed run
     // must not re-present on the next load.
@@ -15248,6 +15311,9 @@ function closeSetupGuide({ completed = false } = {}) {
   }
   if (setupGuideModal) setupGuideModal.hidden = true;
   closeChattingAddressPicker();
+  // Only a finished ONBOARDING run waits for the catch-up. A Help replay is someone re-reading
+  // the guide on an account that has been syncing all along.
+  if (completed && wasOnboardingRun) void runPostOnboardingSync();
 }
 setupNextBtn?.addEventListener("click", async () => {
   if (SETUP_STEPS[setupStepIndex]?.extra === "usertype") {

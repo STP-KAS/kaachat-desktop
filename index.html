@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=299" />
+  <link rel="stylesheet" href="./ui/styles.css?v=300" />
   <meta name="theme-color" content="#070a0d" />
   <!-- The KaChat logo the app already ships (432px PNG) doubles as the tab icon. -->
   <link rel="icon" type="image/png" href="./ui/assets/kachat-logo.png" />
@@ -1428,6 +1428,29 @@
     </div>
   </div>
 
+  <!-- Post-onboarding catch-up. Finish on the last guide step hands over to this rather than
+       straight to the app: a half-synced chat list invites taps on chats whose history has not
+       landed yet. Mirrors iOS's InitialSyncProgressModal, including the escape hatch. -->
+  <div class="modal-backdrop initial-sync-backdrop" data-initial-sync hidden>
+    <div class="contact-modal initial-sync-modal" role="dialog" aria-modal="true" aria-label="Setting up your account">
+      <div data-initial-sync-state="running">
+        <span class="initial-sync-spinner" aria-hidden="true"></span>
+        <h2 class="initial-sync-title">Setting up your account</h2>
+        <p class="initial-sync-phase" data-initial-sync-phase>Starting</p>
+        <p class="initial-sync-note">Downloading everything this account has on chain. It only takes this long once.</p>
+        <button class="linklike-button full" type="button" data-initial-sync-skip hidden>Continue anyway</button>
+      </div>
+      <div data-initial-sync-state="finished" hidden>
+        <span class="initial-sync-check" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.4l2.6 2.6L16 9.6"/></svg></span>
+        <h2 class="initial-sync-title">You&#39;re all set</h2>
+        <p class="initial-sync-note">Your chats and history are up to date.</p>
+        <div class="modal-actions passphrase-actions">
+          <button class="primary-button full" type="button" data-initial-sync-done>Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" data-setup-guide-modal hidden>
     <div class="contact-modal setup-guide-modal" role="dialog" aria-modal="true" aria-label="Setup Guide">
       <div class="setup-guide-top">
@@ -2696,7 +2719,7 @@
     <span data-copy-toast-text>Copied</span>
   </div>
 
-  <script type="module" src="./ui/app.js?v=317"></script>
+  <script type="module" src="./ui/app.js?v=318"></script>
   <script type="module" src="./ui/pwa.js?v=1"></script>
 
   <div class="modal-backdrop logout-backdrop" data-logout-modal hidden>
