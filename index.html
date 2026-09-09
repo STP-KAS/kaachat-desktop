@@ -241,7 +241,19 @@
                 </button>
                 <button type="button" data-composer-mode="photo">
                   <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m5 17 4.5-4.5 3.2 3.2 2.3-2.3L19 17"/></svg></span>
-                  <strong>Send Photo</strong>
+                  <strong>Add photo</strong>
+                </button>
+                <button type="button" data-composer-mode="video">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg></span>
+                  <strong>Add video</strong>
+                </button>
+                <button type="button" data-composer-mode="document">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M8 13h8M8 17h6"/></svg></span>
+                  <strong>Add document</strong>
+                </button>
+                <button type="button" data-composer-mode="file">
+                  <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></span>
+                  <strong>Add files</strong>
                 </button>
                 <button type="button" data-nextcloud-pick hidden>
                   <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M17.5 18.5h-11a4 4 0 0 1-.6-7.96 5.5 5.5 0 0 1 10.7-1.4 4.5 4.5 0 0 1 .9 9.36Z"/></svg></span>
@@ -285,10 +297,15 @@
               </div>
 
               <input type="file" accept="image/*" hidden data-photo-file-input />
+              <input type="file" accept="video/*" hidden data-video-file-input />
+              <input type="file" accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.xls,.xlsx,.ppt,.pptx,.csv,.pages,.epub" hidden data-document-file-input />
+              <input type="file" hidden multiple data-any-file-input />
               <div class="pending-photo-preview" data-pending-photo-preview hidden>
-                <img data-pending-photo-thumb alt="Pending photo attachment" />
+                <img data-pending-photo-thumb alt="" />
+                <video data-pending-file-video hidden playsinline muted></video>
+                <span class="pending-file-icon" data-pending-file-icon hidden aria-hidden="true">📄</span>
                 <span class="pending-photo-meta" data-pending-photo-meta></span>
-                <button type="button" class="pending-photo-remove" data-pending-photo-remove aria-label="Remove photo">×</button>
+                <button type="button" class="pending-photo-remove" data-pending-photo-remove aria-label="Remove attachment">×</button>
               </div>
 
               <div class="voice-recording-panel" data-voice-recording-panel hidden>
@@ -351,7 +368,19 @@
                 <div class="composer-plus-menu" data-group-plus-menu hidden>
                   <button type="button" data-group-compose="photo">
                     <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m5 17 4.5-4.5 3.2 3.2 2.3-2.3L19 17"/></svg></span>
-                    <strong>Send Photo</strong>
+                    <strong>Add photo</strong>
+                  </button>
+                  <button type="button" data-group-compose="video">
+                    <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/></svg></span>
+                    <strong>Add video</strong>
+                  </button>
+                  <button type="button" data-group-compose="document">
+                    <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5M8 13h8M8 17h6"/></svg></span>
+                    <strong>Add document</strong>
+                  </button>
+                  <button type="button" data-group-compose="file">
+                    <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg></span>
+                    <strong>Add files</strong>
                   </button>
                   <button type="button" data-group-compose="voice">
                     <span class="mode-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6"/></svg></span>
@@ -393,6 +422,9 @@
                   </div>
                 </form>
                 <input type="file" accept="image/*" hidden data-group-photo-input />
+                <input type="file" accept="video/*" hidden data-group-video-input />
+                <input type="file" accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.xls,.xlsx,.ppt,.pptx,.csv,.pages,.epub" hidden data-group-document-input />
+                <input type="file" hidden multiple data-group-any-file-input />
               </div>
             </div>
           </div>
@@ -1636,6 +1668,20 @@
         <button class="secondary-button" type="button" data-cancel-delete-selected>Cancel</button>
         <button class="danger-button" type="button" data-confirm-delete-selected>Delete</button>
       </div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" data-kasware-pick-modal hidden>
+    <section class="contact-modal" role="dialog" aria-modal="true" aria-label="Choose Kasware account">
+      <div class="modal-header">
+        <div>
+          <p class="screen-kicker">Kasware</p>
+          <h2>Choose account</h2>
+        </div>
+        <button class="modal-close" type="button" data-close-kasware-pick aria-label="Close">×</button>
+      </div>
+      <p class="field-hint">Kasware approved more than one address. Pick the wallet to use in KaChat.</p>
+      <div class="kasware-pick-list" data-kasware-pick-list></div>
     </section>
   </div>
 

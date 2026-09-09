@@ -688,7 +688,7 @@ function refreshInjectedWalletStatus() {
   if (!status) return;
   const found = detectedInjectedWallets();
   if (found.length) status.textContent = `Detected in this tab: ${found.join(", ")}. Unlock the wallet, then link.`;
-  else status.textContent = "Kasware and Kastle inject in Chrome, Edge, or Brave. This app never asks for a recovery phrase.";
+  else status.textContent = "Kasware and Kastle inject in Chrome, Edge, or Brave. Click Link to open the wallet, approve, and pick the account.";
 }
 
 function showLoggedOutScreen() {
@@ -1652,11 +1652,17 @@ const composer = document.querySelector("[data-composer]");
 const composerPlusButton = document.querySelector("[data-composer-plus]");
 const composerPlusMenu = document.querySelector("[data-composer-plus-menu]");
 const photoFileInput = document.querySelector("[data-photo-file-input]");
+const videoFileInput = document.querySelector("[data-video-file-input]");
+const documentFileInput = document.querySelector("[data-document-file-input]");
+const anyFileInput = document.querySelector("[data-any-file-input]");
 const pendingPhotoPreview = document.querySelector("[data-pending-photo-preview]");
 const pendingPhotoThumb = document.querySelector("[data-pending-photo-thumb]");
+const pendingFileVideo = document.querySelector("[data-pending-file-video]");
+const pendingFileIcon = document.querySelector("[data-pending-file-icon]");
 const pendingPhotoMeta = document.querySelector("[data-pending-photo-meta]");
 const pendingPhotoRemove = document.querySelector("[data-pending-photo-remove]");
 let pendingPhotoAttachment = null;
+const ONCHAIN_FILE_MAX_BYTES = 50000;
 const composerModeButtons = Array.from(document.querySelectorAll("[data-composer-mode]"));
 const availableBalanceBanner = document.querySelector("[data-available-balance-banner]");
 const feeEstimateBanner = document.querySelector("[data-fee-estimate-banner]");
@@ -10110,7 +10116,9 @@ function renderMessages(conversationEntry) {
     } else {
     const imageEnvelope = parseImageEnvelope(message.text);
     const audioEnvelope = imageEnvelope ? null : parseAudioEnvelope(message.text);
-    const replyEnvelope = (imageEnvelope || audioEnvelope) ? null : parseReplyEnvelope(message.text);
+    const videoEnvelope = (imageEnvelope || audioEnvelope) ? null : parseVideoEnvelope(message.text);
+    const fileEnvelope = (imageEnvelope || audioEnvelope || videoEnvelope) ? null : parseGenericFileEnvelope(message.text);
+    const replyEnvelope = (imageEnvelope || audioEnvelope || videoEnvelope || fileEnvelope) ? null : parseReplyEnvelope(message.text);
     if (replyEnvelope) {
       const quote = document.createElement("div");
       quote.className = "message-reply-quote";
@@ -10157,6 +10165,28 @@ function renderMessages(conversationEntry) {
       player.addEventListener("click", (event) => event.stopPropagation());
       audioWrap.append(player);
       bubble.append(audioWrap);
+    } else if (videoEnvelope) {
+      bubble.classList.add("photo-bubble");
+      const player = document.createElement("video");
+      player.className = "message-video";
+      player.controls = true;
+      player.playsInline = true;
+      player.preload = "metadata";
+      player.src = videoEnvelope.content;
+      player.addEventListener("click", (event) => event.stopPropagation());
+      bubble.append(player);
+    } else if (fileEnvelope) {
+      const card = document.createElement("a");
+      card.className = "message-attachment-card";
+      card.href = fileEnvelope.content;
+      card.target = "_blank";
+      card.rel = "noopener noreferrer";
+      card.download = fileEnvelope.name;
+      card.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg><span><strong></strong><small></small></span>`;
+      card.querySelector("strong").textContent = fileEnvelope.name || "File";
+      card.querySelector("small").textContent = formatFileSize(fileEnvelope.size);
+      card.addEventListener("click", (event) => event.stopPropagation());
+      bubble.append(card);
     } else {
       const text = document.createElement("span");
       text.className = "message-text";
@@ -12988,37 +13018,143 @@ async function compressImageBlob(blob, { targetBytes = photoQualityTargetBytes()
   return result;
 }
 
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read that file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function guessAttachmentKind(file, requested) {
+  const mime = String(file?.type || "");
+  if (requested && requested !== "file") return requested;
+  if (mime.startsWith("image/")) return "photo";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("application/pdf") || mime.startsWith("text/") || /\.(pdf|docx?|xlsx?|pptx?|odt|rtf|csv|txt)$/i.test(file?.name || "")) return "document";
+  return "file";
+}
+
 function clearPendingPhoto() {
   pendingPhotoAttachment = null;
   if (pendingPhotoPreview) pendingPhotoPreview.hidden = true;
-  if (pendingPhotoThumb) pendingPhotoThumb.src = "";
+  if (pendingPhotoThumb) { pendingPhotoThumb.src = ""; pendingPhotoThumb.hidden = false; }
+  if (pendingFileVideo) {
+    pendingFileVideo.pause?.();
+    pendingFileVideo.removeAttribute("src");
+    pendingFileVideo.hidden = true;
+  }
+  if (pendingFileIcon) pendingFileIcon.hidden = true;
   if (photoFileInput) photoFileInput.value = "";
+  if (videoFileInput) videoFileInput.value = "";
+  if (documentFileInput) documentFileInput.value = "";
+  if (anyFileInput) anyFileInput.value = "";
 }
 
 function setPendingPhoto(attachment) {
   pendingPhotoAttachment = attachment;
-  if (pendingPhotoThumb) pendingPhotoThumb.src = attachment.dataUrl;
-  const overBudget = attachment.bytes > photoQualityTargetBytes();
-  if (pendingPhotoMeta) {
-    pendingPhotoMeta.textContent = `Photo · ${attachment.width}×${attachment.height} · ${(attachment.bytes / 1024).toFixed(1)} KB${overBudget ? " · larger fee" : ""}`;
+  const kind = attachment.kind || "photo";
+  const isPhoto = kind === "photo" || String(attachment.mimeType || "").startsWith("image/");
+  const isVideo = kind === "video" || String(attachment.mimeType || "").startsWith("video/");
+  if (pendingPhotoThumb) {
+    pendingPhotoThumb.hidden = !isPhoto;
+    pendingPhotoThumb.src = isPhoto ? (attachment.dataUrl || "") : "";
   }
+  if (pendingFileVideo) {
+    pendingFileVideo.hidden = !isVideo;
+    if (isVideo && attachment.blob) pendingFileVideo.src = URL.createObjectURL(attachment.blob);
+  }
+  if (pendingFileIcon) pendingFileIcon.hidden = isPhoto || isVideo;
+  const label = isPhoto ? "Photo" : isVideo ? "Video" : kind === "document" ? "Document" : "File";
+  const sizeLabel = formatFileSize(attachment.size || attachment.bytes || 0);
+  const extra = isPhoto && attachment.width ? ` · ${attachment.width}×${attachment.height}` : "";
+  if (pendingPhotoMeta) pendingPhotoMeta.textContent = `${label} · ${attachment.name || "file"}${extra} · ${sizeLabel}`;
   if (pendingPhotoPreview) pendingPhotoPreview.hidden = false;
   composer.elements.message?.focus();
 }
 
 async function attachPhotoBlob(blob) {
-  setStatus("Compressing photo…");
+  return attachChatFile(blob, "photo");
+}
+
+async function attachChatFile(file, requestedKind) {
+  if (!file) return;
+  const kind = guessAttachmentKind(file, requestedKind);
+  const mimeType = String(file.type || (kind === "photo" ? "image/jpeg" : kind === "video" ? "video/mp4" : "application/octet-stream"));
+  setStatus(kind === "photo" ? "Compressing photo…" : `Attaching ${file.name || kind}…`);
   try {
-    const attachment = await compressImageBlob(blob);
-    // Kept alongside the compressed envelope version so "Send Media via Nextcloud" can
-    // upload the ORIGINAL full-quality file instead of the payload-sized recompression.
-    attachment.originalBlob = blob;
-    attachment.originalName = blob.name || "photo.jpg";
+    const attachment = {
+      kind,
+      name: file.name || `${kind}`,
+      mimeType,
+      size: file.size,
+      blob: file,
+      originalBlob: file,
+      originalName: file.name || `${kind}`,
+      bytes: file.size,
+    };
+    if (kind === "photo" || mimeType.startsWith("image/")) {
+      const compressed = await compressImageBlob(file);
+      Object.assign(attachment, compressed, { kind: "photo", originalBlob: file, originalName: file.name || "photo.jpg" });
+    } else if (file.size <= ONCHAIN_FILE_MAX_BYTES) {
+      attachment.dataUrl = await readFileAsDataUrl(file);
+    }
     setPendingPhoto(attachment);
-    setStatus(`Photo ready · ${(attachment.bytes / 1024).toFixed(1)} KB`);
+    setStatus(`${attachment.kind === "photo" ? "Photo" : attachment.kind === "video" ? "Video" : "File"} ready · ${formatFileSize(attachment.size || attachment.bytes)}`);
   } catch (error) {
-    showCopyToast(error.message || "Could not attach that photo.");
+    showCopyToast(error.message || "Could not attach that file.");
   }
+}
+
+async function sendPendingChatAttachment(conversationId) {
+  const attachment = pendingPhotoAttachment;
+  if (!attachment) return false;
+  clearPendingPhoto();
+  const kind = attachment.kind || "photo";
+  const blob = attachment.originalBlob || attachment.blob;
+  const name = attachment.originalName || attachment.name || "file";
+  const mimeType = attachment.mimeType || blob?.type || "application/octet-stream";
+  const preferCloud = kind !== "photo" || isNextcloudMediaSendActive();
+  if (preferCloud && blob && (isNextcloudConnected() || isNextcloudMediaSendActive())) {
+    setStatus(`Uploading ${kind}…`);
+    try {
+      const url = await uploadNextcloudMedia(blob, name, mimeType);
+      queueConversationMessage(conversationId, url);
+      setStatus(`${kind === "video" ? "Video" : kind === "photo" ? "Photo" : "File"} sent.`);
+      return true;
+    } catch (error) {
+      if (kind !== "photo") {
+        showCopyToast(`Could not send that ${kind}. Connect Nextcloud in Settings to send any size. (${error.message})`);
+        return true;
+      }
+      showCopyToast(`Nextcloud upload failed — sending on-chain instead. (${error.message})`);
+    }
+  }
+  if (kind === "photo") {
+    queueConversationMessage(conversationId, buildImageEnvelopeJson(attachment, name));
+    return true;
+  }
+  if (attachment.dataUrl && (attachment.size || 0) <= ONCHAIN_FILE_MAX_BYTES) {
+    queueConversationMessage(conversationId, JSON.stringify({
+      type: "file",
+      name,
+      size: attachment.size || attachment.bytes || 0,
+      mimeType,
+      content: attachment.dataUrl,
+    }));
+    return true;
+  }
+  showCopyToast(`This ${kind} is ${formatFileSize(attachment.size)}. Connect Nextcloud in Settings to send videos and files of any size.`);
+  return true;
 }
 
 // Matches iOS's ChatService+Conversations.sendImage / Android's ImageMessage
@@ -13225,6 +13361,8 @@ function memoizedEnvelopeParse(kind, text, parser) {
 }
 function parseImageEnvelope(text) { return memoizedEnvelopeParse("image", text, parseImageEnvelopeUncached); }
 function parseAudioEnvelope(text) { return memoizedEnvelopeParse("audio", text, parseAudioEnvelopeUncached); }
+function parseVideoEnvelope(text) { return memoizedEnvelopeParse("video", text, parseVideoEnvelopeUncached); }
+function parseGenericFileEnvelope(text) { return memoizedEnvelopeParse("file", text, parseGenericFileEnvelopeUncached); }
 function parseReplyEnvelope(text) { return memoizedEnvelopeParse("reply", text, parseReplyEnvelopeUncached); }
 
 // Receivers (including our own render path) detect an image purely by
@@ -13263,6 +13401,38 @@ function parseAudioEnvelopeUncached(text) {
     const content = String(parsed.content || "");
     if (!content.startsWith("data:")) return null;
     return { name: String(parsed.name || "audio.webm"), size: Number(parsed.size || 0), mimeType, content, duration: Number(parsed.duration || 0) };
+  } catch {
+    return null;
+  }
+}
+
+function parseVideoEnvelopeUncached(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed.startsWith("{") || trimmed.length > 8_000_000) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || parsed.type !== "file") return null;
+    const mimeType = String(parsed.mimeType || "");
+    if (!mimeType.startsWith("video/")) return null;
+    const content = String(parsed.content || "");
+    if (!content.startsWith("data:") && !/^https?:\/\//i.test(content)) return null;
+    return { name: String(parsed.name || "video.mp4"), size: Number(parsed.size || 0), mimeType, content };
+  } catch {
+    return null;
+  }
+}
+
+function parseGenericFileEnvelopeUncached(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed.startsWith("{") || trimmed.length > 8_000_000) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || parsed.type !== "file") return null;
+    const mimeType = String(parsed.mimeType || "application/octet-stream");
+    if (mimeType.startsWith("image/") || mimeType.startsWith("audio/") || mimeType.startsWith("video/")) return null;
+    const content = String(parsed.content || "");
+    if (!content) return null;
+    return { name: String(parsed.name || "file"), size: Number(parsed.size || 0), mimeType, content };
   } catch {
     return null;
   }
@@ -14422,8 +14592,29 @@ pendingPhotoRemove?.addEventListener("click", clearPendingPhoto);
 photoFileInput?.addEventListener("change", async () => {
   const file = photoFileInput.files?.[0];
   if (!file) return;
-  await attachPhotoBlob(file);
+  await attachChatFile(file, "photo");
   photoFileInput.value = "";
+});
+
+videoFileInput?.addEventListener("change", async () => {
+  const file = videoFileInput.files?.[0];
+  if (!file) return;
+  await attachChatFile(file, "video");
+  videoFileInput.value = "";
+});
+
+documentFileInput?.addEventListener("change", async () => {
+  const file = documentFileInput.files?.[0];
+  if (!file) return;
+  await attachChatFile(file, "document");
+  documentFileInput.value = "";
+});
+
+anyFileInput?.addEventListener("change", async () => {
+  const files = Array.from(anyFileInput.files || []);
+  anyFileInput.value = "";
+  if (!files.length) return;
+  await attachChatFile(files[0], guessAttachmentKind(files[0], "file"));
 });
 
 composer.elements.message?.addEventListener("paste", async (event) => {
@@ -14447,6 +14638,15 @@ composerModeButtons.forEach((button) => {
     } else if (mode === "photo") {
       activateComposerMode("message");
       photoFileInput?.click();
+    } else if (mode === "video") {
+      activateComposerMode("message");
+      videoFileInput?.click();
+    } else if (mode === "document") {
+      activateComposerMode("message");
+      documentFileInput?.click();
+    } else if (mode === "file") {
+      activateComposerMode("message");
+      anyFileInput?.click();
     } else if (mode === "voice") {
       activateComposerMode("message");
       startVoiceRecording();
@@ -14579,31 +14779,10 @@ composer.addEventListener("submit", async (event) => {
   const text = String(input.value || "").trim();
 
   if (pendingPhotoAttachment) {
-    const attachment = pendingPhotoAttachment;
     input.value = "";
     autoGrowComposer();
-    clearPendingPhoto();
     hideFeeEstimateBanner();
-    // "Send Media via Nextcloud": upload the full-quality original and send its share link
-    // (renders as a media bubble on the recipient's side). Any failure falls back to the
-    // on-chain envelope so the message never silently vanishes.
-    if (isNextcloudMediaSendActive() && attachment.originalBlob) {
-      const conversationId = activeConversationId;
-      setStatus("Uploading photo to Nextcloud…");
-      try {
-        const url = await uploadNextcloudMedia(
-          attachment.originalBlob,
-          attachment.originalName || "photo.jpg",
-          attachment.originalBlob.type || "image/jpeg"
-        );
-        queueConversationMessage(conversationId, url);
-        setStatus("Photo sent via Nextcloud.");
-        return;
-      } catch (error) {
-        showCopyToast(`Nextcloud upload failed — sending on-chain instead. (${error.message})`);
-      }
-    }
-    queueConversationMessage(activeConversationId, buildImageEnvelopeJson(attachment));
+    await sendPendingChatAttachment(activeConversationId);
     return;
   }
 
@@ -16290,11 +16469,48 @@ async function enterLinkedWallet(session) {
   void connectAndRefresh({ quiet: true }).catch((error) => appendEngineLog(error.message));
 }
 
+function closeKaswarePick() {
+  const modal = document.querySelector("[data-kasware-pick-modal]");
+  if (modal) modal.hidden = true;
+}
+
+function pickKaswareAccount(session) {
+  const accounts = (session.accounts || [session.address]).filter(Boolean);
+  if (accounts.length <= 1) return Promise.resolve(session);
+  const modal = document.querySelector("[data-kasware-pick-modal]");
+  const list = document.querySelector("[data-kasware-pick-list]");
+  if (!modal || !list) return Promise.resolve({ ...session, address: accounts[0] });
+  list.replaceChildren();
+  modal.hidden = false;
+  return new Promise((resolve) => {
+    const finish = (address) => {
+      closeKaswarePick();
+      resolve({ ...session, address });
+    };
+    for (const address of accounts) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = address;
+      button.addEventListener("click", () => finish(address));
+      list.append(button);
+    }
+    document.querySelector("[data-close-kasware-pick]")?.addEventListener("click", () => {
+      closeKaswarePick();
+      resolve(null);
+    }, { once: true });
+  });
+}
+
 async function linkInjectedWallet(id) {
   const button = document.querySelector(id === "kastle" ? "[data-logged-out-kastle]" : "[data-logged-out-kasware]");
   if (button) button.disabled = true;
   try {
-    const session = await connectInjected(id);
+    showCopyToast(id === "kastle" ? "Opening Kastle…" : "Opening Kasware. Approve and pick the account.");
+    let session = await connectInjected(id);
+    if (id === "kasware") {
+      session = await pickKaswareAccount(session);
+      if (!session) return;
+    }
     await enterLinkedWallet(session);
   } catch (error) {
     refreshInjectedWalletStatus();
@@ -17631,10 +17847,12 @@ function renderGroupMessages() {
       avatarSlot.addEventListener("click", (event) => { event.stopPropagation(); openGroupMemberMenu(engine.address, event.clientX, event.clientY); });
     }
 
-    // Rich content — same envelopes (reply / photo / voice) as 1:1, shared with iOS/Android.
+    // Rich content — same envelopes (reply / photo / voice / video / file) as 1:1, shared with iOS/Android.
     const imageEnvelope = parseImageEnvelope(message.text);
     const audioEnvelope = imageEnvelope ? null : parseAudioEnvelope(message.text);
-    const replyEnvelope = (imageEnvelope || audioEnvelope) ? null : parseReplyEnvelope(message.text);
+    const videoEnvelope = (imageEnvelope || audioEnvelope) ? null : parseVideoEnvelope(message.text);
+    const fileEnvelope = (imageEnvelope || audioEnvelope || videoEnvelope) ? null : parseGenericFileEnvelope(message.text);
+    const replyEnvelope = (imageEnvelope || audioEnvelope || videoEnvelope || fileEnvelope) ? null : parseReplyEnvelope(message.text);
     if (replyEnvelope) {
       const quote = document.createElement("div");
       quote.className = "message-reply-quote";
@@ -17666,6 +17884,28 @@ function renderGroupMessages() {
       player.addEventListener("click", (event) => event.stopPropagation());
       audioWrap.append(player);
       bubble.append(audioWrap);
+    } else if (videoEnvelope) {
+      bubble.classList.add("photo-bubble");
+      const player = document.createElement("video");
+      player.className = "message-video";
+      player.controls = true;
+      player.playsInline = true;
+      player.preload = "metadata";
+      player.src = videoEnvelope.content;
+      player.addEventListener("click", (event) => event.stopPropagation());
+      bubble.append(player);
+    } else if (fileEnvelope) {
+      const card = document.createElement("a");
+      card.className = "message-attachment-card";
+      card.href = fileEnvelope.content;
+      card.target = "_blank";
+      card.rel = "noopener noreferrer";
+      card.download = fileEnvelope.name;
+      card.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg><span><strong></strong><small></small></span>`;
+      card.querySelector("strong").textContent = fileEnvelope.name || "File";
+      card.querySelector("small").textContent = formatFileSize(fileEnvelope.size);
+      card.addEventListener("click", (event) => event.stopPropagation());
+      bubble.append(card);
     } else {
       const text = document.createElement("span");
       text.className = "message-text";
@@ -18499,7 +18739,28 @@ groupComposer?.addEventListener("submit", async (event) => {
   if (groupPendingPhoto) {
     const { attachment, fileName } = groupPendingPhoto;
     clearGroupPendingPhoto();
-    sendGroupWire(buildImageEnvelopeJson(attachment, fileName));
+    const kind = attachment.kind || "photo";
+    const blob = attachment.originalBlob || attachment.blob;
+    if (kind !== "photo" && blob && isNextcloudConnected()) {
+      try {
+        const url = await uploadNextcloudMedia(blob, fileName || attachment.name, attachment.mimeType || blob.type);
+        sendGroupWire(url);
+      } catch (error) {
+        showCopyToast(`Could not send that ${kind}. Connect Nextcloud to send any size. (${error.message})`);
+      }
+    } else if (kind === "photo") {
+      sendGroupWire(buildImageEnvelopeJson(attachment, fileName));
+    } else if (attachment.dataUrl) {
+      sendGroupWire(JSON.stringify({
+        type: "file",
+        name: fileName || attachment.name,
+        size: attachment.size || attachment.bytes || 0,
+        mimeType: attachment.mimeType || "application/octet-stream",
+        content: attachment.dataUrl,
+      }));
+    } else {
+      showCopyToast(`This ${kind} is ${formatFileSize(attachment.size)}. Connect Nextcloud in Settings to send videos and files of any size.`);
+    }
   }
   if (!raw) return;
   const encoded = encodeGroupMentions(raw);
@@ -18542,6 +18803,9 @@ groupPlusMenu?.addEventListener("click", (event) => {
   if (!btn) return;
   closeGroupPlusMenu();
   if (btn.dataset.groupCompose === "photo") groupPhotoInput?.click();
+  else if (btn.dataset.groupCompose === "video") document.querySelector("[data-group-video-input]")?.click();
+  else if (btn.dataset.groupCompose === "document") document.querySelector("[data-group-document-input]")?.click();
+  else if (btn.dataset.groupCompose === "file") document.querySelector("[data-group-any-file-input]")?.click();
   else if (btn.dataset.groupCompose === "voice") startGroupVoice();
 });
 
@@ -18559,8 +18823,16 @@ function clearGroupPendingPhoto() {
 }
 function setGroupPendingPhoto(attachment, fileName) {
   groupPendingPhoto = { attachment, fileName };
-  if (groupPendingPhotoThumb) groupPendingPhotoThumb.src = attachment.dataUrl;
-  if (groupPendingPhotoMeta) groupPendingPhotoMeta.textContent = `Photo · ${attachment.width}×${attachment.height} · ${(attachment.bytes / 1024).toFixed(1)} KB`;
+  const kind = attachment.kind || "photo";
+  if (groupPendingPhotoThumb) {
+    groupPendingPhotoThumb.hidden = kind !== "photo";
+    groupPendingPhotoThumb.src = kind === "photo" ? (attachment.dataUrl || "") : "";
+  }
+  if (groupPendingPhotoMeta) {
+    const label = kind === "photo" ? "Photo" : kind === "video" ? "Video" : kind === "document" ? "Document" : "File";
+    const dim = kind === "photo" && attachment.width ? ` · ${attachment.width}×${attachment.height}` : "";
+    groupPendingPhotoMeta.textContent = `${label} · ${fileName || attachment.name}${dim} · ${formatFileSize(attachment.size || attachment.bytes)}`;
+  }
   if (groupPendingPhotoPreview) groupPendingPhotoPreview.hidden = false;
   groupComposerInput?.focus();
 }
@@ -18572,9 +18844,57 @@ groupPhotoInput?.addEventListener("change", async () => {
   try {
     setStatus("Compressing photo…");
     const attachment = await compressImageBlob(file);
+    attachment.originalBlob = file;
+    attachment.originalName = file.name || "photo.jpg";
+    attachment.kind = "photo";
     setGroupPendingPhoto(attachment, file.name || "photo.jpg");
     setStatus(`Photo ready · ${(attachment.bytes / 1024).toFixed(1)} KB · press Send`);
   } catch (error) { showCopyToast(error.message || "Could not attach that photo."); }
+});
+
+async function attachGroupChatFile(file, kind) {
+  if (!file || !activeGroupId) return;
+  try {
+    if (kind === "photo" || String(file.type || "").startsWith("image/")) {
+      setStatus("Compressing photo…");
+      const attachment = await compressImageBlob(file);
+      attachment.originalBlob = file;
+      attachment.kind = "photo";
+      setGroupPendingPhoto(attachment, file.name || "photo.jpg");
+      return;
+    }
+    const attachment = {
+      kind,
+      name: file.name || kind,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+      bytes: file.size,
+      blob: file,
+      originalBlob: file,
+      originalName: file.name,
+    };
+    if (file.size <= ONCHAIN_FILE_MAX_BYTES) attachment.dataUrl = await readFileAsDataUrl(file);
+    setGroupPendingPhoto(attachment, file.name || kind);
+    setStatus(`${kind} ready · ${formatFileSize(file.size)} · press Send`);
+  } catch (error) {
+    showCopyToast(error.message || "Could not attach that file.");
+  }
+}
+
+document.querySelector("[data-group-video-input]")?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  await attachGroupChatFile(file, "video");
+});
+document.querySelector("[data-group-document-input]")?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  await attachGroupChatFile(file, "document");
+});
+document.querySelector("[data-group-any-file-input]")?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  await attachGroupChatFile(file, guessAttachmentKind(file, "file"));
 });
 
 // Voice send (native MediaRecorder → the same {type:"file",audio/...} envelope as 1:1).

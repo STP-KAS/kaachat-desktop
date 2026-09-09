@@ -31,17 +31,27 @@ test("detected reports only injected wallets", () => {
   assert.deepEqual(detected({ kasware: {}, kastle: {} }), ["kasware", "kastle"]);
 });
 
-test("connect Kasware uses a quiet account then requestAccounts", async () => {
+test("connect Kasware always opens requestAccounts even if getAccounts is cached", async () => {
+  let requested = false;
+  let disconnected = false;
   const win = {
+    location: { origin: "http://localhost" },
     kasware: {
-      getAccounts: async () => [],
-      requestAccounts: async () => ["kaspa:qtestaddress"],
+      getAccounts: async () => ["kaspa:qquiet"],
+      disconnect: async () => { disconnected = true; },
+      requestAccounts: async () => {
+        requested = true;
+        return ["kaspa:qchosen", "kaspa:qother"];
+      },
       getPublicKey: async () => "03ab",
     },
   };
   const session = await connectInjected("kasware", win);
+  assert.equal(disconnected, true);
+  assert.equal(requested, true);
   assert.equal(session.id, "kasware");
-  assert.equal(session.address, "kaspa:qtestaddress");
+  assert.equal(session.address, "kaspa:qchosen");
+  assert.deepEqual(session.accounts, ["kaspa:qchosen", "kaspa:qother"]);
   assert.equal(session.publicKey, "03ab");
 });
 
