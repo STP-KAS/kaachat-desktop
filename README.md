@@ -3,6 +3,8 @@
 GitHub: [STP-KAS/kaachat-desktop](https://github.com/STP-KAS/kaachat-desktop).
 Upstream: [KaspaSilver/KaChat-Desktop](https://github.com/KaspaSilver/KaChat-Desktop).
 
+On a computer, **Link Kasware** or **Link Kastle** in the signed-out screen. Those extensions inject in Chrome, Edge, or Brave. This app never asks them for a recovery phrase. If the address already has a saved KaChat account, linking signs into that account.
+
 QUICK START (Mac, Linux, Windows)
 
 ```

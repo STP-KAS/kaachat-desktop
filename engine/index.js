@@ -2,6 +2,7 @@ import { loadKaspaModule } from "./wasm-loader.js";
 import { clearNodeRegistry, connectRpc, createStandbyRpc, disconnectRpc, forgetEndpoint, getNodeRegistrySnapshot, isRpcConnectionError, probeRpc, recordFailover } from "./rpc.js";
 import { generateWallet, generateMnemonicWallet, generateMnemonicPhrase, importMnemonic, importMnemonicWithFamily, deriveIdentityAddressRange, importPrivateKey, deriveSpendingWallet, spendingDerivationPath, normalizeSourceFamily, sourceFamilyPathDescription, WALLET_SOURCE_FAMILIES } from "./wallet.js";
 import { getBalance, sendKaspa, sendMaxKaspa, sweepAllToSelf, estimateOnchainFee, estimateSendFeeDetail, sendPayloadTransaction } from "./transactions.js";
+import { sendInjectedPayload } from "./injected-wallet.js";
 import { makeQrPayload, drawKaspaQr } from "./qr.js";
 import { createMessageEnvelope, createEncryptedMessageEnvelope, createEncryptedHandshakeEnvelope, createSelfStashEnvelope, sendMessagePreview, sendMessageOnchain, sendHandshakeOnchain, sendSelfStashOnchain } from "./messages.js";
 import { buildConversationSyncPlan, syncConversationPreview, syncConversationFromIndexer, syncIncomingHandshakesFromIndexer, syncOutgoingHandshakesFromIndexer, syncIncomingPaymentsFromRest, syncSelfStashFromChain, testKasiaIndexer, DEFAULT_KASIA_INDEXER_URL } from "./sync.js";
@@ -48,6 +49,7 @@ export class KaspaEngine {
     this.standbyRpc = null;
     this.privateKey = null;
     this.privateKeyHex = null;
+    this.injected = null;
     this.address = null;
     this.currentUtxos = [];
     this.cipher = null;
@@ -543,7 +545,8 @@ export class KaspaEngine {
   requireSdk() { requireKaspa(this.kaspa); }
   requireWallet() {
     this.requireSdk();
-    if (!this.privateKey || !this.address) throw new Error("Generate or import a private key first.");
+    if (!this.address) throw new Error("Connect Kasware or Kastle, or generate/import a wallet first.");
+    if (!this.privateKey && !this.injected) throw new Error("Connect Kasware or Kastle, or generate/import a wallet first.");
   }
 
   async loadWasm() {
@@ -817,6 +820,7 @@ export class KaspaEngine {
 
   setWallet(wallet) {
     const previousAddress = this.address;
+    this.injected = null;
     this.privateKey = wallet.privateKey;
     this.privateKeyHex = wallet.privateKeyHex;
     this.address = wallet.address;
@@ -826,10 +830,26 @@ export class KaspaEngine {
     return wallet;
   }
 
+  setInjectedWallet(session) {
+    const address = String(session?.address || "").trim();
+    const id = session?.id === "kastle" ? "kastle" : "kasware";
+    if (!address.startsWith("kaspa:")) throw new Error("Linked wallet returned no mainnet address.");
+    const previousAddress = this.address;
+    this.injected = { id, address, publicKey: String(session.publicKey || "") };
+    this.privateKey = null;
+    this.privateKeyHex = null;
+    this.address = address;
+    this.currentUtxos = [];
+    if (previousAddress && previousAddress !== this.address) queueMicrotask(() => this.stopWalletSubscription());
+    if (this.rpc) queueMicrotask(() => this.rebuildWalletSubscription());
+    return this.injected;
+  }
+
   clearSession() {
     queueMicrotask(() => this.stopWalletSubscription());
     this.privateKey = null;
     this.privateKeyHex = null;
+    this.injected = null;
     this.address = null;
     this.currentUtxos = [];
   }
@@ -846,6 +866,14 @@ export class KaspaEngine {
 
   async send(destinationAddress, amountKas, feeKas = "0", options = {}) {
     this.requireWallet();
+    if (this.injected) {
+      return sendInjectedPayload({
+        id: this.injected.id,
+        toAddress: destinationAddress,
+        amountKas,
+        payload: options.payload || null,
+      });
+    }
     await this.connect();
     return sendKaspa({
       kaspa: this.kaspa,
@@ -857,6 +885,7 @@ export class KaspaEngine {
       amountKas,
       feeKas,
       selectedOutpoints: options.selectedOutpoints || null,
+      payload: options.payload || null,
       log: this.log,
     });
   }
@@ -865,6 +894,7 @@ export class KaspaEngine {
   // recipient (see sendMaxKaspa — near-max amounts with change get rejected by KIP-9).
   async sendMax(destinationAddress, totalFeeKas = null, selectedOutpoints = null) {
     this.requireWallet();
+    if (this.injected) throw new Error("Max send needs a KaChat account. Linked Kasware or Kastle can send a chosen amount.");
     await this.connect();
     return sendMaxKaspa({
       kaspa: this.kaspa,
@@ -995,7 +1025,10 @@ export class KaspaEngine {
   }
 
   async deriveConversationAliases(peerAddress) {
-    if (!this.privateKeyHex) throw new Error("Generate or import a private key first.");
+    if (!this.privateKeyHex) {
+      if (this.injected) return { myAlias: "", theirAlias: "" };
+      throw new Error("Generate or import a private key first.");
+    }
     if (!this.isKasiaCipherLoaded()) throw new Error("Load Kasia Cipher WASM first.");
     return deriveKasiaAliases(this.privateKeyHex, peerAddress);
   }
@@ -1038,6 +1071,15 @@ export class KaspaEngine {
   // same self-stash mechanism 1:1 COMM messages use.
   async sendGroupPayload(payloadString, { amountKas = KASIA_INTEGRATION_STATUS.defaultMessageAmountKas, feeKas = "0" } = {}) {
     this.requireWallet();
+    const payload = new TextEncoder().encode(String(payloadString));
+    if (this.injected) {
+      return sendInjectedPayload({
+        id: this.injected.id,
+        toAddress: this.address,
+        amountKas,
+        payload,
+      });
+    }
     await this.connect();
     return sendPayloadTransaction({
       kaspa: this.kaspa,
@@ -1048,7 +1090,7 @@ export class KaspaEngine {
       destinationAddress: this.address,
       amountKas,
       feeKas,
-      payload: new TextEncoder().encode(String(payloadString)),
+      payload,
       log: this.log,
     });
   }

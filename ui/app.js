@@ -35,6 +35,7 @@ import {
 } from "../engine/conversations.js";
 import { KNSProfileLinkBuilder } from "../engine/kns.js";
 import { getEndpoint, getEndpointOverride, setEndpoint, resetEndpoints, ENDPOINT_DEFAULTS } from "../engine/endpoints.js";
+import { connectInjected, detected as detectedInjectedWallets } from "../engine/injected-wallet.js";
 import * as Chess from "../engine/chess.js";
 import { registrationAmounts as knsRegistrationAmounts, PROFILE_FIELD_EDIT_ORDER as KNS_PROFILE_FIELD_EDIT_ORDER } from "../engine/kns-write.js";
 
@@ -522,20 +523,63 @@ function activateSavedAccount(address) {
   const account = loadSavedAccounts().find((entry) => entry.address === address);
   if (!account) throw new Error("Saved account was not found.");
   localStorage.setItem(ACTIVE_ACCOUNT_KEY, account.address);
-  localStorage.setItem(PERSISTED_WALLET_KEY, JSON.stringify({
-    version: 2,
-    privateKeyHex: account.privateKeyHex,
-    mnemonic: String(account.mnemonic || ""),
-    passphrase: String(account.passphrase || ""),
-    derivationPath: String(account.derivationPath || ""),
-    wordCount: Number(account.wordCount || 0),
-    sourceFamily: String(account.sourceFamily || "kaspaStandard"),
-    chattingIndex: Number(account.chattingIndex || 0),
-    address: account.address,
-    savedAt: account.savedAt || new Date().toISOString(),
-  }));
+  if (account.injected && !account.privateKeyHex) {
+    localStorage.setItem(PERSISTED_WALLET_KEY, JSON.stringify({
+      version: 3,
+      injected: account.injected,
+      address: account.address,
+      publicKey: String(account.publicKey || ""),
+      savedAt: account.savedAt || new Date().toISOString(),
+    }));
+  } else {
+    localStorage.setItem(PERSISTED_WALLET_KEY, JSON.stringify({
+      version: 2,
+      privateKeyHex: account.privateKeyHex,
+      mnemonic: String(account.mnemonic || ""),
+      passphrase: String(account.passphrase || ""),
+      derivationPath: String(account.derivationPath || ""),
+      wordCount: Number(account.wordCount || 0),
+      sourceFamily: String(account.sourceFamily || "kaspaStandard"),
+      chattingIndex: Number(account.chattingIndex || 0),
+      address: account.address,
+      savedAt: account.savedAt || new Date().toISOString(),
+    }));
+  }
   localStorage.removeItem(SESSION_LOGGED_OUT_KEY);
   markSessionActive(); // survives the sign-in reload even if "Keep me signed in" is off
+}
+
+function upsertInjectedAccount(session) {
+  const address = String(session?.address || "").trim();
+  const id = session?.id === "kastle" ? "kastle" : "kasware";
+  if (!address) throw new Error("Linked wallet returned no address.");
+  const accounts = loadSavedAccounts();
+  const index = accounts.findIndex((entry) => entry.address === address);
+  const existing = index >= 0 ? accounts[index] : null;
+  const record = {
+    version: 3,
+    address,
+    injected: id,
+    publicKey: String(session.publicKey || existing?.publicKey || ""),
+    privateKeyHex: String(existing?.privateKeyHex || ""),
+    mnemonic: String(existing?.mnemonic || ""),
+    passphrase: String(existing?.passphrase || ""),
+    name: existing?.name || `${id === "kastle" ? "Kastle" : "Kasware"} ${address.slice(-6)}`,
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    savedAt: new Date().toISOString(),
+  };
+  if (index >= 0) accounts[index] = { ...existing, ...record };
+  else accounts.push(record);
+  persistSavedAccounts(accounts);
+  localStorage.setItem(ACTIVE_ACCOUNT_KEY, address);
+  localStorage.setItem(PERSISTED_WALLET_KEY, JSON.stringify({
+    version: 3,
+    injected: id,
+    address,
+    publicKey: record.publicKey,
+    savedAt: record.savedAt,
+  }));
+  return record;
 }
 
 let pendingSavedAccountRemoval = null;
@@ -547,7 +591,7 @@ function renderSavedAccountsScreen() {
   if (!accounts.length) {
     const empty = document.createElement("div");
     empty.className = "saved-account-empty";
-    empty.textContent = "Create or import an account to continue.";
+    empty.textContent = "Link Kasware or Kastle, or create or import an account.";
     savedAccountList.append(empty);
     return;
   }
@@ -562,7 +606,9 @@ function renderSavedAccountsScreen() {
     signInButton.setAttribute("aria-label", `Sign in to ${account.name}`);
     signInButton.innerHTML = `<span class="saved-account-icon" aria-hidden="true">✓</span><span class="saved-account-copy"><strong></strong><small></small></span><span class="saved-account-chevron" aria-hidden="true">›</span>`;
     signInButton.querySelector("strong").textContent = account.name;
-    signInButton.querySelector("small").textContent = shortAddress(account.address);
+    signInButton.querySelector("small").textContent = account.injected
+      ? `${account.injected === "kastle" ? "Kastle" : "Kasware"} · ${shortAddress(account.address)}`
+      : shortAddress(account.address);
     signInButton.addEventListener("click", async () => {
       try {
         if (accountShellPrefs.passwordForLogin && hasAppPassword()) {
@@ -637,10 +683,19 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("resize", () => closeAccountActionMenu());
 window.addEventListener("scroll", () => closeAccountActionMenu(), true);
 
+function refreshInjectedWalletStatus() {
+  const status = document.querySelector("[data-logged-out-inject-status]");
+  if (!status) return;
+  const found = detectedInjectedWallets();
+  if (found.length) status.textContent = `Detected in this tab: ${found.join(", ")}. Unlock the wallet, then link.`;
+  else status.textContent = "Kasware and Kastle inject in Chrome, Edge, or Brave. This app never asks for a recovery phrase.";
+}
+
 function showLoggedOutScreen() {
   if (mainAppShell) mainAppShell.hidden = true;
   if (loggedOutScreen) loggedOutScreen.hidden = false;
   document.body.classList.add("session-logged-out");
+  refreshInjectedWalletStatus();
   try {
     renderSavedAccountsScreen();
   } catch (error) {
@@ -1885,6 +1940,27 @@ function clearPersistedTestingWallet() {
   localStorage.removeItem(LEGACY_PERSISTED_WALLET_KEY);
 }
 
+function getStoredInjectedWallet() {
+  try {
+    const activeAddress = String(localStorage.getItem(ACTIVE_ACCOUNT_KEY) || "").trim();
+    if (activeAddress) {
+      const account = loadSavedAccounts().find((entry) => entry.address === activeAddress);
+      if (account?.injected && account.address) {
+        return { id: account.injected, address: account.address, publicKey: String(account.publicKey || "") };
+      }
+    }
+    const raw = localStorage.getItem(PERSISTED_WALLET_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.injected && parsed?.address) {
+      return { id: parsed.injected, address: String(parsed.address), publicKey: String(parsed.publicKey || "") };
+    }
+  } catch (error) {
+    appendEngineLog(`Linked wallet storage read failed: ${error.message}`);
+  }
+  return null;
+}
+
 function restorePersistedTestingWallet() {
   if (!engine.kaspa) return false;
   if (localStorage.getItem(SESSION_LOGGED_OUT_KEY) === "true") {
@@ -1897,6 +1973,19 @@ function restorePersistedTestingWallet() {
   if ((accountShellPrefs.keepSignedIn ?? true) === false && !isSessionActive()) {
     appendEngineLog("Keep me signed in is off — showing the sign-in screen.");
     return false;
+  }
+  const injected = getStoredInjectedWallet();
+  if (injected?.address && !getStoredTestingWalletHex()) {
+    try {
+      engine.setInjectedWallet(injected);
+      markSessionActive();
+      appendEngineLog(`Restored linked ${injected.id} wallet: ${injected.address}`);
+      activateWalletDataScope(injected.address);
+      return true;
+    } catch (error) {
+      appendEngineLog(`Linked wallet could not be restored: ${error.message}`);
+      return false;
+    }
   }
   const privateKeyHex = getStoredTestingWalletHex();
   if (!privateKeyHex) {
@@ -16176,6 +16265,51 @@ document.querySelectorAll('[data-shell-action]:not([data-shell-action="logout"])
   const label = button.querySelector("strong")?.textContent?.trim() || "This control";
   showCopyToast(`${label} frame ready`);
 }));
+
+async function enterLinkedWallet(session) {
+  if (!engine.kaspa) await ensureRuntimes();
+  const saved = loadSavedAccounts().find((entry) => entry.address === session.address && entry.privateKeyHex);
+  if (saved?.privateKeyHex) {
+    activateSavedAccount(saved.address);
+    location.reload();
+    return;
+  }
+  engine.setInjectedWallet(session);
+  upsertInjectedAccount(session);
+  activateWalletDataScope(session.address, { migrateLegacy: false });
+  localStorage.removeItem(SESSION_LOGGED_OUT_KEY);
+  markSessionActive();
+  hideLoggedOutScreen();
+  currentBalanceKas = "--";
+  updateWalletUi();
+  updateServiceSummary();
+  refreshSubscriptionAddresses({ restart: false });
+  appendEngineLog(`Linked ${session.id}: ${session.address}`);
+  renderChats();
+  showCopyToast(`${session.id === "kastle" ? "Kastle" : "Kasware"} linked. Transactions confirm in the wallet popup.`);
+  void connectAndRefresh({ quiet: true }).catch((error) => appendEngineLog(error.message));
+}
+
+async function linkInjectedWallet(id) {
+  const button = document.querySelector(id === "kastle" ? "[data-logged-out-kastle]" : "[data-logged-out-kasware]");
+  if (button) button.disabled = true;
+  try {
+    const session = await connectInjected(id);
+    await enterLinkedWallet(session);
+  } catch (error) {
+    refreshInjectedWalletStatus();
+    showCopyToast(error.message);
+    appendEngineLog(error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+document.querySelector("[data-logged-out-kasware]")?.addEventListener("click", () => linkInjectedWallet("kasware"));
+document.querySelector("[data-logged-out-kastle]")?.addEventListener("click", () => linkInjectedWallet("kastle"));
+refreshInjectedWalletStatus();
+window.setTimeout(refreshInjectedWalletStatus, 400);
+window.setTimeout(refreshInjectedWalletStatus, 1200);
 
 document.querySelector("[data-logged-out-create]")?.addEventListener("click", openCreateAccountModal);
 
