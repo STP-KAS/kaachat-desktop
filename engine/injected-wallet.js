@@ -50,25 +50,52 @@ async function withTimeout(promise, ms, label) {
   }
 }
 
+function normalizeAccountList(accounts) {
+  return (Array.isArray(accounts) ? accounts : [accounts])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+export function isKaspaAddress(value) {
+  const address = String(value || "").trim();
+  return address.startsWith("kaspa:") || address.startsWith("kaspatest:");
+}
+
+async function kaswareRequestAccounts(wallet) {
+  // Must run in the click turn so the extension can open its approval popup.
+  const accounts = await withTimeout(
+    wallet.requestAccounts(),
+    120000,
+    "Kasware approval timed out. Open Kasware, unlock it, pick an account, and approve.",
+  );
+  return normalizeAccountList(accounts);
+}
+
 export async function connectKasware(win = globalThis) {
   const wallet = win?.kasware;
   if (!wallet?.requestAccounts) {
     win?.open?.("https://www.kasware.xyz", "_blank", "noopener");
-    throw new Error("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then link again.");
+    throw new Error("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then log in again.");
   }
-  // Drop a silent cached session so requestAccounts always opens the Kasware
-  // approval popup. That is where the user unlocks and picks which account.
+  let list = [];
   try {
-    if (typeof wallet.disconnect === "function") {
-      await Promise.race([
-        wallet.disconnect(win.location?.origin || ""),
-        sleep(400),
-      ]);
-    }
-  } catch { /* not connected yet */ }
-  const accounts = await withTimeout(wallet.requestAccounts(), 120000, "Kasware approval timed out. Open Kasware, unlock it, pick an account, and approve.");
-  const list = (Array.isArray(accounts) ? accounts : [accounts]).map((value) => String(value || "").trim()).filter(Boolean);
+    list = await kaswareRequestAccounts(wallet);
+  } catch (error) {
+    // A popup already open, or a previous session: read the current account.
+    try {
+      list = normalizeAccountList(await wallet.getAccounts?.());
+    } catch { /* fall through */ }
+    if (!list.length) throw error;
+  }
   if (!list.length) throw new Error("Kasware returned no account. Approve the request in the Kasware popup.");
+  try {
+    const network = String(await wallet.getNetwork?.() || "").toLowerCase();
+    if (network && !/mainnet|livenet/.test(network) && typeof wallet.switchNetwork === "function") {
+      await wallet.switchNetwork("kaspa_mainnet");
+      const again = normalizeAccountList(await wallet.getAccounts?.());
+      if (again.length) list = again;
+    }
+  } catch { /* stay on whatever network Kasware approved */ }
   let publicKey = "";
   try { publicKey = String(await wallet.getPublicKey?.() || ""); } catch { /* optional */ }
   return { id: "kasware", address: list[0], publicKey, accounts: list };
@@ -78,9 +105,14 @@ export async function connectKastle(win = globalThis) {
   const wallet = win?.kastle;
   if (!wallet?.connect) {
     win?.open?.("https://kastle.cc", "_blank", "noopener");
-    throw new Error("Kastle is not in this tab. Install it, unlock it, then link again.");
+    throw new Error("Kastle is not in this tab. Install it, unlock it, then log in again.");
   }
-  const ok = await withTimeout(wallet.connect(), 45000, "Kastle connect timed out");
+  let ok = false;
+  try {
+    ok = await withTimeout(wallet.connect("mainnet"), 120000, "Kastle approval timed out. Open Kastle, unlock it, and approve.");
+  } catch {
+    ok = await withTimeout(wallet.connect(), 120000, "Kastle approval timed out. Open Kastle, unlock it, and approve.");
+  }
   if (!ok) throw new Error("Kastle connect was declined.");
   const account = await wallet.getAccount();
   const address = String(account?.address || account || "");

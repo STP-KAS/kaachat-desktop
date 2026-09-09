@@ -31,14 +31,12 @@ test("detected reports only injected wallets", () => {
   assert.deepEqual(detected({ kasware: {}, kastle: {} }), ["kasware", "kastle"]);
 });
 
-test("connect Kasware always opens requestAccounts even if getAccounts is cached", async () => {
+test("connect Kasware calls requestAccounts on the click so the popup can open", async () => {
   let requested = false;
-  let disconnected = false;
   const win = {
     location: { origin: "http://localhost" },
     kasware: {
       getAccounts: async () => ["kaspa:qquiet"],
-      disconnect: async () => { disconnected = true; },
       requestAccounts: async () => {
         requested = true;
         return ["kaspa:qchosen", "kaspa:qother"];
@@ -47,7 +45,6 @@ test("connect Kasware always opens requestAccounts even if getAccounts is cached
     },
   };
   const session = await connectInjected("kasware", win);
-  assert.equal(disconnected, true);
   assert.equal(requested, true);
   assert.equal(session.id, "kasware");
   assert.equal(session.address, "kaspa:qchosen");
