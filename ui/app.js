@@ -14993,7 +14993,7 @@ const SETUP_STEPS = [
   { icon: SETUP_ICONS.globe, title: "Choose Your Language", body: "Select the language you'd like to use in KaChat.", extra: "language" },
   { icon: SETUP_ICONS.currency, title: "Choose Your Currency", body: "Select the currency you'd like prices displayed in.", extra: "currency" },
   { icon: SETUP_ICONS.network, title: "How KaChat Uses Kaspa", body: "KaChat lets you send and receive messages on the Kaspa network itself. Kaspa is required to pay fees when sending your messages. The fee you pay goes to miners which secure the network." },
-  { icon: SETUP_ICONS.qrcode, qr: true, title: "Fund Your Chatting Address", body: "Let's fund your chatting address so that you can start chatting with people. 5-10 Kaspa is enough. (1 KAS is about ~500 messages)", extra: "funding" },
+  { icon: SETUP_ICONS.qrcode, qr: true, title: "Fund Your Chatting Address", body: "50 Kaspa is recommended to get started to be able to create a KNS profile and chat for a while. 5 Kaspa is enough for about 2500 messages", extra: "funding" },
   { icon: SETUP_ICONS.server, title: "Connect to a Node", body: "KaChat needs to connect to a node. How would you like to connect?", extra: "node" },
   { icon: null, title: "Chatting vs. Spending Address", body: "", extra: "addresses" },
   { icon: SETUP_ICONS.chat, title: "Starting a Conversation", body: "To chat with someone, press Create Chat and enter their Kaspa address or KNS domain. If you send a message, they will not see it unless you send a handshake first, or you both decide to message each other around the same time - doing the latter increases your privacy." },

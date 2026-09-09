@@ -5588,7 +5588,14 @@ body.session-logged-out [data-account-rename-modal] {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* `safe` matters: a centred flex container whose content overflows pushes the overflow past
+     BOTH edges, and the part above the start edge cannot be scrolled back to. That is what hid
+     the icon, title and body on the language and currency steps - their lists are long enough to
+     overflow, so everything above the list sat at a negative offset with no way to reach it.
+     `safe center` falls back to flex-start the moment the content stops fitting. The plain
+     `center` above it is the fallback for anything that does not understand `safe`. */
   justify-content: center;
+  justify-content: safe center;
 }
 .setup-guide-nav { flex: 0 0 auto; padding-top: 16px; }
 .setup-guide-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
