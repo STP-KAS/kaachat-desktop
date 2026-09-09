@@ -125,9 +125,15 @@ function nextcloudProxy() {
 
 export default defineConfig({
   plugins: [nextcloudProxy()],
+  base: process.env.KACHAT_BASE || "/",
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+    assetsInlineLimit: 0,
+  },
   server: {
     // Vite rejects unknown Host headers by default; allow access via the
-    // DuckDNS domain fronted by Nginx Proxy Manager.
-    allowedHosts: [".duckdns.org"],
+    // DuckDNS domain fronted by Nginx Proxy Manager, and the STP site.
+    allowedHosts: [".duckdns.org", "stpstpstpstpstpstpstp.club"],
   },
 });
