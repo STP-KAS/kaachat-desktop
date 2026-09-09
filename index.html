@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>KaChat Desktop</title>
-  <link rel="stylesheet" href="./ui/styles.css?v=295" />
+  <link rel="stylesheet" href="./ui/styles.css?v=296" />
   <meta name="theme-color" content="#070a0d" />
   <!-- The KaChat logo the app already ships (432px PNG) doubles as the tab icon. -->
   <link rel="icon" type="image/png" href="./ui/assets/kachat-logo.png" />
@@ -1414,10 +1414,12 @@
         <span class="setup-guide-progress" data-setup-progress></span>
         <button type="button" class="setup-guide-skip" data-setup-skip>Skip</button>
       </div>
-      <div class="setup-guide-icon" data-setup-icon aria-hidden="true"></div>
-      <h2 class="setup-guide-title" data-setup-title></h2>
-      <p class="setup-guide-body" data-setup-body></p>
-      <div class="setup-guide-extra" data-setup-extra></div>
+      <div class="setup-guide-scroll">
+        <div class="setup-guide-icon" data-setup-icon aria-hidden="true"></div>
+        <h2 class="setup-guide-title" data-setup-title></h2>
+        <p class="setup-guide-body" data-setup-body></p>
+        <div class="setup-guide-extra" data-setup-extra></div>
+      </div>
       <div class="setup-guide-nav">
         <button type="button" class="secondary-button setup-guide-back" data-setup-back>Previous</button>
         <button type="button" class="primary-button setup-guide-next" data-setup-next>Next</button>

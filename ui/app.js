@@ -14934,23 +14934,41 @@ const setupBackBtn = document.querySelector("[data-setup-back]");
 const setupSkipBtn = document.querySelector("[data-setup-skip]");
 const setupProgressEl = document.querySelector("[data-setup-progress]");
 
+
+// Step glyphs, drawn to match the SF Symbols iOS uses on the same steps rather than the emoji
+// these were: hand.wave.fill, figure.and.child.holdinghands, globe, dollarsign.circle, network,
+// qrcode, server.rack, (none), bubble.left.and.bubble.right.fill, eye.slash.circle. Stroke-only
+// at a single weight so they read as one family the way SF Symbols do, and so they take the
+// accent colour from CSS like every other icon in the app.
+const SETUP_ICONS = {
+  wave: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M10 10.5V4a1.5 1.5 0 0 1 3 0v6.5"/><path d="M13 10.5V5.5a1.5 1.5 0 0 1 3 0V13"/><path d="M16 9.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1a6 6 0 0 1-6-6v-2.5a1.5 1.5 0 0 1 3 0"/></svg>',
+  family: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7.5" cy="4.5" r="2"/><path d="M7.5 8v6M5.5 21l2-7 2 7"/><circle cx="16.5" cy="7" r="1.7"/><path d="M16.5 10v4M15 21l1.5-5 1.5 5"/><path d="M9.5 12h5.5"/></svg>',
+  globe: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18Z"/></svg>',
+  currency: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v12"/><path d="M15 9.2A2.7 2.7 0 0 0 12.4 8h-.8a2.2 2.2 0 0 0 0 4.4h.8a2.2 2.2 0 0 1 0 4.4h-.8A2.7 2.7 0 0 1 9 15.6"/></svg>',
+  network: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/></svg>',
+  qrcode: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 20h1"/></svg>',
+  server: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>',
+  chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h8A2.5 2.5 0 0 1 16 6.5v4A2.5 2.5 0 0 1 13.5 13H8l-4 3v-3H5.5"/><path d="M8.5 13v1.5A2.5 2.5 0 0 0 11 17h5.5l4 3v-3h-.5A2.5 2.5 0 0 0 18.5 10"/></svg>',
+  privacy: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M7.2 12.6s2-3.1 4.8-3.1 4.8 3.1 4.8 3.1-2 3.1-4.8 3.1a4.4 4.4 0 0 1-1.7-.34"/><path d="M7 7l10 10"/></svg>',
+};
+
 const SETUP_STEPS = [
-  { icon: "👋", title: "Welcome to KaChat", body: "Let's walk through the basics so you're ready to send your first message." },
+  { icon: SETUP_ICONS.wave, title: "Welcome to KaChat", body: "Let's walk through the basics so you're ready to send your first message." },
   // Child Mode: the Adult/Child question sits at the start of the first-run
   // experience, before language — and is unskippable until answered (see
   // isUserTypePending gating in renderSetupStep/closeSetupGuide).
-  { icon: "🧑‍🧒", title: "Who will use KaChat?", body: "", extra: "usertype" },
-  { icon: "🌐", title: "Choose Your Language", body: "Select the language you'd like to use in KaChat.", extra: "language" },
-  { icon: "💲", title: "Choose Your Currency", body: "Select the currency you'd like prices displayed in.", extra: "currency" },
-  { icon: "🛰️", title: "How KaChat Uses Kaspa", body: "KaChat lets you send and receive messages on the Kaspa network itself. Kaspa is required to pay fees when sending your messages. The fee you pay goes to miners which secure the network." },
-  { icon: "🔳", qr: true, title: "Fund Your Chatting Address", body: "Let's fund your chatting address so that you can start chatting with people. 5-10 Kaspa is enough. (1 KAS is about ~500 messages)", extra: "funding" },
-  { icon: "🖥️", title: "Connect to a Node", body: "KaChat needs to connect to a node. How would you like to connect?", extra: "node" },
-  { icon: "🪪", title: "Chatting vs. Spending Address", body: "", extra: "addresses" },
-  { icon: "💬", title: "Starting a Conversation", body: "To chat with someone, press Create Chat and enter their Kaspa address or KNS domain. If you send a message, they will not see it unless you send a handshake first, or you both decide to message each other around the same time - doing the latter increases your privacy." },
+  { icon: SETUP_ICONS.family, title: "Who will use KaChat?", body: "", extra: "usertype" },
+  { icon: SETUP_ICONS.globe, title: "Choose Your Language", body: "Select the language you'd like to use in KaChat.", extra: "language" },
+  { icon: SETUP_ICONS.currency, title: "Choose Your Currency", body: "Select the currency you'd like prices displayed in.", extra: "currency" },
+  { icon: SETUP_ICONS.network, title: "How KaChat Uses Kaspa", body: "KaChat lets you send and receive messages on the Kaspa network itself. Kaspa is required to pay fees when sending your messages. The fee you pay goes to miners which secure the network." },
+  { icon: SETUP_ICONS.qrcode, qr: true, title: "Fund Your Chatting Address", body: "Let's fund your chatting address so that you can start chatting with people. 5-10 Kaspa is enough. (1 KAS is about ~500 messages)", extra: "funding" },
+  { icon: SETUP_ICONS.server, title: "Connect to a Node", body: "KaChat needs to connect to a node. How would you like to connect?", extra: "node" },
+  { icon: null, title: "Chatting vs. Spending Address", body: "", extra: "addresses" },
+  { icon: SETUP_ICONS.chat, title: "Starting a Conversation", body: "To chat with someone, press Create Chat and enter their Kaspa address or KNS domain. If you send a message, they will not see it unless you send a handshake first, or you both decide to message each other around the same time - doing the latter increases your privacy." },
   // Per-account Chats Payment Privacy (fresh-address payment pools) — placed
   // directly after the starting-a-conversation step, the guide's final step.
   // Copy matches iOS's WelcomeGuideView paymentPrivacyStep exactly.
-  { icon: "🕶️", title: "Chat Payment Privacy", body: "How would you like to send and receive payments in chats?", extra: "privacy" },
+  { icon: SETUP_ICONS.privacy, title: "Chat Payment Privacy", body: "How would you like to send and receive payments in chats?", extra: "privacy" },
 ];
 let setupStepIndex = 0;
 const SETUP_USER_TYPE_STEP = SETUP_STEPS.findIndex((step) => step.extra === "usertype");
@@ -15133,10 +15151,16 @@ function renderSetupStep() {
       canvas.width = 320; canvas.height = 320;
       canvas.className = "setup-guide-qr";
       setupIconEl.appendChild(canvas);
+      setupIconEl.hidden = false;
       Promise.resolve(engine.drawQr(canvas, { dark: "#62f4d0", light: "#00000000" }))
-        .catch(() => { setupIconEl.textContent = step.icon; });
+        .catch(() => { setupIconEl.innerHTML = step.icon; });
+    } else if (step.icon) {
+      setupIconEl.innerHTML = step.icon;
+      setupIconEl.hidden = false;
     } else {
-      setupIconEl.textContent = step.icon;
+      // The address explainer leads with its title on iOS - no glyph above it.
+      setupIconEl.replaceChildren();
+      setupIconEl.hidden = true;
     }
   }
   if (setupTitleEl) setupTitleEl.textContent = step.title;

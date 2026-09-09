@@ -5545,16 +5545,44 @@ body.session-logged-out [data-account-rename-modal] {
 .passphrase-actions { flex-direction: column; gap: 10px; }
 
 /* ---- Setup Guide wizard ---- */
-.setup-guide-modal { max-width: 440px; text-align: center; display: flex; flex-direction: column; }
+/* Fixed height, and everything above the buttons scrolls inside it.
+   Previous/Next used to sit in normal flow after the step's content, so they landed wherever
+   that step happened to end - a short step floated them up, a long one pushed them down, and
+   tapping through the guide meant chasing the button. iOS pins the same bar OUTSIDE its scroll
+   view for exactly this reason (see WelcomeGuideView.guideBottomBar: "always in the exact same
+   position so the guide can be tapped through without chasing buttons"). */
+.setup-guide-modal { max-width: 440px; text-align: center; display: flex; flex-direction: column; height: min(660px, 88vh); }
+/* Centred when the content fits, scrolls when it does not - iOS's centeringScroll. */
+.setup-guide-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.setup-guide-nav { flex: 0 0 auto; padding-top: 16px; }
 .setup-guide-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .setup-guide-progress { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .setup-guide-skip { border: 0; background: transparent; color: var(--kaspa-ink); font-weight: 650; font-size: 14px; }
 .setup-guide-icon { font-size: 46px; line-height: 1; margin: 8px 0 4px; }
+.setup-guide-icon[hidden] { display: none; }
+/* The step glyphs, sized and coloured like iOS's 56pt accent-tinted SF Symbols. */
+.setup-guide-icon svg {
+  width: 56px;
+  height: 56px;
+  fill: none;
+  stroke: var(--accent, #62f4d0);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 /* !important beats the inline 512px the qrcode lib writes on the canvas. */
 .setup-guide-qr { width: 132px !important; height: 132px !important; display: block; margin: 0 auto; }
 .setup-guide-title { margin: 6px 0; font-size: 22px; }
 .setup-guide-body { margin: 0 0 8px; color: var(--muted); font-size: 14px; line-height: 1.5; }
-.setup-guide-extra { text-align: left; margin: 6px 0 12px; max-height: 46vh; overflow-y: auto; }
+/* The scroll container above owns the scrolling now - a nested scroll here fought it. */
+.setup-guide-extra { text-align: left; margin: 6px 0 12px; }
 .setup-guide-extra[hidden] { display: none; }
 .setup-guide-next { margin-top: auto; }
 
