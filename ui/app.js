@@ -6499,13 +6499,7 @@ document.querySelectorAll("[data-close-spending-send]").forEach((b) => b.addEven
 const UI_SPOT_TAB_KEY = "kachat-ui-spot-tab-v1";
 
 function restoreLastAppTab() {
-  try {
-    const tab = localStorage.getItem(UI_SPOT_TAB_KEY);
-    if (tab && tab !== "chats" && document.querySelector(`.sidebar-tab[data-app-tab="${tab}"]`)) {
-      setActiveAppTab(tab);
-      applyDockLayout(); // falls back to chats if this account hides that tab
-    }
-  } catch { /* restoring the spot is best-effort */ }
+  setActiveAppTab("chats");
 }
 
 function setActiveAppTab(tab) {
@@ -16479,6 +16473,7 @@ async function enterLinkedWallet(session) {
   localStorage.removeItem(SESSION_LOGGED_OUT_KEY);
   markSessionActive();
   hideLoggedOutScreen();
+  setActiveAppTab("chats");
   currentBalanceKas = "--";
   updateWalletUi();
   updateServiceSummary();
