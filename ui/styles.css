@@ -8366,3 +8366,21 @@ body.session-logged-out [data-account-rename-modal] {
   .app-body { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
   .new-chat-fab { bottom: calc(78px + env(safe-area-inset-bottom, 0px)); }
 }
+
+.explained-handoff {
+  margin: 16px 0 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-2);
+  text-align: left;
+  max-width: 28rem;
+}
+.explained-handoff p { margin: 0 0 8px; color: var(--muted); font-size: .9rem; }
+.explained-handoff p:last-child { margin-bottom: 0; }
+.explained-handoff strong { color: var(--text); }
+.explained-handoff a { color: var(--kaspa-ink); }
+.saved-account-match {
+  outline: 2px solid var(--kaspa);
+  border-radius: 14px;
+}
