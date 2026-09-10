@@ -3947,12 +3947,21 @@ document.querySelector("[data-node-apply]")?.addEventListener("click", async (ev
       if (liveEndpoint) engine.forgetNode?.(liveEndpoint);
     }
     setEndpoint("trustedNode", url); // "" clears the override, returning to Automatic
+    if (mode !== "custom") engine.clearNodeRegistry?.();
     setStatus(mode === "custom" ? "Connecting to your node…" : "Finding a healthy node…");
     await engine.connect({ force: true });
-    await connectAndRefresh({ quiet: true });
+    try {
+      await connectAndRefresh({ quiet: true });
+    } catch (refreshError) {
+      appendEngineLog(`Node connected, balance refresh failed: ${refreshError?.message || refreshError}`);
+    }
+    if (errorEl) errorEl.hidden = true;
     showCopyToast(mode === "custom" ? "Connected to your node" : "Connected automatically");
   } catch (error) {
-    if (errorEl) { errorEl.textContent = `Could not connect: ${error.message}`; errorEl.hidden = false; }
+    const detail = (error instanceof Error && error.message)
+      ? error.message
+      : String(error?.message || error || "the public node resolver returned no detail");
+    if (errorEl) { errorEl.textContent = `Could not connect: ${detail}`; errorEl.hidden = false; }
     setStatus("Connection failed");
   } finally {
     button.disabled = false;
