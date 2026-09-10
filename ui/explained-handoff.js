@@ -24,12 +24,16 @@ function paintBanner() {
     host.hidden = true;
     return;
   }
-  const who = wantedDomain || (wantedAddress ? shortAddress(wantedAddress) : "Kaspa Explained");
+  const who = wantedDomain || (wantedAddress ? shortAddress(wantedAddress) : "");
   const safe = String(who).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
   host.hidden = false;
-  host.innerHTML = `<p>From Kaspa Explained. Continue as <strong>${safe}</strong>.</p>
-    <p>Sign in to the matching saved account, or create / import. Kasware does not unlock this app by itself.</p>
-    <p><a href="/kachat">Back to wallet choice</a></p>`;
+  host.innerHTML = who
+    ? `<p>From Kaspa Explained. Continue as <strong>${safe}</strong>.</p>
+       <p>Log in with Kasware or Kastle, or sign in to the matching saved account. Approve the wallet popup.</p>
+       <p><a href="/kachat">Back to wallet choice</a></p>`
+    : `<p>From Kaspa Explained. You skipped the wallet step.</p>
+       <p>Log in with Kasware or Kastle here. Approve the wallet popup. Or create / import an account.</p>
+       <p><a href="/kachat">Back to wallet choice</a></p>`;
 }
 
 function highlightMatchingAccount() {

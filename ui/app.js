@@ -897,6 +897,8 @@ const profileBalance = document.querySelector("[data-profile-balance]");
 const profileInitial = document.querySelector("[data-profile-initial]");
 const profileKnsEmptyCta = document.querySelector("[data-profile-kns-empty-cta]");
 const profileKnsOwned = document.querySelector("[data-profile-kns-owned]");
+const profileDomainPick = document.querySelector("[data-profile-domain-pick]");
+const profileDomainSelect = document.querySelector("[data-profile-domain-select]");
 const profileKnsDomain = document.querySelector("[data-profile-kns-domain]");
 const profileKnsBio = document.querySelector("[data-profile-kns-bio]");
 const profileKnsLinks = document.querySelector("[data-profile-kns-links]");
@@ -3112,6 +3114,60 @@ async function ensureRuntimes({ quiet = false } = {}) {
   return !failed;
 }
 
+async function applyPublicKasFallback(address) {
+  const target = String(address || engine.address || "").trim();
+  if (!target) return false;
+  try {
+    const response = await fetch(`https://api.kaspa.org/addresses/${encodeURIComponent(target)}/balance`);
+    if (!response.ok) return false;
+    const payload = await response.json();
+    const sompi = BigInt(payload.balance ?? payload ?? 0);
+    const kas = Number(sompi) / 100000000;
+    if (!Number.isFinite(kas)) return false;
+    currentBalanceKas = String(kas);
+    updateWalletUi();
+    updateServiceSummary();
+    appendEngineLog(`Public explorer balance: ${currentBalanceKas} KAS`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function displayDomainKey(address) {
+  return `kachat-display-domain:${address}`;
+}
+
+function savedDisplayDomain(address) {
+  try { return localStorage.getItem(displayDomainKey(address)) || ""; } catch { return ""; }
+}
+
+function saveDisplayDomain(address, domain) {
+  try {
+    if (domain) localStorage.setItem(displayDomainKey(address), domain);
+    else localStorage.removeItem(displayDomainKey(address));
+  } catch {}
+}
+
+async function fetchPublicKnsDomains(address) {
+  const encoded = encodeURIComponent(address);
+  const [assets, primary] = await Promise.allSettled([
+    fetch(`https://api.knsdomains.org/mainnet/api/v1/assets?${new URLSearchParams({ owner: address, type: "domain", pageSize: "50" })}`).then((r) => r.json()),
+    fetch(`https://api.knsdomains.org/mainnet/api/v1/primary-name/${encoded}`).then((r) => r.json()),
+  ]);
+  const list = assets.status === "fulfilled"
+    ? (assets.value?.data?.assets || assets.value?.assets || [])
+    : [];
+  const names = list
+    .filter((item) => item.isDomain !== false)
+    .map((item) => item.asset || item.fullName || item.name || "")
+    .filter(Boolean);
+  const primaryName = primary.status === "fulfilled"
+    ? (primary.value?.data?.domain?.fullName || primary.value?.domain?.fullName || null)
+    : null;
+  return { names, primary: primaryName };
+}
+
 async function connectAndRefresh({ quiet = false } = {}) {
   if (!engine.address) {
     updateServiceSummary();
@@ -3133,10 +3189,12 @@ async function connectAndRefresh({ quiet = false } = {}) {
     updateServiceSummary();
     if (!quiet) setStatus("Ready");
     appendEngineLog(`Balance: ${currentBalanceKas} KAS / UTXOs: ${balance.entries.length}`);
+    if (currentBalanceKas === "--") await applyPublicKasFallback(engine.address);
   } catch (error) {
     setService(networkIndicator, networkStatus, "error", "Connection needs attention");
     if (!quiet) setStatus("Network unavailable");
     appendEngineLog(`Auto-connect failed: ${error.message}`);
+    await applyPublicKasFallback(engine.address);
   }
 }
 
@@ -3925,6 +3983,29 @@ function updateProfileHero(info, profileInfo) {
   }
 }
 
+function fillDomainPicker(address, names, selected) {
+  if (!profileDomainPick || !profileDomainSelect) return;
+  if (!names.length) {
+    profileDomainPick.hidden = true;
+    return;
+  }
+  profileDomainPick.hidden = false;
+  profileDomainSelect.replaceChildren();
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    if (name === selected) option.selected = true;
+    profileDomainSelect.append(option);
+  }
+  profileDomainSelect.onchange = () => {
+    const domain = profileDomainSelect.value;
+    saveDisplayDomain(address, domain);
+    updateProfileHero({ primaryDomain: domain }, ownKnsProfileFields);
+    if (profileKnsDomain) profileKnsDomain.textContent = domain;
+  };
+}
+
 async function refreshOwnKnsProfile() {
   if (!engine.address || !profileKnsOwned || !profileKnsEmptyCta) return;
   const address = engine.address;
@@ -3933,9 +4014,21 @@ async function refreshOwnKnsProfile() {
     engine.fetchKnsAddressProfile(address).catch(() => null),
   ]);
   if (engine.address !== address) return; // account switched mid-fetch
-  updateProfileHero(info, profileInfo);
+  let names = (info?.allDomains || []).map((item) => item.fullName || item.name || item.asset).filter(Boolean);
+  let primary = info?.explicitPrimaryDomain || info?.primaryDomain || "";
+  if (!names.length) {
+    const pub = await fetchPublicKnsDomains(address).catch(() => ({ names: [], primary: null }));
+    names = pub.names;
+    primary = primary || pub.primary || "";
+  }
+  const selected = names.includes(savedDisplayDomain(address))
+    ? savedDisplayDomain(address)
+    : (names.includes(primary) ? primary : (names[0] || ""));
+  if (selected) saveDisplayDomain(address, selected);
+  updateProfileHero({ ...(info || {}), primaryDomain: selected || primary }, profileInfo);
+  fillDomainPicker(address, names, selected);
 
-  if (!info?.primaryDomain) {
+  if (!selected) {
     profileKnsEmptyCta.hidden = false;
     profileKnsOwned.hidden = true;
     ownKnsAssetId = null;
@@ -3945,7 +4038,7 @@ async function refreshOwnKnsProfile() {
 
   profileKnsEmptyCta.hidden = true;
   profileKnsOwned.hidden = false;
-  if (profileKnsDomain) profileKnsDomain.textContent = info.primaryDomain;
+  if (profileKnsDomain) profileKnsDomain.textContent = selected;
   ownKnsAssetId = info.primaryInscriptionId || null;
   ownKnsProfileFields = profileInfo?.profile || null;
 
@@ -16481,7 +16574,11 @@ async function enterLinkedWallet(session) {
   appendEngineLog(`Linked ${session.id}: ${session.address}`);
   renderChats();
   showCopyToast(`Logged in with ${session.id === "kastle" ? "Kastle" : "Kasware"}.`);
-  void connectAndRefresh({ quiet: true }).catch((error) => appendEngineLog(error.message));
+  void (async () => {
+    try { await connectAndRefresh({ quiet: true }); } catch (error) { appendEngineLog(error.message); }
+    if (currentBalanceKas === "--") await applyPublicKasFallback(session.address);
+    await refreshOwnKnsProfile();
+  })();
 }
 
 function closeKaswarePick() {
