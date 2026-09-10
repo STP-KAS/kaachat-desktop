@@ -136,11 +136,31 @@ function withTimeout(promise, timeoutMs, label) {
 }
 
 function makeRpc(kaspa, { endpoint = "" } = {}) {
-  const { RpcClient, Resolver, Encoding } = kaspa;
-  if (endpoint) {
-    return new RpcClient({ url: endpoint, encoding: Encoding?.Borsh, networkId: NETWORK_ID });
+  try {
+    const { RpcClient, Resolver, Encoding } = kaspa;
+    if (!RpcClient) throw new Error("Rusty Kaspa WASM has no RpcClient.");
+    if (endpoint) {
+      return new RpcClient({ url: endpoint, encoding: Encoding?.Borsh, networkId: NETWORK_ID });
+    }
+    if (!Resolver) throw new Error("Rusty Kaspa WASM has no Resolver.");
+    return new RpcClient({ resolver: new Resolver(), encoding: Encoding?.Borsh, networkId: NETWORK_ID });
+  } catch (error) {
+    throw normalizeRpcError(error, endpoint ? "direct RPC client" : "resolver RPC client");
   }
-  return new RpcClient({ resolver: new Resolver(), encoding: Encoding?.Borsh, networkId: NETWORK_ID });
+}
+
+const PUBLIC_TLS_ENDPOINTS = [
+  "wss://isla.kaspa.red/kaspa/mainnet/wrpc/borsh",
+  "wss://emma.kaspa.stream/kaspa/mainnet/wrpc/borsh",
+];
+
+function shuffled(list) {
+  const copy = list.slice();
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
 }
 
 async function connectCandidate(kaspa, {
@@ -269,11 +289,32 @@ export async function createRpc(kaspa, log = () => {}) {
     }
   }
 
-  return connectCandidate(kaspa, {
-    timeoutMs: RESOLVER_CONNECT_TIMEOUT_MS,
-    log,
-    role: "primary",
-  });
+  try {
+    return await connectCandidate(kaspa, {
+      timeoutMs: RESOLVER_CONNECT_TIMEOUT_MS,
+      log,
+      role: "primary",
+    });
+  } catch (resolverError) {
+    log(`Rusty Kaspa resolver failed: ${resolverError?.message || resolverError}`);
+    let last = resolverError;
+    for (const endpoint of shuffled(PUBLIC_TLS_ENDPOINTS)) {
+      try {
+        log(`Trying public TLS node ${endpoint}...`);
+        return await connectCandidate(kaspa, {
+          endpoint,
+          timeoutMs: DIRECT_CONNECT_TIMEOUT_MS,
+          log,
+          role: "primary",
+          singleShot: true,
+        });
+      } catch (error) {
+        last = error;
+        log(`Public TLS node failed (${endpoint}): ${error?.message || error}`);
+      }
+    }
+    throw normalizeRpcError(last, "automatic public node");
+  }
 }
 
 export async function createStandbyRpc(kaspa, primaryEndpoint = "", log = () => {}) {
