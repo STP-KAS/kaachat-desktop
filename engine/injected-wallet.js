@@ -50,24 +50,31 @@ async function withTimeout(promise, ms, label) {
   }
 }
 
-function normalizeAccountList(accounts) {
-  return (Array.isArray(accounts) ? accounts : [accounts])
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-}
-
 export function isKaspaAddress(value) {
   const address = String(value || "").trim();
   return address.startsWith("kaspa:") || address.startsWith("kaspatest:");
 }
 
+function accountFromValue(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "object") {
+    return String(value.address || value.account || value.value || "").trim();
+  }
+  return String(value).trim();
+}
+
+function normalizeAccountList(accounts) {
+  return (Array.isArray(accounts) ? accounts : [accounts])
+    .map(accountFromValue)
+    .filter((address) => address.startsWith("kaspa:") || address.startsWith("kaspatest:"));
+}
+
 export function beginKaswareApproval(win = globalThis) {
   const wallet = win?.kasware;
   if (!wallet?.requestAccounts) return null;
-  // Do not await disconnect. Awaiting it drops the user-gesture and Chrome
-  // then blocks the Kasware popup. Fire it so a cached grant is cleared.
-  try { wallet.disconnect?.(win.location?.origin || ""); } catch { /* not connected */ }
-  try { wallet.disconnect?.(); } catch { /* some builds take no origin */ }
+  // PegLab/Kasware docs: only requestAccounts on the click. Do not disconnect
+  // first. disconnect races the popup and the approve click then does nothing.
   return wallet.requestAccounts();
 }
 
@@ -87,16 +94,17 @@ export async function connectKasware(win = globalThis, approvalPromise = null) {
     win?.open?.("https://www.kasware.xyz", "_blank", "noopener");
     throw new Error("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then log in again.");
   }
-  let list = await kaswareRequestAccounts(wallet, approvalPromise, win);
-  if (!list.length) throw new Error("Kasware returned no account. Approve the request in the Kasware popup.");
+  let list = [];
   try {
-    const network = String(await wallet.getNetwork?.() || "").toLowerCase();
-    if (network && !/mainnet|livenet/.test(network) && typeof wallet.switchNetwork === "function") {
-      await wallet.switchNetwork("kaspa_mainnet");
-      const again = normalizeAccountList(await wallet.getAccounts?.());
-      if (again.length) list = again;
-    }
-  } catch { /* stay on whatever network Kasware approved */ }
+    list = await kaswareRequestAccounts(wallet, approvalPromise, win);
+  } catch (error) {
+    try { list = normalizeAccountList(await wallet.getAccounts?.()); } catch { /* fall through */ }
+    if (!list.length) throw error;
+  }
+  if (!list.length) {
+    try { list = normalizeAccountList(await wallet.getAccounts?.()); } catch { /* empty */ }
+  }
+  if (!list.length) throw new Error("Kasware returned no account. Approve Log in in the Kasware popup.");
   let publicKey = "";
   try { publicKey = String(await wallet.getPublicKey?.() || ""); } catch { /* optional */ }
   return { id: "kasware", address: list[0], publicKey, accounts: list };
