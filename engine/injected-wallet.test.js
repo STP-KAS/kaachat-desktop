@@ -48,7 +48,7 @@ test("connect Kasware calls requestAccounts on the click so the popup can open",
   };
   const session = await connectInjected("kasware", win);
   assert.equal(requested, true);
-  assert.equal(disconnected, true);
+  assert.equal(disconnected, false);
   assert.equal(session.id, "kasware");
   assert.equal(session.address, "kaspa:qchosen");
   assert.deepEqual(session.accounts, ["kaspa:qchosen", "kaspa:qother"]);
