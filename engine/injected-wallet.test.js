@@ -33,10 +33,12 @@ test("detected reports only injected wallets", () => {
 
 test("connect Kasware calls requestAccounts on the click so the popup can open", async () => {
   let requested = false;
+  let disconnected = false;
   const win = {
     location: { origin: "http://localhost" },
     kasware: {
       getAccounts: async () => ["kaspa:qquiet"],
+      disconnect: async () => { disconnected = true; },
       requestAccounts: async () => {
         requested = true;
         return ["kaspa:qchosen", "kaspa:qother"];
@@ -46,10 +48,24 @@ test("connect Kasware calls requestAccounts on the click so the popup can open",
   };
   const session = await connectInjected("kasware", win);
   assert.equal(requested, true);
+  assert.equal(disconnected, true);
   assert.equal(session.id, "kasware");
   assert.equal(session.address, "kaspa:qchosen");
   assert.deepEqual(session.accounts, ["kaspa:qchosen", "kaspa:qother"]);
   assert.equal(session.publicKey, "03ab");
+});
+
+test("connect Kasware uses a requestAccounts promise started on the click", async () => {
+  const win = {
+    location: { origin: "http://localhost" },
+    kasware: {
+      requestAccounts: async () => ["kaspa:qfromclick"],
+      getPublicKey: async () => "",
+    },
+  };
+  const approval = win.kasware.requestAccounts();
+  const session = await connectInjected("kasware", win, approval);
+  assert.equal(session.address, "kaspa:qfromclick");
 });
 
 test("connect Kastle uses connect then getAccount", async () => {

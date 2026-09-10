@@ -16461,29 +16461,7 @@ function explainedWalletHint() {
 }
 
 async function resumeExplainedWallet() {
-  const hint = explainedWalletHint();
-  const found = detectedInjectedWallets();
-  if (!found.length) return false;
-  try {
-    if (found.includes("kasware") && window.kasware?.getAccounts) {
-      const accounts = await window.kasware.getAccounts();
-      const address = String(accounts?.[0] || "").trim();
-      if (address) {
-        await enterLinkedWallet({ id: "kasware", address, publicKey: "", accounts: accounts || [address] });
-        return true;
-      }
-    }
-    if (found.includes("kastle") && window.kastle?.getAccount) {
-      const account = await window.kastle.getAccount();
-      const address = String(account?.address || account || "").trim();
-      if (address) {
-        await enterLinkedWallet({ id: "kastle", address, publicKey: String(account?.publicKey || "") });
-        return true;
-      }
-    }
-  } catch (error) {
-    appendEngineLog(`Wallet login resume: ${error.message}`);
-  }
+  // Never auto-connect. Kasware only opens its approval popup from a click.
   return false;
 }
 
@@ -16543,12 +16521,11 @@ function pickKaswareAccount(session) {
   });
 }
 
-async function linkInjectedWallet(id) {
+async function linkInjectedWallet(id, approvalPromise = null) {
   const button = document.querySelector(id === "kastle" ? "[data-logged-out-kastle]" : "[data-logged-out-kasware]");
   if (button) button.disabled = true;
   try {
-    showCopyToast(id === "kastle" ? "Opening Kastle. Approve to log in." : "Opening Kasware. Approve and pick the account to log in.");
-    let session = await connectInjected(id);
+    let session = await connectInjected(id, globalThis, approvalPromise);
     if (id === "kasware") {
       session = await pickKaswareAccount(session);
       if (!session) return;
@@ -16563,8 +16540,24 @@ async function linkInjectedWallet(id) {
   }
 }
 
-document.querySelector("[data-logged-out-kasware]")?.addEventListener("click", () => linkInjectedWallet("kasware"));
-document.querySelector("[data-logged-out-kastle]")?.addEventListener("click", () => linkInjectedWallet("kastle"));
+document.querySelector("[data-logged-out-kasware]")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  const wallet = window.kasware;
+  if (!wallet?.requestAccounts) {
+    window.open("https://www.kasware.xyz", "_blank", "noopener");
+    showCopyToast("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then log in again.");
+    return;
+  }
+  try { wallet.disconnect?.(location.origin); } catch {}
+  const approval = wallet.requestAccounts();
+  showCopyToast("Opening Kasware. Approve and pick the account to log in.");
+  linkInjectedWallet("kasware", approval);
+});
+document.querySelector("[data-logged-out-kastle]")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  showCopyToast("Opening Kastle. Approve to log in.");
+  linkInjectedWallet("kastle");
+});
 refreshInjectedWalletStatus();
 window.setTimeout(refreshInjectedWalletStatus, 400);
 window.setTimeout(refreshInjectedWalletStatus, 1200);
@@ -16821,7 +16814,7 @@ queueMicrotask(async () => {
   }
 
   if (wasmReady) {
-    const restored = restorePersistedTestingWallet() || await resumeExplainedWallet();
+    const restored = restorePersistedTestingWallet();
     updateWalletUi();
     updateServiceSummary();
     if (restored) {

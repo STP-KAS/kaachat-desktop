@@ -61,32 +61,33 @@ export function isKaspaAddress(value) {
   return address.startsWith("kaspa:") || address.startsWith("kaspatest:");
 }
 
-async function kaswareRequestAccounts(wallet) {
-  // Must run in the click turn so the extension can open its approval popup.
+export function beginKaswareApproval(win = globalThis) {
+  const wallet = win?.kasware;
+  if (!wallet?.requestAccounts) return null;
+  // Do not await disconnect. Awaiting it drops the user-gesture and Chrome
+  // then blocks the Kasware popup. Fire it so a cached grant is cleared.
+  try { wallet.disconnect?.(win.location?.origin || ""); } catch { /* not connected */ }
+  try { wallet.disconnect?.(); } catch { /* some builds take no origin */ }
+  return wallet.requestAccounts();
+}
+
+async function kaswareRequestAccounts(wallet, approvalPromise, win) {
+  const pending = approvalPromise || beginKaswareApproval(win) || wallet.requestAccounts();
   const accounts = await withTimeout(
-    wallet.requestAccounts(),
+    pending,
     120000,
     "Kasware approval timed out. Open Kasware, unlock it, pick an account, and approve.",
   );
   return normalizeAccountList(accounts);
 }
 
-export async function connectKasware(win = globalThis) {
+export async function connectKasware(win = globalThis, approvalPromise = null) {
   const wallet = win?.kasware;
   if (!wallet?.requestAccounts) {
     win?.open?.("https://www.kasware.xyz", "_blank", "noopener");
     throw new Error("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then log in again.");
   }
-  let list = [];
-  try {
-    list = await kaswareRequestAccounts(wallet);
-  } catch (error) {
-    // A popup already open, or a previous session: read the current account.
-    try {
-      list = normalizeAccountList(await wallet.getAccounts?.());
-    } catch { /* fall through */ }
-    if (!list.length) throw error;
-  }
+  let list = await kaswareRequestAccounts(wallet, approvalPromise, win);
   if (!list.length) throw new Error("Kasware returned no account. Approve the request in the Kasware popup.");
   try {
     const network = String(await wallet.getNetwork?.() || "").toLowerCase();
@@ -120,8 +121,8 @@ export async function connectKastle(win = globalThis) {
   return { id: "kastle", address, publicKey: String(account?.publicKey || "") };
 }
 
-export async function connectInjected(id, win = globalThis) {
-  return id === "kastle" ? connectKastle(win) : connectKasware(win);
+export async function connectInjected(id, win = globalThis, approvalPromise = null) {
+  return id === "kastle" ? connectKastle(win) : connectKasware(win, approvalPromise);
 }
 
 export async function sendInjectedPayload({
