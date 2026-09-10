@@ -8384,3 +8384,21 @@ body.session-logged-out [data-account-rename-modal] {
   outline: 2px solid var(--kaspa);
   border-radius: 14px;
 }
+.profile-domain-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  text-align: left;
+  padding: 12px 14px;
+}
+.profile-domain-pick span { color: var(--muted); font-size: .8rem; }
+.profile-domain-pick select {
+  width: 100%;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-3);
+  color: var(--text);
+  padding: 8px 10px;
+}
