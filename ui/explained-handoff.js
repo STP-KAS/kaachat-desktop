@@ -1,13 +1,17 @@
 const params = new URLSearchParams(location.search);
-const fromExplained = params.get("from") === "explained" || params.get("fresh") === "1";
+const fromExplained = params.get("from") === "explained";
+const skip = params.get("skip") === "1" || params.get("fresh") === "1";
 const wantedAddress = String(params.get("address") || "").trim();
 const wantedDomain = String(params.get("domain") || "").trim();
 const openCreate = params.get("create") === "1";
 
-if (fromExplained) {
+if (fromExplained || skip) {
   try {
-    localStorage.setItem("kachat-session-logged-out-v1", "true");
-    sessionStorage.removeItem("kachat-session-active-v1");
+    const alreadyIn = sessionStorage.getItem("kachat-session-active-v1") === "1";
+    if (!alreadyIn) {
+      localStorage.setItem("kachat-session-logged-out-v1", "true");
+      sessionStorage.removeItem("kachat-session-active-v1");
+    }
   } catch {}
 }
 

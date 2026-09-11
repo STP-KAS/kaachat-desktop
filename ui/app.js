@@ -3958,9 +3958,10 @@ document.querySelector("[data-node-apply]")?.addEventListener("click", async (ev
     if (errorEl) errorEl.hidden = true;
     showCopyToast(mode === "custom" ? "Connected to your node" : "Connected automatically");
   } catch (error) {
-    const detail = (error instanceof Error && error.message)
-      ? error.message
-      : String(error?.message || error || "the public node resolver returned no detail");
+    const raw = error instanceof Error ? error.message : String(error?.message || error || "");
+    const detail = (!raw || raw === "undefined" || raw === "null")
+      ? "the public node did not answer. Try Apply again, or enter a wss:// node."
+      : raw;
     if (errorEl) { errorEl.textContent = `Could not connect: ${detail}`; errorEl.hidden = false; }
     setStatus("Connection failed");
   } finally {
@@ -16588,18 +16589,16 @@ async function resumeExplainedWallet() {
 }
 
 async function enterLinkedWallet(session) {
-  if (!engine.kaspa) await ensureRuntimes();
-  const saved = loadSavedAccounts().find((entry) => entry.address === session.address && entry.privateKeyHex);
-  if (saved?.privateKeyHex) {
-    activateSavedAccount(saved.address);
-    location.reload();
-    return;
-  }
   engine.setInjectedWallet(session);
   upsertInjectedAccount(session);
+  try {
+    const domain = new URLSearchParams(location.search).get("domain") || "";
+    if (domain) saveDisplayDomain(session.address, domain);
+  } catch {}
   activateWalletDataScope(session.address, { migrateLegacy: false });
   localStorage.removeItem(SESSION_LOGGED_OUT_KEY);
   markSessionActive();
+  try { history.replaceState({}, "", location.pathname); } catch {}
   hideLoggedOutScreen();
   setActiveAppTab("chats");
   currentBalanceKas = "--";
@@ -16610,9 +16609,15 @@ async function enterLinkedWallet(session) {
   renderChats();
   showCopyToast(`Logged in with ${session.id === "kastle" ? "Kastle" : "Kasware"}.`);
   void (async () => {
-    try { await connectAndRefresh({ quiet: true }); } catch (error) { appendEngineLog(error.message); }
+    try { await applyPublicKasFallback(session.address); } catch {}
+    try { await refreshOwnKnsProfile(); } catch {}
+    try {
+      if (!engine.kaspa) await ensureRuntimes({ quiet: true });
+      await connectAndRefresh({ quiet: true });
+    } catch (error) {
+      appendEngineLog(error.message || String(error));
+    }
     if (currentBalanceKas === "--") await applyPublicKasFallback(session.address);
-    await refreshOwnKnsProfile();
   })();
 }
 
@@ -16674,13 +16679,23 @@ async function linkInjectedWallet(id, approvalPromise = null) {
 document.querySelector("[data-logged-out-kasware]")?.addEventListener("click", (event) => {
   event.preventDefault();
   const wallet = window.kasware;
+  const button = event.currentTarget;
+  if (button) button.disabled = true;
   if (!wallet?.requestAccounts) {
+    if (button) button.disabled = false;
     window.open("https://www.kasware.xyz", "_blank", "noopener");
     setInjectStatus("Kasware is not in this tab. Install the Chrome/Edge/Brave extension, unlock it, then log in again.");
     return;
   }
   setInjectStatus("Waiting for Kasware. Approve Log in in the popup.");
-  const approval = wallet.requestAccounts();
+  let approval;
+  try {
+    approval = wallet.requestAccounts();
+  } catch (error) {
+    if (button) button.disabled = false;
+    setInjectStatus(error?.message || "Kasware did not open. Unlock the extension and try again.");
+    return;
+  }
   linkInjectedWallet("kasware", approval);
 });
 document.querySelector("[data-logged-out-kastle]")?.addEventListener("click", (event) => {

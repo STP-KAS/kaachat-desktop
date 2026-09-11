@@ -183,15 +183,17 @@ export async function connectKasware(win = globalThis, approvalPromise = null) {
   try {
     list = await kaswareRequestAccounts(wallet, approvalPromise, win);
   } catch (error) {
-    try { list = normalizeAccountList(await wallet.getAccounts?.()); } catch { /* fall through */ }
+    try { list = normalizeAccountList(await withTimeout(wallet.getAccounts?.() || Promise.resolve([]), 2500, "Kasware getAccounts timed out")); } catch { /* fall through */ }
     if (!list.length) throw error;
   }
   if (!list.length) {
-    try { list = normalizeAccountList(await wallet.getAccounts?.()); } catch { /* empty */ }
+    try { list = normalizeAccountList(await withTimeout(wallet.getAccounts?.() || Promise.resolve([]), 2500, "Kasware getAccounts timed out")); } catch { /* empty */ }
   }
   if (!list.length) throw new Error("Kasware returned no account. Approve Log in in the Kasware popup.");
   let publicKey = "";
-  try { publicKey = String(await wallet.getPublicKey?.() || ""); } catch { /* optional */ }
+  try {
+    publicKey = String(await withTimeout(wallet.getPublicKey?.() || Promise.resolve(""), 1000, "Kasware getPublicKey timed out") || "");
+  } catch { /* optional; login must not wait on this */ }
   return { id: "kasware", address: list[0], publicKey, accounts: list };
 }
 
