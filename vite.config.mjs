@@ -132,8 +132,6 @@ export default defineConfig({
     assetsInlineLimit: 0,
   },
   server: {
-    // Vite rejects unknown Host headers by default; allow access via the
-    // DuckDNS domain fronted by Nginx Proxy Manager, and the STP site.
-    allowedHosts: [".duckdns.org", "stpstpstpstpstpstpstp.club"],
+    allowedHosts: [".duckdns.org", "localhost", "127.0.0.1"],
   },
 });
