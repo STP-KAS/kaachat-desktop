@@ -21,11 +21,96 @@ export function kasToSompi(amountKas) {
 
 export function parseTxid(value) {
   if (value == null) return "";
-  if (typeof value === "string") return value.replace(/^0x/i, "").trim();
+  if (typeof value === "string") {
+    const trimmed = value.replace(/^0x/i, "").trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { return parseTxid(JSON.parse(trimmed)); } catch { /* not JSON */ }
+    }
+    if (/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed.toLowerCase();
+    return trimmed;
+  }
   if (typeof value === "object") {
-    return String(value.txid || value.transactionId || value.txId || value.id || "").replace(/^0x/i, "").trim();
+    const nested = value.txid || value.transactionId || value.txId || value.id || value.result;
+    return nested && nested !== value ? parseTxid(nested) : "";
   }
   return String(value).replace(/^0x/i, "").trim();
+}
+
+function payloadToBytes(payload) {
+  if (payload == null || payload === "") return null;
+  if (payload instanceof Uint8Array) return payload;
+  const text = String(payload);
+  if (/^[0-9a-fA-F]+$/.test(text) && text.length % 2 === 0) {
+    const out = new Uint8Array(text.length / 2);
+    for (let i = 0; i < out.length; i += 1) out[i] = Number.parseInt(text.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
+  return new TextEncoder().encode(text);
+}
+
+async function signWithKasware(wallet, unsignedJson) {
+  let signed = null;
+  if (typeof wallet.signPskt === "function") {
+    try { signed = await wallet.signPskt({ txJsonString: unsignedJson }); } catch {
+      signed = await wallet.signPskt(unsignedJson);
+    }
+  }
+  if (!signed) throw new Error("Kasware did not return a signed handshake transaction.");
+  if (typeof wallet.pushTx === "function") {
+    const pushed = await wallet.pushTx(typeof signed === "string" ? signed : JSON.stringify(signed));
+    return parseTxid(pushed) || parseTxid(signed);
+  }
+  return parseTxid(signed);
+}
+
+async function signWithKastle(wallet, unsignedJson) {
+  const parsed = typeof unsignedJson === "string" ? JSON.parse(unsignedJson) : unsignedJson;
+  const attempts = [
+    () => wallet.signAndBroadcastTx?.("mainnet", unsignedJson),
+    () => wallet.signAndBroadcastTx?.("kaspa_mainnet", unsignedJson),
+    () => wallet.signAndBroadcastTx?.("mainnet", parsed),
+    () => wallet.signTx?.("mainnet", unsignedJson),
+  ];
+  let last = null;
+  for (const run of attempts) {
+    if (typeof run !== "function") continue;
+    try {
+      const txid = parseTxid(await run());
+      if (txid) return txid;
+    } catch (error) { last = error; }
+  }
+  throw last || new Error("Kastle did not sign the handshake transaction.");
+}
+
+async function sendViaWalletSign({
+  id, wallet, kaspa, rpc, sourceAddress, toAddress, amountKas, payloadBytes,
+}) {
+  if (!kaspa?.createTransactions || !rpc?.getUtxosByAddresses) {
+    throw new Error("Kaspa runtime is not ready to build the handshake transaction.");
+  }
+  const response = await rpc.getUtxosByAddresses([sourceAddress]);
+  const entries = response.entries || response || [];
+  if (!entries.length) throw new Error("This wallet has no KAS to send a handshake. It needs at least 0.2 KAS.");
+  const result = await kaspa.createTransactions({
+    entries,
+    outputs: [{ address: toAddress, amount: kaspa.kaspaToSompi(String(amountKas)) }],
+    priorityFee: 0n,
+    changeAddress: sourceAddress,
+    networkId: "mainnet",
+    ...(payloadBytes ? { payload: payloadBytes } : {}),
+  });
+  const pendingList = result.transactions || [];
+  if (!pendingList.length) throw new Error("Could not build the handshake transaction.");
+  const txids = [];
+  for (const pending of pendingList) {
+    const unsigned = pending.serializeToSafeJSON();
+    const txid = id === "kastle"
+      ? await signWithKastle(wallet, unsigned)
+      : await signWithKasware(wallet, unsigned);
+    if (!txid) throw new Error("Wallet signed the handshake but returned no transaction id.");
+    txids.push(txid);
+  }
+  return { txids };
 }
 
 export function detected(win = globalThis) {
@@ -138,17 +223,42 @@ export async function sendInjectedPayload({
   toAddress,
   amountKas,
   payload = null,
+  kaspa = null,
+  rpc = null,
+  sourceAddress = "",
   win = globalThis,
 } = {}) {
   const wallet = id === "kastle" ? win?.kastle : win?.kasware;
-  if (!wallet || typeof wallet.sendKaspa !== "function") {
+  if (!wallet) {
     throw new Error(`${id === "kastle" ? "Kastle" : "Kasware"} is not in this tab to sign the transaction.`);
   }
+  const payloadBytes = payloadToBytes(payload);
+  // Handshake (and other Kasia) payloads are raw bytes. Kasware's sendKaspa()
+  // UTF-8-encodes then hex-encodes a string, which corrupts binary. Build the
+  // tx here and let the wallet sign it.
+  if (payloadBytes && kaspa && rpc && sourceAddress) {
+    try {
+      return await sendViaWalletSign({
+        id, wallet, kaspa, rpc, sourceAddress, toAddress, amountKas, payloadBytes,
+      });
+    } catch (error) {
+      const message = String(error?.message || error || "");
+      if (/declin|reject|denied|cancel/i.test(message)) throw error;
+      if (!payloadBytes.every((b) => b < 128)) throw error;
+    }
+  }
+  if (typeof wallet.sendKaspa !== "function") {
+    throw new Error(`${id === "kastle" ? "Kastle" : "Kasware"} cannot send from this tab.`);
+  }
   const sompi = kasToSompi(amountKas);
-  const hex = payload == null ? "" : bytesToHex(payload);
-  const attempts = hex
-    ? [{ priorityFee: 10000, payload: hex }, { priorityFee: 10000, payload: hex }]
-    : [{ priorityFee: 10000 }];
+  const ascii = payloadBytes && payloadBytes.every((b) => b < 128)
+    ? new TextDecoder().decode(payloadBytes)
+    : "";
+  const hex = payloadBytes ? bytesToHex(payloadBytes) : "";
+  const attempts = [];
+  if (ascii) attempts.push({ priorityFee: 10000, payload: ascii });
+  if (hex) attempts.push({ priorityFee: 10000, payload: hex });
+  if (!attempts.length) attempts.push({ priorityFee: 10000 });
   let last = null;
   for (const options of attempts) {
     try {
