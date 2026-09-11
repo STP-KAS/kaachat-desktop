@@ -2,8 +2,8 @@ import { NETWORK_ID } from "./utils.js";
 import { getEndpoint } from "./endpoints.js";
 
 const NODE_REGISTRY_KEY = "kachat.browser.node-registry.v1";
-const DIRECT_CONNECT_TIMEOUT_MS = 8000;
-const RESOLVER_CONNECT_TIMEOUT_MS = 15000;
+const DIRECT_CONNECT_TIMEOUT_MS = 4000;
+const RESOLVER_CONNECT_TIMEOUT_MS = 8000;
 const STANDBY_DIRECT_TIMEOUT_MS = 6000;
 const STANDBY_RESOLVER_TIMEOUT_MS = 9000;
 const MAX_FAILOVER_EVENTS = 24;

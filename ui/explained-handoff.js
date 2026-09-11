@@ -11,6 +11,8 @@ if (fromExplained || skip) {
     if (!alreadyIn) {
       localStorage.setItem("kachat-session-logged-out-v1", "true");
       sessionStorage.removeItem("kachat-session-active-v1");
+    } else {
+      history.replaceState({}, "", location.pathname);
     }
   } catch {}
 }

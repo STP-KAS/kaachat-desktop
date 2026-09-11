@@ -683,12 +683,9 @@ export class KaspaEngine {
     this.rpcHeartbeatTimer = window.setInterval(async () => {
       if (this.failoverPromise) return; // a failover is already working the problem
       if (!this.rpc) {
-        // Fully disconnected (e.g. a strict custom node that went down and had no public
-        // backup to promote). Keep trying to reconnect so we recover automatically the
-        // moment a healthy node is reachable again, instead of staying dark.
-        if (!this.address) return;
+        if (!this.address || !this.kaspa || this.rpcConnectPromise || this.wasmPromise) return;
         try {
-          await this.connect({ force: true });
+          await this.connect({ force: false });
           await this.rebuildWalletSubscription();
           await this.rebuildBroadcastBlockScan();
         } catch { /* still unreachable; retry on the next tick */ }
