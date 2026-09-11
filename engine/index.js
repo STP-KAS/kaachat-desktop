@@ -550,9 +550,19 @@ export class KaspaEngine {
   }
 
   async loadWasm() {
-    this.kaspa = await loadKaspaModule();
-    this.kaspa.initConsolePanicHook?.();
-    return this.kaspa;
+    if (this.kaspa) return this.kaspa;
+    if (this.wasmPromise) return this.wasmPromise;
+    this.wasmPromise = (async () => {
+      this.kaspa = await loadKaspaModule();
+      this.kaspa.initConsolePanicHook?.();
+      return this.kaspa;
+    })();
+    try {
+      return await this.wasmPromise;
+    } catch (error) {
+      this.wasmPromise = null;
+      throw error;
+    }
   }
 
   // Strict reachability check for a user-supplied wRPC endpoint. Connects DIRECTLY to
@@ -608,7 +618,7 @@ export class KaspaEngine {
       queueMicrotask(() => this.ensureStandby());
       return this.rpc;
     }
-    if (this.rpcConnectPromise) return this.rpcConnectPromise;
+    if (this.rpcConnectPromise && !force) return this.rpcConnectPromise;
 
     this.rpcConnectPromise = (async () => {
       if (force) {

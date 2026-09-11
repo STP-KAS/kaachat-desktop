@@ -25,16 +25,27 @@ function now() { return Date.now(); }
 // The WASM RPC client can reject with a bare string or a JsValue that has no `.message`, which
 // surfaced in the UI as "Could not connect: undefined". Always return a real Error with a usable
 // message so both the log and the Node Connection dialog show something actionable.
+function isEmptyErrorText(msg) {
+  const text = String(msg || "").trim();
+  return !text || text === "undefined" || text === "null" || text === "[object Object]";
+}
+
 function normalizeRpcError(error, source) {
-  if (error instanceof Error && error.message) return error;
   let msg = "";
   if (typeof error === "string") msg = error;
+  else if (error instanceof Error) msg = error.message;
   else if (error?.message) msg = String(error.message);
   else if (error != null) { try { msg = String(error); } catch { msg = ""; } }
-  if (!msg || msg === "[object Object]" || msg === "undefined") {
-    try { const j = JSON.stringify(error); if (j && j !== "{}") msg = j; } catch { /* ignore */ }
+  if (isEmptyErrorText(msg)) {
+    try {
+      const j = typeof error === "string" ? "" : JSON.stringify(error);
+      if (j && j !== "{}" && !isEmptyErrorText(j.replace(/^"|"$/g, ""))) msg = j;
+    } catch { /* ignore */ }
   }
-  return new Error(msg || `${source} failed — the node client returned no error detail (often a blocked wss:// connection or an unreachable resolver).`);
+  if (isEmptyErrorText(msg)) {
+    msg = `${source} failed. The node client returned no detail (often a blocked ws:// socket on HTTPS, or the public resolver).`;
+  }
+  return new Error(msg);
 }
 
 function emptyRegistry() {
@@ -152,7 +163,21 @@ function makeRpc(kaspa, { endpoint = "" } = {}) {
 const PUBLIC_TLS_ENDPOINTS = [
   "wss://isla.kaspa.red/kaspa/mainnet/wrpc/borsh",
   "wss://emma.kaspa.stream/kaspa/mainnet/wrpc/borsh",
+  "wss://eric.kaspa.stream/kaspa/mainnet/wrpc/borsh",
+  "wss://john.kaspa.red/kaspa/mainnet/wrpc/borsh",
 ];
+
+function isSecureBrowser() {
+  try { return Boolean(globalThis.isSecureContext); } catch { return false; }
+}
+
+function isUsableBrowserEndpoint(endpoint) {
+  const url = String(endpoint || "");
+  if (!url) return false;
+  if (isSecureBrowser() && url.startsWith("ws://")) return false;
+  if (/your-node\.duckdns/i.test(url)) return false;
+  return true;
+}
 
 function shuffled(list) {
   const copy = list.slice();
@@ -272,7 +297,9 @@ export async function createRpc(kaspa, log = () => {}) {
   // node (a forced default meant every Automatic user piled onto one endpoint, and a client
   // that couldn't reach it — LAN NAT-hairpin, region blocks — paid a failed dial on every
   // connect before falling through).
-  const lastGoodEndpoint = registry.lastGoodEndpoint;
+  const lastGoodEndpoint = isUsableBrowserEndpoint(registry.lastGoodEndpoint)
+    ? registry.lastGoodEndpoint
+    : "";
 
   if (lastGoodEndpoint) {
     try {
@@ -285,19 +312,12 @@ export async function createRpc(kaspa, log = () => {}) {
       });
     } catch (error) {
       log(`Last-known-good RPC failed: ${error?.message || error}`);
-      log("Falling back to the Rusty Kaspa resolver...");
     }
   }
 
-  try {
-    return await connectCandidate(kaspa, {
-      timeoutMs: RESOLVER_CONNECT_TIMEOUT_MS,
-      log,
-      role: "primary",
-    });
-  } catch (resolverError) {
-    log(`Rusty Kaspa resolver failed: ${resolverError?.message || resolverError}`);
-    let last = resolverError;
+  const tlsFirst = isSecureBrowser();
+  const tryTls = async () => {
+    let last = null;
     for (const endpoint of shuffled(PUBLIC_TLS_ENDPOINTS)) {
       try {
         log(`Trying public TLS node ${endpoint}...`);
@@ -313,7 +333,38 @@ export async function createRpc(kaspa, log = () => {}) {
         log(`Public TLS node failed (${endpoint}): ${error?.message || error}`);
       }
     }
-    throw normalizeRpcError(last, "automatic public node");
+    if (last) throw last;
+    throw new Error("No public TLS node answered.");
+  };
+  const tryResolver = () => connectCandidate(kaspa, {
+    timeoutMs: RESOLVER_CONNECT_TIMEOUT_MS,
+    log,
+    role: "primary",
+    singleShot: true,
+  });
+
+  if (tlsFirst) {
+    try {
+      return await tryTls();
+    } catch (tlsError) {
+      log(`Public TLS pool failed: ${tlsError?.message || tlsError}`);
+      try {
+        return await tryResolver();
+      } catch (resolverError) {
+        throw normalizeRpcError(resolverError, "automatic public node");
+      }
+    }
+  }
+
+  try {
+    return await tryResolver();
+  } catch (resolverError) {
+    log(`Rusty Kaspa resolver failed: ${resolverError?.message || resolverError}`);
+    try {
+      return await tryTls();
+    } catch (tlsError) {
+      throw normalizeRpcError(tlsError, "automatic public node");
+    }
   }
 }
 
