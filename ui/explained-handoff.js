@@ -7,13 +7,8 @@ const openCreate = params.get("create") === "1";
 
 if (fromExplained || skip) {
   try {
-    const alreadyIn = sessionStorage.getItem("kachat-session-active-v1") === "1";
-    if (!alreadyIn) {
-      localStorage.setItem("kachat-session-logged-out-v1", "true");
-      sessionStorage.removeItem("kachat-session-active-v1");
-    } else {
-      history.replaceState({}, "", location.pathname);
-    }
+    localStorage.setItem("kachat-session-logged-out-v1", "true");
+    sessionStorage.removeItem("kachat-session-active-v1");
   } catch {}
 }
 

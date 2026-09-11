@@ -618,7 +618,11 @@ export class KaspaEngine {
       queueMicrotask(() => this.ensureStandby());
       return this.rpc;
     }
-    if (this.rpcConnectPromise && !force) return this.rpcConnectPromise;
+    if (this.rpcConnectPromise) {
+      if (!force) return this.rpcConnectPromise;
+      try { await this.rpcConnectPromise; } catch { /* previous attempt failed */ }
+      if (this.rpc && await probeRpc(this.rpc)) return this.rpc;
+    }
 
     this.rpcConnectPromise = (async () => {
       if (force) {
@@ -683,7 +687,7 @@ export class KaspaEngine {
     this.rpcHeartbeatTimer = window.setInterval(async () => {
       if (this.failoverPromise) return; // a failover is already working the problem
       if (!this.rpc) {
-        if (!this.address || !this.kaspa || this.rpcConnectPromise || this.wasmPromise) return;
+        if (!this.address || !this.kaspa || this.rpcConnectPromise || (this.wasmPromise && !this.kaspa)) return;
         try {
           await this.connect({ force: false });
           await this.rebuildWalletSubscription();
