@@ -370,10 +370,12 @@ export async function createRpc(kaspa, log = () => {}) {
 
 export async function createStandbyRpc(kaspa, primaryEndpoint = "", log = () => {}) {
   const registry = getNodeRegistrySnapshot();
-  const directCandidates = registry.endpoints
-    .map((entry) => entry.endpoint)
-    .filter((endpoint) => endpoint && endpoint !== primaryEndpoint && !endpoint.includes("resolver"))
-    .slice(0, 3);
+  const directCandidates = [
+    ...registry.endpoints.map((entry) => entry.endpoint),
+    ...PUBLIC_TLS_ENDPOINTS,
+  ].filter((endpoint) => endpoint && endpoint !== primaryEndpoint && isUsableBrowserEndpoint(endpoint) && !endpoint.includes("resolver"))
+    .filter((endpoint, index, list) => list.indexOf(endpoint) === index)
+    .slice(0, 4);
 
   for (const endpoint of directCandidates) {
     try {
@@ -383,11 +385,14 @@ export async function createStandbyRpc(kaspa, primaryEndpoint = "", log = () => 
         log,
         role: "standby",
         excludedEndpoints: [primaryEndpoint],
+        singleShot: true,
       });
     } catch (error) {
       log(`Standby candidate failed (${endpoint}): ${error?.message || error}`);
     }
   }
+
+  if (isSecureBrowser()) return null;
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {

@@ -567,8 +567,8 @@ function upsertInjectedAccount(session) {
     address,
     injected: id,
     publicKey: String(session.publicKey || existing?.publicKey || ""),
-    privateKeyHex: String(existing?.privateKeyHex || ""),
-    mnemonic: String(existing?.mnemonic || ""),
+    privateKeyHex: "",
+    mnemonic: "",
     passphrase: String(existing?.passphrase || ""),
     name: existing?.name || `${id === "kastle" ? "Kastle" : "Kasware"} ${address.slice(-6)}`,
     createdAt: existing?.createdAt || new Date().toISOString(),
@@ -1989,7 +1989,7 @@ function restorePersistedTestingWallet() {
     return false;
   }
   const injected = getStoredInjectedWallet();
-  if (injected?.address && !getStoredTestingWalletHex()) {
+  if (injected?.address) {
     try {
       engine.setInjectedWallet(injected);
       markSessionActive();
@@ -3125,9 +3125,12 @@ async function applyPublicKasFallback(address) {
   if (!target) return false;
   try {
     if (engine.injected?.id === "kasware" && window.kasware?.getBalance) {
-      const raw = await window.kasware.getBalance();
-      const sompi = Number(raw?.total ?? raw?.confirmed ?? raw?.balance ?? raw ?? 0);
-      if (Number.isFinite(sompi) && sompi >= 0) {
+      const raw = await Promise.race([
+        window.kasware.getBalance(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Kasware getBalance timed out")), 2000)),
+      ]);
+      const sompi = Number(raw?.total ?? raw?.confirmed ?? raw?.balance);
+      if (Number.isFinite(sompi) && sompi > 0) {
         currentBalanceKas = String(sompi / 100000000);
         updateWalletUi();
         updateServiceSummary();
@@ -3187,7 +3190,10 @@ async function fetchPublicKnsDomains(address) {
   return { names, primary: primaryName };
 }
 
+let connectAndRefreshInFlight = null;
 async function connectAndRefresh({ quiet = false } = {}) {
+  if (connectAndRefreshInFlight) return connectAndRefreshInFlight;
+  connectAndRefreshInFlight = (async () => {
   if (!engine.address) {
     updateServiceSummary();
     return;
@@ -3215,6 +3221,9 @@ async function connectAndRefresh({ quiet = false } = {}) {
     appendEngineLog(`Auto-connect failed: ${error.message}`);
     await applyPublicKasFallback(engine.address);
   }
+  })();
+  try { return await connectAndRefreshInFlight; }
+  finally { connectAndRefreshInFlight = null; }
 }
 
 async function refreshBalanceOnly({ quiet = true } = {}) {
@@ -16758,8 +16767,12 @@ async function linkInjectedWallet(id, approvalPromise = null) {
   const button = document.querySelector(id === "kastle" ? "[data-logged-out-kastle]" : "[data-logged-out-kasware]");
   if (button) button.disabled = true;
   try {
-    const session = await connectInjected(id, globalThis, approvalPromise);
+    let session = await connectInjected(id, globalThis, approvalPromise);
     if (!session?.address) throw new Error("Kasware returned no Kaspa address after approval.");
+    if (id === "kasware") {
+      session = await pickKaswareAccount(session);
+      if (!session) return;
+    }
     setInjectStatus(`Logging in as ${session.address.slice(0, 18)}…`);
     await enterLinkedWallet(session);
   } catch (error) {
@@ -17018,6 +17031,13 @@ document.addEventListener("visibilitychange", () => {
 // while the Kasia cipher loads independently so a slow public node cannot hold messaging startup hostage.
 queueMicrotask(async () => {
   await new Promise((resolve) => window.setTimeout(resolve, 400));
+  const waitingForWallet = localStorage.getItem(SESSION_LOGGED_OUT_KEY) === "true"
+    || document.querySelector("[data-logged-out-screen]")?.hidden === false;
+  if (waitingForWallet && !engine.address) {
+    setStatus("Waiting for wallet…");
+    setService(runtimeIndicator, runtimeStatus, "busy", "Waiting for wallet");
+    return;
+  }
   setStatus("Starting KaChat services…");
   setService(runtimeIndicator, runtimeStatus, "busy", "Loading Rusty Kaspa…");
   setService(messagingIndicator, messagingStatus, "busy", "Loading encryption runtime…");
