@@ -222,7 +222,7 @@ export async function sendHandshakeOnchain({ engine, envelope, amountKas = "0.2"
   if (!engine?.kaspa || !engine?.address || (!engine.privateKey && !engine.injected)) throw new Error("Connect Kasware or Kastle, or load a wallet before sending a communication request.");
   if (!envelope?.toAddress?.startsWith("kaspa:")) throw new Error("A valid kaspa: recipient address is required.");
   onStatus({ status: "pending", note: "Creating encrypted KaChat communication request.", messageType: "handshake", transport: "onchain" });
-  if (!engine.injected) await engine.connect();
+  await engine.connect();
   const sendResult = engine.injected
     ? await engine.send(envelope.toAddress, amountKas, feeKas, { payload: envelope.protocolBytes })
     : await sendPayloadTransaction({

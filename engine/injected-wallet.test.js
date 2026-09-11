@@ -20,9 +20,13 @@ test("kasToSompi converts 0.2 KAS the way chat payments do", () => {
   assert.throws(() => kasToSompi("0"), /greater than 0/);
 });
 
-test("parseTxid accepts strings and wallet objects", () => {
+test("parseTxid accepts strings, JSON, and wallet objects", () => {
   assert.equal(parseTxid("0xabc"), "abc");
   assert.equal(parseTxid({ transactionId: "deadbeef" }), "deadbeef");
+  assert.equal(
+    parseTxid(JSON.stringify({ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })),
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  );
 });
 
 test("detected reports only injected wallets", () => {
@@ -80,7 +84,7 @@ test("connect Kastle uses connect then getAccount", async () => {
   assert.equal(session.address, "kaspa:qkastle");
 });
 
-test("sendInjectedPayload posts hex payload through sendKaspa", async () => {
+test("sendInjectedPayload posts ASCII payload through sendKaspa when WASM is not passed", async () => {
   const calls = [];
   const win = {
     kasware: {
@@ -99,7 +103,7 @@ test("sendInjectedPayload posts hex payload through sendKaspa", async () => {
   });
   assert.deepEqual(result.txids, ["txid-1"]);
   assert.equal(calls[0].sompi, 20_000_000);
-  assert.equal(calls[0].options.payload, bytesToHex(new TextEncoder().encode("kchat:1:handshake:")));
+  assert.equal(calls[0].options.payload, "kchat:1:handshake:");
 });
 
 test("missing Kasware throws a install-then-retry error", async () => {

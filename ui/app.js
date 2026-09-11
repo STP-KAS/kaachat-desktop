@@ -11142,6 +11142,7 @@ async function sendOutgoingHandshake(contact, conversationEntry, { accepting = f
     refreshSubscriptionAddresses({ restart: true });
     persistState();
     setStatus(accepting ? "Communication request accepted" : "Communication request sent");
+    showCopyToast(accepting ? "Handshake accepted." : "Handshake sent. Approve it in Kasware or Kastle if a popup appears.");
     stashHandshakeForRecovery(contact, { isResponse: accepting, createdAt });
     return true;
   } catch (error) {
@@ -11151,6 +11152,7 @@ async function sendOutgoingHandshake(contact, conversationEntry, { accepting = f
     contact.relationshipState = accepting ? "incoming-request" : "request-failed";
     persistState();
     setStatus(`Communication request failed: ${error.message}`);
+    showCopyToast(`Handshake failed: ${error.message}`);
     return false;
   }
 }
@@ -11180,10 +11182,21 @@ async function stashHandshakeForRecovery(contact, { isResponse = false, createdA
 }
 
 async function sendHandshakeFromComposer() {
-  if (handshakeSendInFlight || !activeConversationId) return;
+  if (handshakeSendInFlight) return;
+  if (!activeConversationId) {
+    showCopyToast("Open a conversation first.");
+    return;
+  }
   const conversationEntry = state.conversations.find((entry) => entry.id === activeConversationId);
   const contact = contactForConversation(conversationEntry);
-  if (!conversationEntry || !contact) return;
+  if (!conversationEntry || !contact) {
+    showCopyToast("No contact on this conversation.");
+    return;
+  }
+  if (!String(contact.address || "").startsWith("kaspa:")) {
+    showCopyToast("This contact has no Kaspa address.");
+    return;
+  }
   handshakeSendInFlight = true;
   // The warning banner's own Send Handshake button is the usual entry point, so
   // it carries the busy state for both it and the composer-menu equivalent.

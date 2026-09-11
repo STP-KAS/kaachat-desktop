@@ -869,11 +869,15 @@ export class KaspaEngine {
   async send(destinationAddress, amountKas, feeKas = "0", options = {}) {
     this.requireWallet();
     if (this.injected) {
+      if (!this.rpc) await this.connect();
       return sendInjectedPayload({
         id: this.injected.id,
         toAddress: destinationAddress,
         amountKas,
         payload: options.payload || null,
+        kaspa: this.kaspa,
+        rpc: this.rpc,
+        sourceAddress: this.address,
       });
     }
     await this.connect();
@@ -1075,11 +1079,15 @@ export class KaspaEngine {
     this.requireWallet();
     const payload = new TextEncoder().encode(String(payloadString));
     if (this.injected) {
+      if (!this.rpc) await this.connect();
       return sendInjectedPayload({
         id: this.injected.id,
         toAddress: this.address,
         amountKas,
         payload,
+        kaspa: this.kaspa,
+        rpc: this.rpc,
+        sourceAddress: this.address,
       });
     }
     await this.connect();
