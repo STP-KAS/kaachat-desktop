@@ -16595,7 +16595,7 @@ async function enterLinkedWallet(session) {
     const domain = new URLSearchParams(location.search).get("domain") || "";
     if (domain) saveDisplayDomain(session.address, domain);
   } catch {}
-  activateWalletDataScope(session.address, { migrateLegacy: false });
+  activateWalletDataScope(session.address, { migrateLegacy: true });
   localStorage.removeItem(SESSION_LOGGED_OUT_KEY);
   markSessionActive();
   try { history.replaceState({}, "", location.pathname); } catch {}
@@ -16608,17 +16608,19 @@ async function enterLinkedWallet(session) {
   appendEngineLog(`Linked ${session.id}: ${session.address}`);
   renderChats();
   showCopyToast(`Logged in with ${session.id === "kastle" ? "Kastle" : "Kasware"}.`);
-  void (async () => {
-    try { await applyPublicKasFallback(session.address); } catch {}
-    try { await refreshOwnKnsProfile(); } catch {}
-    try {
-      if (!engine.kaspa) await ensureRuntimes({ quiet: true });
-      await connectAndRefresh({ quiet: true });
-    } catch (error) {
-      appendEngineLog(error.message || String(error));
-    }
-    if (currentBalanceKas === "--") await applyPublicKasFallback(session.address);
-  })();
+  void applyPublicKasFallback(session.address).catch(() => {});
+  window.setTimeout(() => {
+    void (async () => {
+      try { await refreshOwnKnsProfile(); } catch {}
+      try {
+        if (!engine.kaspa) await ensureRuntimes({ quiet: true });
+        await connectAndRefresh({ quiet: true });
+      } catch (error) {
+        appendEngineLog(error.message || String(error));
+      }
+      if (currentBalanceKas === "--") await applyPublicKasFallback(session.address);
+    })();
+  }, 800);
 }
 
 function closeKaswarePick() {
@@ -16923,6 +16925,7 @@ document.addEventListener("visibilitychange", () => {
 // Step 50: start independent services in parallel. Rusty Kaspa gates wallet restore and RPC,
 // while the Kasia cipher loads independently so a slow public node cannot hold messaging startup hostage.
 queueMicrotask(async () => {
+  await new Promise((resolve) => window.setTimeout(resolve, 400));
   setStatus("Starting KaChat services…");
   setService(runtimeIndicator, runtimeStatus, "busy", "Loading Rusty Kaspa…");
   setService(messagingIndicator, messagingStatus, "busy", "Loading encryption runtime…");
@@ -16972,9 +16975,17 @@ queueMicrotask(async () => {
   }
 
   if (wasmReady && engine.address) {
-    await refreshBalanceOnly({ quiet: true });
-    if (cipherReady) await refreshAllConversations({ quiet: true });
-    startAutomaticRefresh();
+    void applyPublicKasFallback(engine.address).catch(() => {});
+    window.setTimeout(() => {
+      void (async () => {
+        try { await connectAndRefresh({ quiet: true }); } catch {}
+        try { await refreshBalanceOnly({ quiet: true }); } catch {}
+        if (engine.isKasiaCipherLoaded?.()) {
+          try { await refreshAllConversations({ quiet: true }); } catch {}
+        }
+        startAutomaticRefresh();
+      })();
+    }, 1000);
     // Seed/diff the Address Activity baselines shortly after startup (first
     // run per account seeds silently — no notification blast for old funds).
     scheduleAddressActivityCheck(15_000);
