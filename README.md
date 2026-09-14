@@ -5,6 +5,19 @@ Upstream: [KaspaSilver/KaChat-Desktop](https://github.com/KaspaSilver/KaChat-Des
 
 On a computer, **Link Kasware** or **Link Kastle** in the signed-out screen. Those extensions inject in Chrome, Edge, or Brave. This app never asks them for a recovery phrase. If the address already has a saved KaChat account, linking signs into that account.
 
+## STP desk note (for KaspaSilver) — 14 Sep 2026
+
+STP copy of upstream. Original README below is kept.
+
+| Check | Result |
+| --- | --- |
+| `npm test` (`engine/injected-wallet.test.js`) | **9 pass / 0 fail** |
+| groks-wallet CLI seed | **cannot log in** — login is Kasware/Kastle inject, not `secrets/wallet.txt` |
+| Sister copies | [stp-kachat](https://github.com/STP-KAS/stp-kachat) (intended production name) · [kachat-test-with-silver](https://github.com/STP-KAS/kachat-test-with-silver) (handshake fork). Three GitHubs is sprawl; upstream is this product. |
+| Hard-test catalog | [STP-KAS/tn10-hard-test](https://github.com/STP-KAS/tn10-hard-test) |
+
+Issue for Silver: see this repo’s Issues tab (STP report). We did not paste a seed. We did not claim E2E from this wallet.
+
 QUICK START (Mac, Linux, Windows)
 
 ```
