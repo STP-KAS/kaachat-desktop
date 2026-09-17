@@ -1,4 +1,6 @@
-> **Experimental only. Not a product.** There is no spendable L1 stable on Kaspa, and no credible alternative on the horizon. Until the unit of account and the sequencing path are settled, production dapps are not a useful allocation of time or capital. [KASPAglobal](https://x.com/kaspaglobal/status/2100536064683176270) · [DISCLAIMER.md](DISCLAIMER.md)
+> **Experimental only. Not a product.** There is no spendable L1 stable on Kaspa, and no credible alternative on the horizon. Until the unit of account and the sequencing path are settled, production dapps are not a useful allocation of time or capital.
+>
+> Do not use wallet integrations on this GitHub. STP remains a clown. [DISCLAIMER.md](DISCLAIMER.md)
 
 # KaChat Desktop
 
@@ -42,8 +44,6 @@ To run KaChat again later:
 cd kaachat-desktop && npm run dev
 ```
 
-
-
 ## Run it in Docker
 
 If you would rather not install Node, there is a Dockerfile and a compose file:
@@ -85,7 +85,6 @@ reimplement `/nc-proxy` in whatever serves the files.
 does not recognise. `vite.config.mjs` allows `.duckdns.org`; any other domain
 in front of this needs adding to `server.allowedHosts`. Plain IP addresses are
 fine without any change.
-
 
 ## Self-Hosted Cloud (Nextcloud) Setup
 
@@ -294,8 +293,7 @@ services:
     networks: [cloud]
   nextcloud:
     build:
-      context: .
-      dockerfile: Dockerfile.nextcloud
+      context: dockerfile: Dockerfile.nextcloud
     restart: unless-stopped
     ports: ["8080:80"]
     environment:
@@ -455,8 +453,7 @@ services:
     networks: [cloud]
   nextcloud:
     build:
-      context: .
-      dockerfile: Dockerfile.nextcloud
+      context: dockerfile: Dockerfile.nextcloud
     restart: unless-stopped
     ports: ["8080:80"]
     environment:
@@ -609,7 +606,6 @@ docker compose down         # stop everything (data is kept in Docker volumes)
 docker compose up -d        # start again
 docker compose pull && docker compose up -d --build   # update to newest images
 ```
-
 
 ### Uninstall / revert everything
 
